@@ -74,10 +74,13 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 
 # Base de datos (PostgreSQL)
 DATABASES = {
-    'default': dj_database_url.parse(
-        os.getenv('DATABASE_URL', f"postgres://{os.getenv('DATABASE_USER','postgres')}:{os.getenv('DATABASE_PASSWORD','password')}@{os.getenv('DATABASE_HOST','localhost')}:{os.getenv('DATABASE_PORT','5432')}/{os.getenv('DATABASE_NAME','djidji1')}")
+    'default': dj_database_url.config(
+        default=os.getenv('DATABASE_URL'),
+        conn_max_age=600,
+        ssl_require=True
     )
 }
+
 
 # Validación de contraseñas
 AUTH_PASSWORD_VALIDATORS = [
@@ -116,6 +119,15 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'SIGNING_KEY': JWT_SECRET_KEY,
 }
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
+
+CORS_ALLOWED_ORIGINS = [
+    "https://tuapp.up.railway.app",
+    "https://tudominio.com",
+]
 
 # Auto field
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
