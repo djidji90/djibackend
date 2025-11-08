@@ -12,7 +12,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Seguridad
 SECRET_KEY = os.getenv('SECRET_KEY', 'fallback-secret-key')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '127.0.0.1,localhost,djibackend-production.up.railway.app').split(',')
+ALLOWED_HOSTS = os.getenv(
+    'ALLOWED_HOSTS',
+    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com'
+).split(',')
 
 # Usuario personalizado
 AUTH_USER_MODEL = 'musica.CustomUser'
@@ -67,13 +70,20 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 
 # Base de datos (PostgreSQL con SSL)
+
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Obtener URL de la base de datos de Railway
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+# Configurar DATABASES usando dj-database-url
 DATABASES = {
-    'default': dj_database_url.config(
-        default=os.getenv('DATABASE_URL'),
-        conn_max_age=600,
-        ssl_require=True
-    )
+    'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
 }
+
 
 # Archivos estáticos
 STATIC_URL = '/static/'
@@ -104,6 +114,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
     "http://localhost:8000",
     "https://djibackend-production.up.railway.app",
+    "https://djidjimusic.com",
+    "https://www.djidjimusic.com",
 ]
 
 # Django REST Framework + JWT
