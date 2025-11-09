@@ -116,9 +116,12 @@ CORS_ALLOWED_ORIGINS = [
     "https://djibackend-production.up.railway.app",
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
-    " http://localhost:5174/",
-     " http://localhost:5173/",
-     " http://localhost:5176/"
+  
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5176",
+
+
 ]
 
 # Django REST Framework + JWT
