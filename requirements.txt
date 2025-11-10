@@ -4,6 +4,7 @@ djangorestframework==3.16.1
 djangorestframework_simplejwt==5.5.1
 asgiref>=3.7,<4
 
+
 # Base de datos PostgreSQL
 psycopg[binary]==3.2.9
 dj-database-url==1.2.0
