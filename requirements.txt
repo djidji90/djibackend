@@ -36,6 +36,5 @@ rpds-py==0.28.0
 sqlparse==0.5.3
 tzdata==2025.2
 pytz==2025.2
-
 # Servidor WSGI
 gunicorn==21.2.0
