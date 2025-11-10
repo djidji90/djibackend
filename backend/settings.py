@@ -31,6 +31,8 @@ INSTALLED_APPS = [
 
     # Apps locales
     'musica',
+    "api2",
+    'drf_yasg',
 
     # Librerías externas
     'rest_framework',

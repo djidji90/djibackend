@@ -1,21 +1,38 @@
-asgiref==3.10.0
-certifi==2025.10.5
-charset-normalizer==3.4.4
-dj-database-url==1.2.0
+# Django y REST
 Django==5.2.8
-django-cors-headers==4.3.0
 djangorestframework==3.16.1
 djangorestframework_simplejwt==5.5.1
-gunicorn==21.2.0
-idna==3.11
-packaging==25.0
-psycopg==3.2.9
-psycopg-binary==3.2.9
-psycopg2-binary==2.9.11
-PyJWT==2.10.1
-python-dotenv==1.2.1
+
+# Base de datos PostgreSQL (driver moderno y binario)
+psycopg[binary]==3.2.9
+dj-database-url==1.2.0
+
+# Documentación API
+drf-yasg==1.21.11
+
+# Manejo de entorno y variables
+django-environ==0.12.0
+
+# CORS y seguridad
+django-cors-headers==4.3.0
+whitenoise==6.5.0
+
+# Utilidades varias
+pillow==12.0.0
 requests==2.32.5
+PyYAML==6.0.3
+python-dotenv==1.2.1
+inflection==0.5.1
+jsonschema==4.25.1
+jsonschema-specifications==2025.9.1
+attrs==25.4.0
+asgi-ref==3.10.0
+packaging==25.0
+referencing==0.37.0
+rpds-py==0.28.0
 sqlparse==0.5.3
 tzdata==2025.2
-urllib3==2.5.0
-whitenoise==6.5.0
+pytz==2025.2
+
+# Servidor WSGI
+gunicorn==21.2.0
