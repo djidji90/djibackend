@@ -14,9 +14,8 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'fallback-secret-key')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = os.getenv(
     'ALLOWED_HOSTS',
-    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com,api.djidjimusic.com'
+    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com'
 ).split(',')
-
 
 # Usuario personalizado
 AUTH_USER_MODEL = 'musica.CustomUser'
@@ -84,8 +83,12 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 
 # Configurar DATABASES usando dj-database-url
 DATABASES = {
-    'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / "db.sqlite3",
+    }
 }
+
 
 
 # Archivos estáticos
@@ -120,7 +123,6 @@ CORS_ALLOWED_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
   
-    
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5176",
