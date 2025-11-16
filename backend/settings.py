@@ -14,7 +14,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'fallback-secret-key')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = os.getenv(
     'ALLOWED_HOSTS',
-    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com'
+    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com', "api.djidjimusic.com",
 ).split(',')
 
 # Usuario personalizado
@@ -119,6 +119,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
   
+    "api.djidjimusic.com",
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5176",
