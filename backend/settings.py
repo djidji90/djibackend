@@ -14,10 +14,13 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'fallback-secret-key')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 import os
 
+import os
+
 ALLOWED_HOSTS = os.getenv(
-    'ALLOWED_HOSTS', 
-    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com'
+    'ALLOWED_HOSTS',
+    '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com,api.djidjimusic.com'
 ).split(',')
+
 
 
 # Usuario personalizado
