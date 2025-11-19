@@ -37,3 +37,6 @@ tzdata==2025.2
 pytz==2025.2
 # Servidor WSGI
 gunicorn==21.2.0
+django-storages
+boto3
+drf-spectacular

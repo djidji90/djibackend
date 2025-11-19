@@ -1,56 +1,32 @@
-
-from drf_spectacular.utils import extend_schema, OpenApiParameter  # Esta línea debe estar presente
-from django.db import DatabaseError, IntegrityError
-from rest_framework.exceptions import ValidationError
+# Importaciones optimizadas y corregidas
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from django.db import DatabaseError, IntegrityError, transaction
+from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.db.models.functions import Lower
-from django.db.models import Value, CharField
-from rest_framework.response import Response
+from django.db.models import Value, CharField, Q, Count
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
-from .models import Song
-from .serializers import SongSerializer
-from django.db.models import Q
-from rest_framework.decorators import api_view
+from .models import Song, Like, Download, Comment, MusicEvent
+from .r2_utils import upload_file_to_r2, generate_presigned_url, delete_file_from_r2, check_file_exists
+from .r2_client import r2_client, R2_BUCKET_NAME
+from .serializers import SongSerializer, CommentSerializer, MusicEventSerializer
 import logging
-from rest_framework import generics, permissions
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework import status
 from django.core.cache import cache
-from django.db.models import Count, Q
 from rest_framework.pagination import PageNumberPagination
-from django.db import transaction
-from .models import Song, Like, Download, Comment
-from .serializers import SongSerializer, CommentSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.throttling import UserRateThrottle
-from django.http import FileResponse, StreamingHttpResponse
-from django.core.files.storage import default_storage
-from drf_spectacular.utils import extend_schema, OpenApiParameter  # Importación requerida
+from django.http import StreamingHttpResponse
 import random
 from rest_framework.filters import SearchFilter
-from rest_framework import generics, permissions
-from .models import MusicEvent
-from .serializers import MusicEventSerializer
-from rest_framework.response import Response
-from rest_framework import status
-import os
 
 logger = logging.getLogger(__name__)
 
-
-
-
-
 # En tu views.py
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.db.models.functions import Lower
-from django.db.models import Value, CharField
-from django.db.models import Q
-
 @extend_schema(
     description="Obtener sugerencias de búsqueda en tiempo real",
     parameters=[
@@ -107,20 +83,16 @@ def song_suggestions(request):
     
     return Response({"suggestions": unique_suggestions[:5]})
 
-
-
-
-
-
 class CommentPagination(PageNumberPagination):
     page_size = 3
     page_size_query_param = 'page_size'
+
 # Music Event List View
 @extend_schema(description="Listar eventos de música")
 class MusicEventListView(generics.ListCreateAPIView):
     queryset = MusicEvent.objects.all()
     serializer_class = MusicEventSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def handle_exception(self, exc):
         if isinstance(exc, (DatabaseError, IntegrityError)):
@@ -141,13 +113,12 @@ class MusicEventListView(generics.ListCreateAPIView):
             logger.error(f"Error creating event: {e}")
             raise ValidationError("Error inesperado al crear el evento")
 
-
 # Music Event Detail View
 @extend_schema(description="Obtener, actualizar o eliminar un evento de música")
 class MusicEventDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = MusicEvent.objects.all()
     serializer_class = MusicEventSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def handle_exception(self, exc):
         if isinstance(exc, (DatabaseError, IntegrityError)):
@@ -181,10 +152,9 @@ class MusicEventDetailView(generics.RetrieveUpdateDestroyAPIView):
             logger.error(f"Error deleting event: {e}")
             raise ValidationError("Error inesperado al eliminar el evento")
 
-
 # Song Likes View
 class SongLikesView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     @extend_schema(description="Obtener el conteo de likes de una canción")
     def get(self, request, song_id):
@@ -203,7 +173,6 @@ class SongLikesView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 # Song List View with Flexible Search
 @extend_schema(
     description="Lista y busca canciones con filtros avanzados",
@@ -215,7 +184,7 @@ class SongLikesView(APIView):
 )
 class SongListView(generics.ListCreateAPIView):
     serializer_class = SongSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['title', 'artist', 'genre']
 
@@ -261,11 +230,36 @@ class SongListView(generics.ListCreateAPIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    def perform_create(self, serializer):
+        """
+        Maneja la creación de canciones con subida a R2
+        """
+        try:
+            song = serializer.save()
+            file_obj = self.request.FILES.get('file')
+            
+            if file_obj:
+                # Generar key única para R2
+                key = f"songs/{song.id}/{file_obj.name}"
+                
+                # Subir archivo a R2
+                if upload_file_to_r2(file_obj, key):
+                    # Actualizar el modelo con la referencia al archivo en R2
+                    song.file.name = key
+                    song.save()
+                else:
+                    # Si falla la subida, eliminar la canción creada
+                    song.delete()
+                    raise ValidationError("Error al subir el archivo a R2")
+                    
+        except Exception as e:
+            logger.error(f"Error creating song: {e}")
+            raise ValidationError("Error al crear la canción")
 
 # Song Search Suggestions (Autocomplete)
 @extend_schema(description="Sugerencias de búsqueda en tiempo real")
 class SongSearchSuggestionsView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get(self, request):
         try:
@@ -291,11 +285,10 @@ class SongSearchSuggestionsView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 # Like Song View
 @extend_schema(description="Dar o quitar like a una canción")
 class LikeSongView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     @transaction.atomic
     def post(self, request, song_id):
@@ -332,18 +325,17 @@ class LikeSongView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 # Download Song View
 @extend_schema(description="Descargar una canción con control de frecuencia")
 class DownloadSongView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
     throttle_classes = [UserRateThrottle]
 
     def get(self, request, song_id):
         try:
             song = get_object_or_404(Song, id=song_id)
             if not song.file:
-                raise NotFound("Archivo no disponible")
+                return Response({"error": "Archivo no disponible"}, status=status.HTTP_404_NOT_FOUND)
 
             cache_key = f"download_{request.user.id}_{song_id}"
             if cache.get(cache_key):
@@ -352,23 +344,22 @@ class DownloadSongView(APIView):
                     status=status.HTTP_429_TOO_MANY_REQUESTS
                 )
 
+            # Registrar descarga
             with transaction.atomic():
                 Download.objects.create(user=request.user, song=song)
                 cache.set(cache_key, True, timeout=3600)
 
-            try:
-                file = default_storage.open(song.file.name, 'rb')
-                response = FileResponse(file, as_attachment=True, filename=os.path.basename(song.file.name))
-                response["Content-Length"] = song.file.size
-                return response
-            except FileNotFoundError:
-                raise NotFound("Archivo no encontrado en el servidor")
-            except IOError as e:
-                logger.error(f"File access error: {e}")
+            # Generar URL firmada temporal usando la función de utilidad
+            download_url = generate_presigned_url(song.file.name, expiration=3600)
+            
+            if not download_url:
                 return Response(
-                    {"error": "Error al acceder al archivo"},
+                    {"error": "Error al generar URL de descarga"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
+
+            return Response({"download_url": download_url}, status=status.HTTP_200_OK)
+
         except Exception as e:
             logger.error(f"Error in download: {e}")
             return Response(
@@ -376,31 +367,34 @@ class DownloadSongView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 # Stream Song View
 @extend_schema(description="Reproducir una canción en streaming")
 class StreamSongView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, song_id):
         try:
             song = get_object_or_404(Song, id=song_id)
             if not song.file:
-                raise NotFound("Archivo no disponible")
+                return Response({"error": "Archivo no disponible"}, status=status.HTTP_404_NOT_FOUND)
 
-            def generate_stream():
-                try:
-                    with default_storage.open(song.file.name, 'rb') as f:
-                        while chunk := f.read(8192):
-                            yield chunk
-                except IOError as e:
-                    logger.error(f"Streaming error: {e}")
-                    raise NotFound("Error al acceder al archivo") from e
+            # Generar URL temporal para streaming usando la función de utilidad
+            stream_url = generate_presigned_url(song.file.name, expiration=3600)
+            
+            if not stream_url:
+                return Response(
+                    {"error": "Error al generar URL de streaming"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
-            response = StreamingHttpResponse(generate_stream(), content_type="audio/mpeg")
-            response['Accept-Ranges'] = 'bytes'
-            response['Content-Length'] = song.file.size
-            return response
+            # Devolver la URL para que el frontend la use
+            return Response({
+                "stream_url": stream_url,
+                "song_title": song.title,
+                "artist": song.artist,
+                "duration": song.duration
+            }, status=status.HTTP_200_OK)
+
         except Exception as e:
             logger.error(f"Streaming error: {e}")
             return Response(
@@ -408,38 +402,58 @@ class StreamSongView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 # Comments Views
 @extend_schema(tags=['Comentarios'])
 class CommentListCreateView(generics.ListCreateAPIView):
     serializer_class = CommentSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = CommentPagination
 
     def get_queryset(self):
         try:
-            return Comment.objects.filter(song_id=self.kwargs['song_id']).select_related('user').order_by("-created_at")
+            # ⚠️ CORRECCIÓN: Usar get() con valor por defecto
+            song_id = self.kwargs.get('song_id')
+            if not song_id:
+                logger.error("No se proporcionó song_id en la URL")
+                return Comment.objects.none()
+                
+            return Comment.objects.filter(song_id=song_id).select_related('user').order_by("-created_at")
+        except KeyError as e:
+            logger.error(f"Error: Parámetro 'song_id' no encontrado en URL: {e}")
+            return Comment.objects.none()
         except Exception as e:
             logger.error(f"Error getting comments: {e}")
             raise ValidationError("Error al obtener comentarios")
 
     def perform_create(self, serializer):
         try:
-            serializer.save(user=self.request.user, song_id=self.kwargs['song_id'])
-            cache.delete(f"song_{self.kwargs['song_id']}_comments")
+            # ⚠️ CORRECCIÓN: Verificar que song_id existe
+            song_id = self.kwargs.get('song_id')
+            if not song_id:
+                raise ValidationError("ID de canción no proporcionado en la URL")
+            
+            # ⚠️ CORRECCIÓN: Verificar que la canción existe
+            from .models import Song
+            song = Song.objects.filter(id=song_id).first()
+            if not song:
+                raise ValidationError("La canción especificada no existe")
+                
+            serializer.save(user=self.request.user, song_id=song_id)
+            cache.delete(f"song_{song_id}_comments")
+            
         except IntegrityError as e:
             logger.error(f"Error creating comment: {e}")
             raise ValidationError("Error de integridad al crear comentario")
+        except ValidationError:
+            raise  # Re-lanzar ValidationError para que DRF lo maneje
         except Exception as e:
             logger.error(f"Error creating comment: {e}")
             raise ValidationError("Error inesperado al crear comentario")
-
-
 @extend_schema(tags=['Comentarios'])
 class SongCommentsDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Comment.objects.all()
     serializer_class = CommentSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def handle_exception(self, exc):
         if isinstance(exc, DatabaseError):
@@ -469,11 +483,10 @@ class SongCommentsDetailView(generics.RetrieveUpdateDestroyAPIView):
             logger.error(f"Database error deleting comment: {e}")
             raise ValidationError("Error al eliminar el comentario")
 
-
 # Artist List View
 @extend_schema(description="Lista de artistas únicos con cache")
 class ArtistListView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get(self, request):
         try:
@@ -496,11 +509,10 @@ class ArtistListView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 # Random Songs View
 @extend_schema(description="Selección aleatoria de canciones")
 class RandomSongsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
@@ -529,5 +541,37 @@ class RandomSongsView(APIView):
                 {"error": "Error al obtener canciones aleatorias"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
- 
- 
+
+# Vista adicional para eliminar canciones con limpieza en R2
+@extend_schema(description="Eliminar una canción y su archivo en R2")
+class SongDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, song_id):
+        try:
+            song = get_object_or_404(Song, id=song_id)
+            
+            # Verificar permisos (solo el propietario o admin puede eliminar)
+            if song.uploaded_by != request.user and not request.user.is_staff:
+                raise PermissionDenied("No tienes permisos para eliminar esta canción")
+            
+            # Eliminar archivo de R2 si existe
+            if song.file:
+                delete_file_from_r2(song.file.name)
+            
+            # Eliminar la canción de la base de datos
+            song.delete()
+            
+            return Response(
+                {"message": "Canción eliminada correctamente"},
+                status=status.HTTP_200_OK
+            )
+            
+        except PermissionDenied:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting song: {e}")
+            return Response(
+                {"error": "Error al eliminar la canción"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
