@@ -69,7 +69,7 @@ INSTALLED_APPS = [
     # Apps locales
     'musica',
     'api2',
-
+     'django_filters',
     # Librerías externas
     'rest_framework',
     'corsheaders',
@@ -113,6 +113,7 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # ================================
 # 📌 BASE DE DATOS — LOCAL + RAILWAY
 # ================================
+# Configuración de base de datos mejorada
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
@@ -120,11 +121,26 @@ DATABASES = {
     }
 }
 
-if os.getenv('DATABASE_URL'):
-    DATABASES['default'] = dj_database_url.config(
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
+# Detectar si estamos en Railway o con DATABASE_URL válida
+DATABASE_URL = os.getenv('DATABASE_URL')
+RAILWAY_ENV = os.getenv('RAILWAY_ENVIRONMENT')  # Railway establece esta variable
+
+if DATABASE_URL and (RAILWAY_ENV or not DEBUG):
+    try:
+        # Verificar que sea una URL de PostgreSQL válida
+        if 'postgresql://' in DATABASE_URL or 'postgres://' in DATABASE_URL:
+            DATABASES['default'] = dj_database_url.parse(
+                DATABASE_URL, 
+                conn_max_age=600,
+                conn_health_checks=True,
+            )
+            print("✅ Configurado PostgreSQL para producción")
+        else:
+            print("⚠️ DATABASE_URL no es de PostgreSQL. Usando SQLite.")
+    except Exception as e:
+        print(f"❌ Error configurando PostgreSQL: {e}")
+        print("🔄 Usando SQLite como fallback")
+
 
 # ================================
 # 📁 ARCHIVOS ESTÁTICOS
@@ -139,15 +155,19 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # ================================
 # ☁️ CLOUDFLARE R2 CONFIG
 # ================================
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+# ================================
+# ☁️ CLOUDFLARE R2 CONFIG - VERSIÓN CORREGIDA
+# ================================
+# USA los nombres CORRECTOS de variables de entorno
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")  # Cambiado de R2_ACCESS_KEY
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")  
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 
 if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 
-    AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID
+    AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID  # Cambiado de R2_ACCESS_KEY
     AWS_SECRET_ACCESS_KEY = R2_SECRET_ACCESS_KEY
     AWS_STORAGE_BUCKET_NAME = R2_BUCKET_NAME
 
@@ -160,9 +180,15 @@ if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     AWS_QUERYSTRING_AUTH = True
     AWS_QUERYSTRING_EXPIRE = 3600
     AWS_S3_SIGNATURE_VERSION = 's3v4'
+    
+    print("✅ R2 Configurado correctamente")
 else:
-    print("⚠️  Advertencia: Variables R2 no configuradas. Usando almacenamiento local.")
-
+    missing = []
+    if not R2_ACCESS_KEY_ID: missing.append('R2_ACCESS_KEY_ID')
+    if not R2_SECRET_ACCESS_KEY: missing.append('R2_SECRET_ACCESS_KEY') 
+    if not R2_ACCOUNT_ID: missing.append('R2_ACCOUNT_ID')
+    if not R2_BUCKET_NAME: missing.append('R2_BUCKET_NAME')
+    print(f"⚠️  R2 no configurado. Variables faltantes: {missing}")
 # ================================
 # 🔐 VALIDACIÓN DE CONTRASEÑAS
 # ================================
@@ -203,6 +229,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ),
+    
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
@@ -210,10 +237,13 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle'
     ],
+    
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/day',
         'user': '1000/day'
     }
+
+    
 }
 
 # ================================

@@ -1,4 +1,4 @@
-# Importaciones optimizadas y corregidas
+# api2/views.py - VERSIÓN CORREGIDA
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from django.db import DatabaseError, IntegrityError, transaction
 from rest_framework.exceptions import ValidationError, PermissionDenied
@@ -7,10 +7,11 @@ from django.db.models import Value, CharField, Q, Count
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from .models import Song, Like, Download, Comment, MusicEvent
-from .r2_utils import upload_file_to_r2, generate_presigned_url, delete_file_from_r2, check_file_exists
-from .r2_client import r2_client, R2_BUCKET_NAME
+from .r2_utils import upload_file_to_r2, generate_presigned_url, delete_file_from_r2
 from .serializers import SongSerializer, CommentSerializer, MusicEventSerializer
 import logging
+from rest_framework.renderers import JSONRenderer
+
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from django.shortcuts import get_object_or_404
@@ -20,9 +21,10 @@ from django.core.cache import cache
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.throttling import UserRateThrottle
-from django.http import StreamingHttpResponse
 import random
-from rest_framework.filters import SearchFilter
+from api2.serializers import SongUploadSerializer
+# ✅ IMPORTAR LOS PARSERS FALTANTES
+from rest_framework.parsers import MultiPartParser, FormParser
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +185,7 @@ class SongLikesView(APIView):
     ]
 )
 class SongListView(generics.ListCreateAPIView):
+    renderer_classes = [JSONRenderer]
     serializer_class = SongSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend]
@@ -199,7 +202,9 @@ class SongListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         try:
-            queryset = Song.objects.annotate(annotated_likes_count=Count('like'))
+            # ⚠️ CORRECCIÓN: Cambiar 'like' por 'likes' (related_name del modelo)
+            queryset = Song.objects.annotate(annotated_likes_count=Count('likes'))
+            
             title = self.request.query_params.get('title')
             artist = self.request.query_params.get('artist')
             genre = self.request.query_params.get('genre')
@@ -235,18 +240,17 @@ class SongListView(generics.ListCreateAPIView):
         Maneja la creación de canciones con subida a R2
         """
         try:
-            song = serializer.save()
+            # Guardar la canción (esto genera automáticamente file_key en el modelo)
+            song = serializer.save(uploaded_by=self.request.user)
             file_obj = self.request.FILES.get('file')
             
             if file_obj:
-                # Generar key única para R2
-                key = f"songs/{song.id}/{file_obj.name}"
+                # ✅ CORRECCIÓN: Usar la file_key que YA fue generada en song.save()
+                success = upload_file_to_r2(file_obj, song.file_key)
                 
-                # Subir archivo a R2
-                if upload_file_to_r2(file_obj, key):
-                    # Actualizar el modelo con la referencia al archivo en R2
-                    song.file.name = key
-                    song.save()
+                if success:
+                    logger.info(f"✅ Archivo subido exitosamente a R2: {song.file_key}")
+                    # El file_key ya está guardado, no necesitas actualizarlo
                 else:
                     # Si falla la subida, eliminar la canción creada
                     song.delete()
@@ -334,7 +338,7 @@ class DownloadSongView(APIView):
     def get(self, request, song_id):
         try:
             song = get_object_or_404(Song, id=song_id)
-            if not song.file:
+            if not song.file_key:
                 return Response({"error": "Archivo no disponible"}, status=status.HTTP_404_NOT_FOUND)
 
             cache_key = f"download_{request.user.id}_{song_id}"
@@ -350,7 +354,7 @@ class DownloadSongView(APIView):
                 cache.set(cache_key, True, timeout=3600)
 
             # Generar URL firmada temporal usando la función de utilidad
-            download_url = generate_presigned_url(song.file.name, expiration=3600)
+            download_url = generate_presigned_url(song.file_key, expiration=3600)
             
             if not download_url:
                 return Response(
@@ -375,11 +379,11 @@ class StreamSongView(APIView):
     def get(self, request, song_id):
         try:
             song = get_object_or_404(Song, id=song_id)
-            if not song.file:
+            if not song.file_key:
                 return Response({"error": "Archivo no disponible"}, status=status.HTTP_404_NOT_FOUND)
 
             # Generar URL temporal para streaming usando la función de utilidad
-            stream_url = generate_presigned_url(song.file.name, expiration=3600)
+            stream_url = generate_presigned_url(song.file_key, expiration=3600)
             
             if not stream_url:
                 return Response(
@@ -411,7 +415,6 @@ class CommentListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         try:
-            # ⚠️ CORRECCIÓN: Usar get() con valor por defecto
             song_id = self.kwargs.get('song_id')
             if not song_id:
                 logger.error("No se proporcionó song_id en la URL")
@@ -427,13 +430,10 @@ class CommentListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         try:
-            # ⚠️ CORRECCIÓN: Verificar que song_id existe
             song_id = self.kwargs.get('song_id')
             if not song_id:
                 raise ValidationError("ID de canción no proporcionado en la URL")
             
-            # ⚠️ CORRECCIÓN: Verificar que la canción existe
-            from .models import Song
             song = Song.objects.filter(id=song_id).first()
             if not song:
                 raise ValidationError("La canción especificada no existe")
@@ -445,10 +445,11 @@ class CommentListCreateView(generics.ListCreateAPIView):
             logger.error(f"Error creating comment: {e}")
             raise ValidationError("Error de integridad al crear comentario")
         except ValidationError:
-            raise  # Re-lanzar ValidationError para que DRF lo maneje
+            raise
         except Exception as e:
             logger.error(f"Error creating comment: {e}")
             raise ValidationError("Error inesperado al crear comentario")
+
 @extend_schema(tags=['Comentarios'])
 class SongCommentsDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Comment.objects.all()
@@ -556,8 +557,8 @@ class SongDeleteView(APIView):
                 raise PermissionDenied("No tienes permisos para eliminar esta canción")
             
             # Eliminar archivo de R2 si existe
-            if song.file:
-                delete_file_from_r2(song.file.name)
+            if song.file_key:
+                delete_file_from_r2(song.file_key)
             
             # Eliminar la canción de la base de datos
             song.delete()
@@ -575,3 +576,54 @@ class SongDeleteView(APIView):
                 {"error": "Error al eliminar la canción"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        
+# Al final de api2/views.py - Agrega estas vistas para manejo de errores
+from django.http import JsonResponse
+
+def custom_404(request, exception=None):
+    return JsonResponse({
+        'error': 'Página no encontrada',
+        'message': 'El recurso solicitado no existe'
+    }, status=404)
+
+def custom_500(request):
+    return JsonResponse({
+        'error': 'Error interno del servidor',
+        'message': 'Ha ocurrido un error inesperado'
+    }, status=500)
+
+
+# api2/views.py - Agrega esto al final del archivo
+
+class SongUploadView(APIView):
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [IsAuthenticated]
+    
+    @extend_schema(
+        description="Subir una nueva canción con archivos",
+        request=SongUploadSerializer
+    )
+    def post(self, request):
+        serializer = SongUploadSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            try:
+                song = serializer.save()
+                song.uploaded_by = request.user
+                song.save()
+                
+                return Response({
+                    "message": "Canción subida exitosamente",
+                    "song_id": song.id,
+                    "title": song.title,
+                    "file_url": generate_presigned_url(song.file_key) if song.file_key else None,
+                    "image_url": generate_presigned_url(song.image_key) if song.image_key else None
+                }, status=status.HTTP_201_CREATED)
+                
+            except Exception as e:
+                return Response(
+                    {"error": str(e)},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
