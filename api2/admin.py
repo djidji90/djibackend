@@ -1,4 +1,4 @@
-# api2/admin.py - VERSIÓN COMPLETAMENTE CORREGIDA
+# api2/admin.py - VERSIÓN CORREGIDA
 from django.contrib import admin
 from django import forms
 from django.contrib import messages
@@ -9,7 +9,7 @@ import uuid
 import os
 
 # =============================================
-# FORMULARIOS PERSONALIZADOS
+# FORMULARIOS PERSONALIZADOS - DEFINIDOS AQUÍ EN admin.py
 # =============================================
 
 class SongAdminForm(forms.ModelForm):
@@ -83,7 +83,6 @@ class SongAdmin(admin.ModelAdmin):
         'file_key', 'image_key', 'likes_count', 'plays_count', 
         'downloads_count', 'audio_url', 'image_url', 'created_at', 'updated_at'
     ]
-    actions = ['upload_missing_audio', 'verify_r2_files']
     
     fieldsets = (
         ('Información Básica', {
@@ -114,7 +113,6 @@ class SongAdmin(admin.ModelAdmin):
         }),
     )
     
-    # ========== MÉTODOS DE VISUALIZACIÓN ==========
     def has_audio(self, obj):
         """Verifica si el archivo de audio existe en R2"""
         if not obj.file_key:
@@ -149,49 +147,6 @@ class SongAdmin(admin.ModelAdmin):
     image_url.allow_tags = True
     image_url.short_description = 'URL Imagen'
     
-    # ========== ACCIONES ADMIN ==========
-    def upload_missing_audio(self, request, queryset):
-        """Acción para subir archivos faltantes a R2"""
-        success_count = 0
-        error_count = 0
-        
-        for song in queryset:
-            if not self.has_audio(song) and song.file_key:
-                self.message_user(
-                    request, 
-                    f"⚠️ {song.title}: No se puede subir automáticamente. Use el formulario de edición.",
-                    messages.WARNING
-                )
-                error_count += 1
-            elif self.has_audio(song):
-                self.message_user(
-                    request,
-                    f"✅ {song.title}: Ya tiene audio en R2",
-                    messages.SUCCESS
-                )
-                success_count += 1
-        
-        self.message_user(
-            request,
-            f"📊 Resumen: {success_count} verificadas, {error_count} necesitan acción manual",
-            messages.INFO
-        )
-    upload_missing_audio.short_description = "📤 Verificar y subir archivos faltantes a R2"
-    
-    def verify_r2_files(self, request, queryset):
-        """Verificar estado de archivos en R2"""
-        for song in queryset:
-            audio_status = "✅" if self.has_audio(song) else "❌"
-            image_status = "✅" if self.has_image(song) else "❌"
-            
-            self.message_user(
-                request,
-                f"🎵 {song.title}: Audio={audio_status}, Imagen={image_status}",
-                messages.INFO
-            )
-    verify_r2_files.short_description = "🔍 Verificar estado de archivos en R2"
-    
-    # ========== MÉTODO PRINCIPAL CORREGIDO ==========
     def save_model(self, request, obj, form, change):
         """
         Maneja la subida de archivos a R2 - VERSIÓN CORREGIDA DEFINITIVA
@@ -200,18 +155,12 @@ class SongAdmin(admin.ModelAdmin):
         audio_file = form.cleaned_data.get('audio_file')
         image_file = form.cleaned_data.get('image_file')
         
-        upload_results = {
-            'audio': {'success': False, 'message': ''},
-            'image': {'success': False, 'message': ''}
-        }
-        
         # ✅ GENERAR file_key ANTES de guardar si hay archivo de audio
         if audio_file and isinstance(audio_file, UploadedFile):
             if not obj.file_key or not change:
                 # Generar nueva key única
                 file_extension = audio_file.name.split('.')[-1].lower() if '.' in audio_file.name else 'mp3'
                 obj.file_key = f"songs/audio/{uuid.uuid4().hex[:16]}.{file_extension}"
-            
             print(f"🎵 Preparando subida de audio: {obj.file_key}")
         
         # ✅ GENERAR image_key ANTES de guardar si hay imagen
@@ -220,7 +169,6 @@ class SongAdmin(admin.ModelAdmin):
                 # Generar nueva key única
                 file_extension = image_file.name.split('.')[-1].lower() if '.' in image_file.name else 'jpg'
                 obj.image_key = f"songs/images/{uuid.uuid4().hex[:16]}.{file_extension}"
-            
             print(f"🖼️ Preparando subida de imagen: {obj.image_key}")
         
         # ✅ GUARDAR OBJETO PRIMERO (con las keys generadas)
@@ -229,114 +177,51 @@ class SongAdmin(admin.ModelAdmin):
         # ✅ SUBIR ARCHIVOS A R2 DESPUÉS de guardar el objeto
         if audio_file and isinstance(audio_file, UploadedFile):
             try:
-                # Leer y subir archivo
                 audio_file.open('rb')
-                file_content = audio_file.read()
+                success = upload_file_to_r2(audio_file, obj.file_key)
                 audio_file.close()
                 
-                # Subir a R2
-                success = upload_file_to_r2(audio_file, obj.file_key)
-                
-                if success:
-                    # Verificar que realmente se subió
-                    if check_file_exists(obj.file_key):
-                        upload_results['audio'] = {
-                            'success': True, 
-                            'message': f'✅ Audio subido: {obj.file_key}'
-                        }
-                        messages.success(request, f"Audio subido exitosamente: {obj.file_key}")
-                    else:
-                        upload_results['audio'] = {
-                            'success': False,
-                            'message': f'❌ Audio no encontrado en R2 después de subir: {obj.file_key}'
-                        }
-                        messages.error(request, f"Error: Audio no aparece en R2: {obj.file_key}")
+                if success and check_file_exists(obj.file_key):
+                    print(f"✅ Audio subido exitosamente: {obj.file_key}")
+                    messages.success(request, f"Audio subido: {obj.file_key}")
                 else:
-                    upload_results['audio'] = {
-                        'success': False,
-                        'message': f'❌ Error en upload_file_to_r2 para: {obj.file_key}'
-                    }
+                    print(f"❌ Falló subida de audio: {obj.file_key}")
                     messages.error(request, f"Error subiendo audio: {obj.file_key}")
-                    
             except Exception as e:
-                upload_results['audio'] = {
-                    'success': False,
-                    'message': f'💥 Excepción subiendo audio: {str(e)}'
-                }
+                print(f"💥 Error en subida de audio: {e}")
                 messages.error(request, f"Excepción subiendo audio: {e}")
         
         if image_file and isinstance(image_file, UploadedFile):
             try:
-                # Leer y subir imagen
                 image_file.open('rb')
-                file_content = image_file.read()
+                success = upload_file_to_r2(image_file, obj.image_key)
                 image_file.close()
                 
-                # Subir a R2
-                success = upload_file_to_r2(image_file, obj.image_key)
-                
-                if success:
-                    # Verificar que realmente se subió
-                    if check_file_exists(obj.image_key):
-                        upload_results['image'] = {
-                            'success': True,
-                            'message': f'✅ Imagen subida: {obj.image_key}'
-                        }
-                        messages.success(request, f"Imagen subida exitosamente: {obj.image_key}")
-                    else:
-                        upload_results['image'] = {
-                            'success': False,
-                            'message': f'❌ Imagen no encontrada en R2 después de subir: {obj.image_key}'
-                        }
-                        messages.error(request, f"Error: Imagen no aparece en R2: {obj.image_key}")
+                if success and check_file_exists(obj.image_key):
+                    print(f"✅ Imagen subida exitosamente: {obj.image_key}")
+                    messages.success(request, f"Imagen subida: {obj.image_key}")
                 else:
-                    upload_results['image'] = {
-                        'success': False,
-                        'message': f'❌ Error en upload_file_to_r2 para: {obj.image_key}'
-                    }
+                    print(f"❌ Falló subida de imagen: {obj.image_key}")
                     messages.error(request, f"Error subiendo imagen: {obj.image_key}")
-                    
             except Exception as e:
-                upload_results['image'] = {
-                    'success': False,
-                    'message': f'💥 Excepción subiendo imagen: {str(e)}'
-                }
+                print(f"💥 Error en subida de imagen: {e}")
                 messages.error(request, f"Excepción subiendo imagen: {e}")
-        
-        # Resumen final en consola
-        print("\n" + "="*50)
-        print("📊 RESUMEN DE SUBIDAS A R2:")
-        print(f"🎵 Audio: {upload_results['audio']['message']}")
-        print(f"🖼️ Imagen: {upload_results['image']['message']}")
-        print("="*50)
-    
+
     def delete_model(self, request, obj):
         """
         Eliminar archivos de R2 al borrar la canción
         """
-        deleted_files = []
-        
-        # Eliminar audio de R2
+        # Eliminar archivos de R2
         if obj.file_key and check_file_exists(obj.file_key):
-            if delete_file_from_r2(obj.file_key):
-                deleted_files.append(f"audio:{obj.file_key}")
-                messages.success(request, f"Audio eliminado de R2: {obj.file_key}")
-            else:
-                messages.error(request, f"Error eliminando audio de R2: {obj.file_key}")
+            delete_file_from_r2(obj.file_key)
+            print(f"🗑️ Audio eliminado de R2: {obj.file_key}")
         
-        # Eliminar imagen de R2
         if obj.image_key and check_file_exists(obj.image_key):
-            if delete_file_from_r2(obj.image_key):
-                deleted_files.append(f"imagen:{obj.image_key}")
-                messages.success(request, f"Imagen eliminada de R2: {obj.image_key}")
-            else:
-                messages.error(request, f"Error eliminando imagen de R2: {obj.image_key}")
+            delete_file_from_r2(obj.image_key)
+            print(f"🗑️ Imagen eliminada de R2: {obj.image_key}")
         
         # Eliminar objeto de la base de datos
         super().delete_model(request, obj)
-        
-        if deleted_files:
-            print(f"🗑️ Archivos eliminados de R2: {', '.join(deleted_files)}")
 
 # =============================================
 # ADMIN PARA EVENTOS MUSICALES (CORREGIDO)
@@ -348,7 +233,7 @@ class MusicEventAdmin(admin.ModelAdmin):
     list_display = ['title', 'event_type', 'event_date', 'location', 'has_image', 'is_active']
     list_filter = ['event_type', 'event_date', 'is_active', 'is_featured']
     search_fields = ['title', 'location', 'venue']
-    readonly_fields = ['image_key', 'image_url', 'created_at']
+    readonly_fields = ['image_key', 'image_url']
     
     def has_image(self, obj):
         return bool(obj.image_key and check_file_exists(obj.image_key))
@@ -389,6 +274,55 @@ class MusicEventAdmin(admin.ModelAdmin):
                 messages.error(request, f"Excepción subiendo imagen: {e}")
 
 # =============================================
+# ADMIN PARA USERPROFILE (CORREGIDO)
+# =============================================
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    form = UserProfileAdminForm
+    list_display = ['user', 'location', 'has_avatar', 'songs_uploaded', 'created_at']
+    search_fields = ['user__username', 'location']
+    readonly_fields = ['avatar_key', 'avatar_url']
+    
+    def has_avatar(self, obj):
+        return bool(obj.avatar_key and check_file_exists(obj.avatar_key))
+    has_avatar.boolean = True
+    has_avatar.short_description = '👤 Avatar en R2'
+    
+    def avatar_url(self, obj):
+        if obj.avatar_key and self.has_avatar(obj):
+            url = generate_presigned_url(obj.avatar_key, expiration=3600)
+            return f'<a href="{url}" target="_blank">🔗 Ver avatar</a>' if url else "No disponible"
+        return "Sin avatar"
+    avatar_url.allow_tags = True
+    avatar_url.short_description = 'URL Avatar'
+    
+    def save_model(self, request, obj, form, change):
+        avatar_upload = form.cleaned_data.get('avatar_upload')
+        
+        # Generar key antes de guardar
+        if avatar_upload and isinstance(avatar_upload, UploadedFile):
+            if not obj.avatar_key or not change:
+                file_extension = avatar_upload.name.split('.')[-1].lower() if '.' in avatar_upload.name else 'jpg'
+                obj.avatar_key = f"avatars/{uuid.uuid4().hex[:16]}.{file_extension}"
+        
+        super().save_model(request, obj, form, change)
+        
+        # Subir avatar después de guardar
+        if avatar_upload and isinstance(avatar_upload, UploadedFile):
+            try:
+                avatar_upload.open('rb')
+                success = upload_file_to_r2(avatar_upload, obj.avatar_key)
+                avatar_upload.close()
+                
+                if success and check_file_exists(obj.avatar_key):
+                    messages.success(request, f"Avatar subido: {obj.avatar_key}")
+                else:
+                    messages.error(request, f"Error subiendo avatar: {obj.avatar_key}")
+            except Exception as e:
+                messages.error(request, f"Excepción subiendo avatar: {e}")
+
+# =============================================
 # MODELOS SIN LÓGICA DE ARCHIVOS R2
 # =============================================
 
@@ -422,6 +356,4 @@ class PlayHistoryAdmin(admin.ModelAdmin):
     list_display = ['user', 'song', 'played_at', 'duration_played']
     list_filter = ['played_at']
     search_fields = ['user__username', 'song__title']
-    readonly_fields = ['played_at']
-
-# UserProfile admin removido temporalmente si causa problemas
+    readonly_fields = ['played_at'] 

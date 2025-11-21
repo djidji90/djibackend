@@ -49,3 +49,285 @@ uritemplate==4.2.0
 urllib3==2.5.0
 wheel==0.45.1
 whitenoise==6.5.0
+
+
+
+
+
+# api2/admin.py - VERSIÓN COMPLETAMENTE CORREGIDA
+from django.contrib import admin
+from django import forms
+from .models import Song, MusicEvent, UserProfile, Like, Download, Comment, PlayHistory, CommentReaction
+from .r2_utils import upload_file_to_r2, delete_file_from_r2, check_file_exists
+from django.core.files.uploadedfile import UploadedFile
+import uuid
+
+class SongAdminForm(forms.ModelForm):
+    audio_file = forms.FileField(
+        required=False,
+        label="Archivo de Audio",
+        help_text="Sube el archivo MP3 que se guardará en R2"
+    )
+    
+    image_file = forms.ImageField(
+        required=False,
+        label="Imagen de Portada", 
+        help_text="Sube la imagen que se guardará en R2"
+    )
+    
+    class Meta:
+        model = Song
+        fields = '__all__'
+
+@admin.register(Song)
+class SongAdmin(admin.ModelAdmin):
+    form = SongAdminForm
+    list_display = ['title', 'artist', 'genre', 'uploaded_by', 'created_at', 'is_public', 'has_audio', 'has_image']
+    list_filter = ['genre', 'created_at', 'is_public']
+    search_fields = ['title', 'artist']
+    readonly_fields = ['file_key', 'image_key', 'likes_count', 'plays_count', 'downloads_count']
+    
+    fieldsets = (
+        ('Información Básica', {
+            'fields': ('title', 'artist', 'genre', 'duration', 'uploaded_by', 'is_public')
+        }),
+        ('Archivos - SUBIR AQUÍ', {
+            'fields': ('audio_file', 'image_file'),
+            'description': 'Sube los archivos reales que se guardarán en R2'
+        }),
+        ('Claves R2 (Automáticas)', {
+            'fields': ('file_key', 'image_key'),
+            'classes': ('collapse',)
+        }),
+        ('Estadísticas', {
+            'fields': ('likes_count', 'plays_count', 'downloads_count')
+        }),
+    )
+    
+    def has_audio(self, obj):
+        return bool(obj.file_key and check_file_exists(obj.file_key))
+    has_audio.boolean = True
+    has_audio.short_description = 'Audio en R2'
+    
+    def has_image(self, obj):
+        return bool(obj.image_key and check_file_exists(obj.image_key))
+    has_image.boolean = True
+    has_image.short_description = 'Imagen en R2'
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Maneja la subida de archivos a R2 - VERSIÓN CORREGIDA
+        """
+        # Obtener archivos del formulario
+        audio_file = form.cleaned_data.get('audio_file')
+        image_file = form.cleaned_data.get('image_file')
+        
+        # ✅ GENERAR KEYS ANTES DE GUARDAR
+        if audio_file and isinstance(audio_file, UploadedFile):
+            if not obj.file_key or not change:  # Generar nueva key para nuevos archivos
+                file_extension = audio_file.name.split('.')[-1].lower() if '.' in audio_file.name else 'mp3'
+                obj.file_key = f"songs/{uuid.uuid4().hex[:16]}.{file_extension}"
+            print(f"🎵 Preparando subida de audio: {obj.file_key}")
+        
+        if image_file and isinstance(image_file, UploadedFile):
+            if not obj.image_key or not change:  # Generar nueva key para nuevas imágenes
+                file_extension = image_file.name.split('.')[-1].lower() if '.' in image_file.name else 'jpg'
+                obj.image_key = f"images/{uuid.uuid4().hex[:16]}.{file_extension}"
+            print(f"🖼️ Preparando subida de imagen: {obj.image_key}")
+        
+        # ✅ GUARDAR OBJETO CON KEYS GENERADAS
+        super().save_model(request, obj, form, change)
+        
+        # ✅ SUBIR ARCHIVOS A R2 DESPUÉS DE GUARDAR
+        upload_errors = []
+        
+        if audio_file and isinstance(audio_file, UploadedFile):
+            try:
+                audio_file.open('rb')
+                success = upload_file_to_r2(audio_file, obj.file_key)
+                audio_file.close()
+                
+                if success and check_file_exists(obj.file_key):
+                    print(f"✅ Audio subido exitosamente: {obj.file_key}")
+                else:
+                    upload_errors.append(f"Error subiendo audio: {obj.file_key}")
+                    print(f"❌ Falló subida de audio: {obj.file_key}")
+            except Exception as e:
+                upload_errors.append(f"Excepción en audio: {str(e)}")
+                print(f"💥 Error en subida de audio: {e}")
+        
+        if image_file and isinstance(image_file, UploadedFile):
+            try:
+                image_file.open('rb')
+                success = upload_file_to_r2(image_file, obj.image_key)
+                image_file.close()
+                
+                if success and check_file_exists(obj.image_key):
+                    print(f"✅ Imagen subida exitosamente: {obj.image_key}")
+                else:
+                    upload_errors.append(f"Error subiendo imagen: {obj.image_key}")
+                    print(f"❌ Falló subida de imagen: {obj.image_key}")
+            except Exception as e:
+                upload_errors.append(f"Excepción en imagen: {str(e)}")
+                print(f"💥 Error en subida de imagen: {e}")
+        
+        # Mostrar resumen final
+        if upload_errors:
+            print(f"⚠️ Errores en subidas: {upload_errors}")
+        else:
+            print("🎉 Todas las subidas completadas exitosamente")
+
+    def delete_model(self, request, obj):
+        """
+        Eliminar archivos de R2 al borrar la canción
+        """
+        # Eliminar archivos de R2
+        if obj.file_key and check_file_exists(obj.file_key):
+            delete_file_from_r2(obj.file_key)
+            print(f"🗑️ Audio eliminado de R2: {obj.file_key}")
+        
+        if obj.image_key and check_file_exists(obj.image_key):
+            delete_file_from_r2(obj.image_key)
+            print(f"🗑️ Imagen eliminada de R2: {obj.image_key}")
+        
+        # Eliminar objeto de la base de datos
+        super().delete_model(request, obj)
+
+@admin.register(MusicEvent)
+class MusicEventAdmin(admin.ModelAdmin):
+    form = MusicEventAdminForm
+    list_display = ['title', 'event_type', 'event_date', 'location', 'is_active', 'is_featured']
+    list_filter = ['event_type', 'event_date', 'is_active', 'is_featured']
+    search_fields = ['title', 'location', 'venue']
+    readonly_fields = ['image_key']
+    
+    fieldsets = (
+        ('Información del Evento', {
+            'fields': ('title', 'description', 'event_type', 'event_date', 'location', 'venue')
+        }),
+        ('Archivos - SUBIR IMAGEN', {
+            'fields': ('event_image',),
+            'description': 'Sube la imagen del evento que se guardará en R2'
+        }),
+        ('Clave R2 (Automática)', {
+            'fields': ('image_key',),
+            'classes': ('collapse',)
+        }),
+        ('Información de Tickets', {
+            'fields': ('ticket_url', 'price')
+        }),
+        ('Estado', {
+            'fields': ('is_active', 'is_featured')
+        }),
+    )
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Maneja la subida de imagen del evento a R2
+        """
+        # Generar key para la imagen si no existe
+        if not obj.image_key:
+            import uuid
+            obj.image_key = f"events/{uuid.uuid4().hex[:12]}.jpg"
+        
+        super().save_model(request, obj, form, change)
+        
+        event_image = form.cleaned_data.get('event_image')
+        if event_image and isinstance(event_image, UploadedFile):
+            print(f"📤 Subiendo imagen de evento a R2: {obj.image_key}")
+            
+            event_image.open('rb')
+            success = upload_file_to_r2(event_image, obj.image_key)
+            event_image.close()
+            
+            if success:
+                print("✅ Imagen de evento subida exitosamente a R2")
+                if check_file_exists(obj.image_key):
+                    print("✅ Verificación: Imagen de evento existe en R2")
+            else:
+                print("❌ Error subiendo imagen de evento a R2")
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    form = UserProfileAdminForm
+    list_display = ['user', 'location', 'songs_uploaded', 'created_at']
+    search_fields = ['user__username', 'location']
+    readonly_fields = ['avatar_key']
+    
+    fieldsets = (
+        ('Información Personal', {
+            'fields': ('user', 'bio', 'location', 'website')
+        }),
+        ('Archivos - SUBIR AVATAR', {
+            'fields': ('avatar_upload',),
+            'description': 'Sube la imagen de avatar que se guardará en R2'
+        }),
+        ('Clave R2 (Automática)', {
+            'fields': ('avatar_key',),
+            'classes': ('collapse',)
+        }),
+        ('Preferencias', {
+            'fields': ('favorite_genres', 'notifications_enabled')
+        }),
+        ('Estadísticas', {
+            'fields': ('songs_uploaded', 'total_listening_time')
+        }),
+    )
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Maneja la subida de avatar a R2
+        """
+        # Generar key para el avatar si no existe
+        if not obj.avatar_key:
+            import uuid
+            obj.avatar_key = f"avatars/{uuid.uuid4().hex[:12]}.jpg"
+        
+        super().save_model(request, obj, form, change)
+        
+        avatar_upload = form.cleaned_data.get('avatar_upload')
+        if avatar_upload and isinstance(avatar_upload, UploadedFile):
+            print(f"📤 Subiendo avatar a R2: {obj.avatar_key}")
+            
+            avatar_upload.open('rb')
+            success = upload_file_to_r2(avatar_upload, obj.avatar_key)
+            avatar_upload.close()
+            
+            if success:
+                print("✅ Avatar subido exitosamente a R2")
+                if check_file_exists(obj.avatar_key):
+                    print("✅ Verificación: Avatar existe en R2")
+            else:
+                print("❌ Error subiendo avatar a R2")
+
+@admin.register(Like)
+class LikeAdmin(admin.ModelAdmin):
+    list_display = ['user', 'song', 'created_at']
+    list_filter = ['created_at']
+    search_fields = ['user__username', 'song__title']
+
+@admin.register(Download)
+class DownloadAdmin(admin.ModelAdmin):
+    list_display = ['user', 'song', 'downloaded_at', 'ip_address']
+    list_filter = ['downloaded_at']
+    search_fields = ['user__username', 'song__title']
+
+@admin.register(Comment)
+class CommentAdmin(admin.ModelAdmin):
+    list_display = ['user', 'song', 'created_at', 'is_edited']
+    list_filter = ['created_at', 'is_edited']
+    search_fields = ['user__username', 'song__title', 'content']
+    readonly_fields = ['created_at', 'updated_at']
+
+@admin.register(CommentReaction)
+class CommentReactionAdmin(admin.ModelAdmin):
+    list_display = ['user', 'comment', 'reaction_type', 'created_at']
+    list_filter = ['reaction_type', 'created_at']
+    search_fields = ['user__username', 'comment__content']
+
+@admin.register(PlayHistory)
+class PlayHistoryAdmin(admin.ModelAdmin):
+    list_display = ['user', 'song', 'played_at', 'duration_played']
+    list_filter = ['played_at']
+    search_fields = ['user__username', 'song__title']
+    readonly_fields = ['played_at']# ... (MusicEventAdmin y UserProfileAdmin con la misma corrección)
