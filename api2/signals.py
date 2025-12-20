@@ -7,12 +7,19 @@ from .models import UserProfile
 User = get_user_model()
 
 @receiver(post_save, sender=User)
-def create_user_profile(sender, instance, created, **kwargs):
-    """Crear UserProfile automáticamente cuando se crea un usuario"""
+def create_or_save_user_profile(sender, instance, created, **kwargs):
+    """
+    Crear UserProfile automáticamente si el usuario es nuevo.
+    Guardar UserProfile si ya existía.
+    Evita errores si no existe.
+    """
     if created:
+        # Usuario nuevo: crear perfil
         UserProfile.objects.create(user=instance)
-
-@receiver(post_save, sender=User)
-def save_user_profile(sender, instance, **kwargs):
-    """Guardar UserProfile cuando se guarda el usuario"""
-    instance.profile.save()
+    else:
+        # Usuario existente: intentar guardar perfil
+        try:
+            instance.profile.save()
+        except UserProfile.DoesNotExist:
+            # Si no existía perfil, crear uno
+            UserProfile.objects.create(user=instance)

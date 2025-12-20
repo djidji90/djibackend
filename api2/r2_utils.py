@@ -208,3 +208,59 @@ def list_files(prefix=None, max_keys=1000):
     except Exception as e:
         logger.error(f"Error listando archivos: {str(e)}")
         return []
+
+
+# En r2_utils.py - AGREGAR estas funciones
+def stream_file_from_r2(key, range_header=None):
+    """
+    Stream eficiente desde R2 con soporte para Range requests
+    """
+    if not r2_client:
+        logger.error("Cliente R2 no disponible para streaming")
+        return None
+
+    if not validate_key(key):
+        logger.error(f"Key inválida para streaming: {key}")
+        return None
+
+    try:
+        params = {'Bucket': R2_BUCKET_NAME, 'Key': key}
+        
+        if range_header:
+            params['Range'] = range_header
+            
+        response = r2_client.get_object(**params)
+        logger.debug(f"Stream iniciado para: {key}, Range: {range_header}")
+        return response
+        
+    except Exception as e:
+        error_msg = str(e)
+        if 'NoSuchKey' in error_msg:
+            logger.error(f"Archivo no encontrado en R2: {key}")
+        elif 'InvalidRange' in error_msg:
+            logger.error(f"Range inválido para {key}: {range_header}")
+        else:
+            logger.error(f"Error R2 streaming {key}: {error_msg}")
+        return None
+
+def get_content_type_from_key(key):
+    """
+    Determina el content type basado en la extensión del archivo
+    """
+    extension = key.split('.')[-1].lower() if '.' in key else ''
+    
+    content_types = {
+        'mp3': 'audio/mpeg',
+        'wav': 'audio/wav',
+        'ogg': 'audio/ogg',
+        'webm': 'audio/webm',
+        'flac': 'audio/flac',
+        'm4a': 'audio/mp4',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif',
+        'webp': 'image/webp'
+    }
+    
+    return content_types.get(extension, 'application/octet-stream') 
