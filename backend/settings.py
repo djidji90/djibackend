@@ -19,9 +19,11 @@ ALLOWED_HOSTS = os.getenv(
 ).split(',')
 
 # ================================
-# 🔐 CSRF + CORS (CORREGIDO)
+# 🔐 CSRF + CORS (VERSIÓN FLEXIBLE Y ROBUSTA)
 # ================================
-CSRF_TRUSTED_ORIGINS = [
+
+# Lista base de orígenes confiables en producción
+PRODUCTION_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
     "https://api.djidjimusic.com",
@@ -29,29 +31,70 @@ CSRF_TRUSTED_ORIGINS = [
     "https://djibackend-production.up.railway.app",
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    "https://djidjimusic.com",
-    "https://www.djidjimusic.com",
-    "https://api.djidjimusic.com",
-    "https://www.api.djidjimusic.com",
-    "https://djibackend-production.up.railway.app",
+# Orígenes de desarrollo
+DEVELOPMENT_ORIGINS = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",  # ⬅️ TU PUERTO ACTUAL
+    "http://localhost:5176",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",  # ⬅️ IP también
+    "http://127.0.0.1:5176",
 ]
 
+# Configuración CORS dinámica
+if DEBUG or os.getenv('RAILWAY_ENVIRONMENT'):
+    # En desarrollo o Railway: permitir todos los orígenes locales
+    CORS_ALLOW_ALL_ORIGINS = True
+    print("🔓 CORS: Permitido para todos los orígenes (desarrollo)")
+    
+    # Para CSRF, usar lista específica
+    CSRF_TRUSTED_ORIGINS = PRODUCTION_ORIGINS + DEVELOPMENT_ORIGINS
+else:
+    # En producción: solo orígenes específicos
+    CORS_ALLOW_ALL_ORIGINS = False
+    CORS_ALLOWED_ORIGINS = PRODUCTION_ORIGINS
+    CSRF_TRUSTED_ORIGINS = PRODUCTION_ORIGINS
+    print("🔐 CORS: Restringido a orígenes de producción")
+
+# Regex para subdominios (opcional)
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.djidjimusic\.com$",
     r"^https://djibackend-production\.up\.railway\.app$",
 ]
 
-if DEBUG:
-    CORS_ALLOWED_ORIGINS.extend([
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5176",
-    ])
-
+# Configuración avanzada CORS
 CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
+CORS_ALLOW_PRIVATE_NETWORK = True  # Para desarrollo local
+
+# Headers permitidos
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'access-control-request-method',
+    'access-control-request-headers',
+]
+
+# Métodos permitidos
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
 
 # ================================
 
@@ -65,11 +108,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-
+    'django_extensions',
     # Apps locales
     'musica',
     'api2',
-     'django_filters',
+    'django_filters',
     # Librerías externas
     'rest_framework',
     'corsheaders',
@@ -78,18 +121,45 @@ INSTALLED_APPS = [
     'storages',
 ]
 
-# Middleware
+# Middleware - IMPORTANTE: corsheaders DEBE IR PRIMERO
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # ⬅️ PRIMER LUGAR
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# Middleware de debugging CORS (opcional, solo desarrollo)
+if DEBUG:
+    class CORSDebugMiddleware:
+        def __init__(self, get_response):
+            self.get_response = get_response
+
+        def __call__(self, request):
+            response = self.get_response(request)
+            
+            # Log de headers CORS
+            origin = request.headers.get('Origin')
+            if origin:
+                print(f"🌐 CORS Request: {request.method} {request.path}")
+                print(f"   Origin: {origin}")
+                print(f"   Headers: {dict(request.headers)}")
+                
+                # Asegurar headers CORS en respuesta
+                if origin in DEVELOPMENT_ORIGINS or DEBUG:
+                    response['Access-Control-Allow-Origin'] = origin
+                    response['Access-Control-Allow-Credentials'] = 'true'
+            
+            return response
+    
+    # Insertar después de CorsMiddleware
+    middleware_index = MIDDLEWARE.index('corsheaders.middleware.CorsMiddleware')
+    MIDDLEWARE.insert(middleware_index + 1, 'backend.settings.CORSDebugMiddleware')
 
 ROOT_URLCONF = 'backend.urls'
 
@@ -119,18 +189,17 @@ DATABASES = {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
-            'timeout': 20,  # Aumentar timeout
+            'timeout': 20,
         }
     }
 }
 
 # Detectar si estamos en Railway o con DATABASE_URL válida
 DATABASE_URL = os.getenv('DATABASE_URL')
-RAILWAY_ENV = os.getenv('RAILWAY_ENVIRONMENT')  # Railway establece esta variable
+RAILWAY_ENV = os.getenv('RAILWAY_ENVIRONMENT')
 
 if DATABASE_URL and (RAILWAY_ENV or not DEBUG):
     try:
-        # Verificar que sea una URL de PostgreSQL válida
         if 'postgresql://' in DATABASE_URL or 'postgres://' in DATABASE_URL:
             DATABASES['default'] = dj_database_url.parse(
                 DATABASE_URL, 
@@ -143,7 +212,6 @@ if DATABASE_URL and (RAILWAY_ENV or not DEBUG):
     except Exception as e:
         print(f"❌ Error configurando PostgreSQL: {e}")
         print("🔄 Usando SQLite como fallback")
-
 
 # ================================
 # 📁 ARCHIVOS ESTÁTICOS
@@ -158,11 +226,7 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # ================================
 # ☁️ CLOUDFLARE R2 CONFIG
 # ================================
-# ================================
-# ☁️ CLOUDFLARE R2 CONFIG - VERSIÓN CORREGIDA
-# ================================
-# USA los nombres CORRECTOS de variables de entorno
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")  # Cambiado de R2_ACCESS_KEY
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")  
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
@@ -170,7 +234,7 @@ R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 
-    AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID  # Cambiado de R2_ACCESS_KEY
+    AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID
     AWS_SECRET_ACCESS_KEY = R2_SECRET_ACCESS_KEY
     AWS_STORAGE_BUCKET_NAME = R2_BUCKET_NAME
 
@@ -183,8 +247,6 @@ if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     AWS_QUERYSTRING_AUTH = True
     AWS_QUERYSTRING_EXPIRE = 3600
     AWS_S3_SIGNATURE_VERSION = 's3v4'
-    
-    print("✅ R2 Configurado correctamente")
 else:
     missing = []
     if not R2_ACCESS_KEY_ID: missing.append('R2_ACCESS_KEY_ID')
@@ -192,6 +254,7 @@ else:
     if not R2_ACCOUNT_ID: missing.append('R2_ACCOUNT_ID')
     if not R2_BUCKET_NAME: missing.append('R2_BUCKET_NAME')
     print(f"⚠️  R2 no configurado. Variables faltantes: {missing}")
+
 # ================================
 # 🔐 VALIDACIÓN DE CONTRASEÑAS
 # ================================
@@ -232,7 +295,6 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ),
-    
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
@@ -240,13 +302,10 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle'
     ],
-    
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/day',
         'user': '1000/day'
     }
-
-    
 }
 
 # ================================
@@ -260,6 +319,8 @@ SIMPLE_JWT = {
     'UPDATE_LAST_LOGIN': True,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': os.getenv('JWT_SECRET_KEY', SECRET_KEY),
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
 }
 
 # ================================
@@ -270,17 +331,18 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API para plataforma de música Dji Music',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
 }
 
 # ================================
-# LOGGING
+# LOGGING MEJORADO
 # ================================
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
     'formatters': {
         'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'format': '{levelname} {asctime} {module} {message}',
             'style': '{',
         },
         'simple': {
@@ -289,30 +351,49 @@ LOGGING = {
         },
     },
     'handlers': {
+        'console': {
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
         'file': {
-            'level': 'ERROR',
+            'level': 'WARNING',
             'class': 'logging.FileHandler',
             'filename': BASE_DIR / 'django_errors.log',
             'formatter': 'verbose',
         },
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple',
-        },
     },
     'loggers': {
         'django': {
-            'handlers': ['file', 'console'],
+            'handlers': ['console', 'file'],
             'level': 'INFO',
             'propagate': True,
         },
-        'api2': {
-            'handlers': ['file', 'console'],
-            'level': 'INFO',
+        'django.request': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG' if DEBUG else 'WARNING',
+            'propagate': False,
+        },
+        'corsheaders': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
             'propagate': False,
         },
     },
 }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ================================
+# INFO DE CONFIGURACIÓN AL INICIAR
+# ================================
+print("\n" + "="*50)
+print("🚀 DJI Music Backend Configuration")
+print("="*50)
+print(f"🔧 DEBUG: {DEBUG}")
+print(f"🌍 ALLOWED_HOSTS: {ALLOWED_HOSTS[:3]}...")
+print(f"🔄 CORS_ALLOW_ALL_ORIGINS: {CORS_ALLOW_ALL_ORIGINS if 'CORS_ALLOW_ALL_ORIGINS' in locals() else 'N/A'}")
+print(f"🔗 CORS_ALLOWED_ORIGINS: {CORS_ALLOWED_ORIGINS[:3] if 'CORS_ALLOWED_ORIGINS' in locals() else 'N/A'}...")
+print(f"📁 DATABASE: {DATABASES['default']['ENGINE']}")
+print(f"☁️  R2 Configurado: {all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME])}")
+print("="*50 + "\n")
