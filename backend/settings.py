@@ -21,6 +21,9 @@ ALLOWED_HOSTS = os.getenv(
 # ================================
 # 🔐 CSRF + CORS (CORREGIDO)
 # ================================
+# ================================
+# 🔐 CSRF + CORS CONFIGURACIÓN
+# ================================
 CSRF_TRUSTED_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
@@ -42,16 +45,14 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://djibackend-production\.up\.railway\.app$",
 ]
 
-if DEBUG:
-    CORS_ALLOWED_ORIGINS.extend([
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5176",
-    ])
+# Permitir localhost mientras desarrollas
+if DEBUG or os.getenv("RAILWAY_ENVIRONMENT"):
+    localhost_ports = ["8000", "5173", "5174", "5176"]
+    for port in localhost_ports:
+        CORS_ALLOWED_ORIGINS.append(f"http://localhost:{port}")
 
 CORS_ALLOW_CREDENTIALS = True
+
 
 # ================================
 
@@ -80,10 +81,10 @@ INSTALLED_APPS = [
 
 # Middleware
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
