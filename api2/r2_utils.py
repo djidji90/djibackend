@@ -1,266 +1,476 @@
-# api2/r2_utils.py - Versión CORREGIDA y mejorada
-import os
-import mimetypes
-from django.core.files.uploadedfile import InMemoryUploadedFile, TemporaryUploadedFile
-from .r2_client import r2_client, R2_BUCKET_NAME
-import logging
+// src/components/music/MusicPlayer.jsx
+import React, { useState, useEffect } from 'react';
+import {
+  Box,
+  Paper,
+  Slider,
+  IconButton,
+  Typography,
+  LinearProgress,
+  Tooltip,
+  Chip,
+  Menu,
+  MenuItem,
+  Dialog,
+  DialogContent,
+  DialogActions,
+  Button
+} from '@mui/material';
+import {
+  PlayArrow,
+  Pause,
+  SkipPrevious,
+  SkipNext,
+  VolumeUp,
+  VolumeOff,
+  VolumeDown,
+  Favorite,
+  FavoriteBorder,
+  PlaylistPlay,
+  Repeat,
+  RepeatOne,
+  Shuffle,
+  Download,
+  MoreVert,
+  Close
+} from '@mui/icons-material';
+import { useAudioPlayer } from '../../hooks/useAudioPlayer';
+import ApiIntegrator from '../../services/ApiIntegrator';
 
-logger = logging.getLogger(__name__)
-
-def validate_key(key):
-    """Valida que la key no esté vacía"""
-    if not key or not isinstance(key, str) or key.strip() == "":
-        logger.warning("Key vacía o inválida proporcionada")
-        return False
-    return True
-
-def upload_file_to_r2(file_obj, key, content_type=None):
-    """
-    Sube un archivo a R2 Cloudflare Storage.
-    Acepta:
-        - file_obj: ruta al archivo (str) o archivo abierto (file-like)
-        - key: ruta destino en R2
-        - content_type: opcional, MIME type
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible")
-        return False
-
-    if not validate_key(key):
-        logger.error(f"Key inválida: {key}")
-        return False
-
-    try:
-        # Determinar content_type si no se proporciona
-        if not content_type:
-            if hasattr(file_obj, 'content_type') and file_obj.content_type:
-                content_type = file_obj.content_type
-            else:
-                if isinstance(file_obj, str):
-                    content_type, _ = mimetypes.guess_type(file_obj)
-                if not content_type:
-                    content_type = 'application/octet-stream'
-
-        extra_args = {'ACL': 'private', 'ContentType': content_type}
-
-        # Si file_obj es una ruta de archivo
-        if isinstance(file_obj, str):
-            with open(file_obj, 'rb') as f:
-                r2_client.upload_fileobj(Fileobj=f, Bucket=R2_BUCKET_NAME, Key=key, ExtraArgs=extra_args)
-
-        # Si file_obj es un objeto tipo file
-        elif hasattr(file_obj, 'read'):
-            if hasattr(file_obj, 'seek'):
-                try:
-                    file_obj.seek(0)
-                except ValueError:
-                    # Archivo ya cerrado, intentar reabrir si tiene temporary_file_path
-                    if hasattr(file_obj, 'temporary_file_path'):
-                        with open(file_obj.temporary_file_path(), 'rb') as f:
-                            r2_client.upload_fileobj(Fileobj=f, Bucket=R2_BUCKET_NAME, Key=key, ExtraArgs=extra_args)
-                        return True
-                    else:
-                        logger.error(f"El archivo proporcionado está cerrado: {key}")
-                        return False
-
-            r2_client.upload_fileobj(Fileobj=file_obj, Bucket=R2_BUCKET_NAME, Key=key, ExtraArgs=extra_args)
-
-        else:
-            logger.error(f"Tipo de archivo no soportado: {type(file_obj)}")
-            return False
-
-        logger.info(f"Archivo subido exitosamente a R2: {key}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Error subiendo archivo '{key}' a R2: {str(e)}")
-        return False
-
-def generate_presigned_url(key, expiration=3600):
-    """
-    Genera una URL temporal para acceder a un archivo privado en R2
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible")
-        return None
-
-    if not validate_key(key):
-        logger.error(f"Key inválida para URL presigned: {key}")
-        return None
-
-    try:
-        url = r2_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': R2_BUCKET_NAME, 'Key': key},
-            ExpiresIn=expiration
-        )
-        logger.info(f"URL presigned generada para: {key}")
-        return url
-    except Exception as e:
-        logger.error(f"Error generando URL presigned para '{key}': {str(e)}")
-        return None
-
-def delete_file_from_r2(key):
-    """
-    Elimina un archivo de R2 Cloudflare Storage
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible")
-        return False
-
-    if not validate_key(key):
-        logger.error(f"Key inválida para eliminación: {key}")
-        return False
-
-    try:
-        r2_client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
-        logger.info(f"Archivo eliminado de R2: {key}")
-        return True
-    except Exception as e:
-        logger.error(f"Error eliminando archivo '{key}' de R2: {str(e)}")
-        return False
-
-def check_file_exists(key):
-    """
-    Verifica si un archivo existe en R2
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible")
-        return False
-
-    if not validate_key(key):
-        return False
-
-    try:
-        r2_client.head_object(Bucket=R2_BUCKET_NAME, Key=key)
-        logger.debug(f"Archivo existe en R2: {key}")
-        return True
-    except Exception as e:
-        logger.debug(f"Archivo no existe en R2: {key} - {str(e)}")
-        return False
-
-def get_file_size(key):
-    """
-    Obtiene el tamaño de un archivo en R2 (en bytes)
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible")
-        return None
-
-    if not validate_key(key):
-        return None
-
-    try:
-        response = r2_client.head_object(Bucket=R2_BUCKET_NAME, Key=key)
-        size = response['ContentLength']
-        logger.debug(f"Tamaño del archivo '{key}': {size} bytes")
-        return size
-    except Exception as e:
-        logger.error(f"Error obteniendo tamaño de '{key}': {str(e)}")
-        return None
-
-def get_file_info(key):
-    """
-    Obtiene información completa de un archivo en R2
-    """
-    if not r2_client or not validate_key(key):
-        return None
-
-    try:
-        response = r2_client.head_object(Bucket=R2_BUCKET_NAME, Key=key)
-        return {
-            'size': response['ContentLength'],
-            'content_type': response.get('ContentType', 'unknown'),
-            'last_modified': response.get('LastModified'),
-            'etag': response.get('ETag')
-        }
-    except Exception as e:
-        logger.error(f"Error obteniendo info de '{key}': {str(e)}")
-        return None
-
-def list_files(prefix=None, max_keys=1000):
-    """
-    Lista archivos en el bucket R2 (útil para debugging)
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible")
-        return []
-
-    try:
-        params = {'Bucket': R2_BUCKET_NAME, 'MaxKeys': max_keys}
-        if prefix:
-            params['Prefix'] = prefix
-
-        response = r2_client.list_objects_v2(**params)
-        files = []
-
-        if 'Contents' in response:
-            for obj in response['Contents']:
-                files.append({
-                    'key': obj['Key'],
-                    'size': obj['Size'],
-                    'last_modified': obj['LastModified']
-                })
-
-        logger.info(f"Listados {len(files)} archivos con prefijo: {prefix}")
-        return files
-
-    except Exception as e:
-        logger.error(f"Error listando archivos: {str(e)}")
-        return []
-
-
-# En r2_utils.py - AGREGAR estas funciones
-def stream_file_from_r2(key, range_header=None):
-    """
-    Stream eficiente desde R2 con soporte para Range requests
-    """
-    if not r2_client:
-        logger.error("Cliente R2 no disponible para streaming")
-        return None
-
-    if not validate_key(key):
-        logger.error(f"Key inválida para streaming: {key}")
-        return None
-
-    try:
-        params = {'Bucket': R2_BUCKET_NAME, 'Key': key}
-        
-        if range_header:
-            params['Range'] = range_header
-            
-        response = r2_client.get_object(**params)
-        logger.debug(f"Stream iniciado para: {key}, Range: {range_header}")
-        return response
-        
-    except Exception as e:
-        error_msg = str(e)
-        if 'NoSuchKey' in error_msg:
-            logger.error(f"Archivo no encontrado en R2: {key}")
-        elif 'InvalidRange' in error_msg:
-            logger.error(f"Range inválido para {key}: {range_header}")
-        else:
-            logger.error(f"Error R2 streaming {key}: {error_msg}")
-        return None
-
-def get_content_type_from_key(key):
-    """
-    Determina el content type basado en la extensión del archivo
-    """
-    extension = key.split('.')[-1].lower() if '.' in key else ''
+const MusicPlayer = () => {
+  const {
+    // Estado
+    currentSong,
+    isPlaying,
+    volume,
+    progress,
+    duration,
+    isMuted,
+    loop,
+    shuffle,
+    playlist,
+    currentIndex,
+    error,
+    isBuffering,
     
-    content_types = {
-        'mp3': 'audio/mpeg',
-        'wav': 'audio/wav',
-        'ogg': 'audio/ogg',
-        'webm': 'audio/webm',
-        'flac': 'audio/flac',
-        'm4a': 'audio/mp4',
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'gif': 'image/gif',
-        'webp': 'image/webp'
+    // Métodos
+    playSong,
+    togglePlay,
+    seek,
+    setVolume,
+    toggleMute,
+    toggleLoop,
+    toggleShuffle,
+    playNext,
+    playPrev,
+    createPlaylist,
+    stop,
+    formatTime,
+    clearError
+  } = useAudioPlayer();
+
+  const [volumeOpen, setVolumeOpen] = useState(false);
+  const [moreMenuAnchor, setMoreMenuAnchor] = useState(null);
+  const [liked, setLiked] = useState(false);
+  const [showPlaylist, setShowPlaylist] = useState(false);
+  const [loadingLike, setLoadingLike] = useState(false);
+
+  // Verificar si la canción actual tiene like
+  useEffect(() => {
+    if (currentSong?.id) {
+      // Aquí podrías hacer una llamada para verificar si el usuario actual dio like
+      setLiked(false); // Temporal
     }
-    
-    return content_types.get(extension, 'application/octet-stream') 
+  }, [currentSong]);
+
+  // Manejar like
+  const handleLike = async () => {
+    if (!currentSong?.id || loadingLike) return;
+
+    setLoadingLike(true);
+    try {
+      if (liked) {
+        // Aquí necesitarías un endpoint para quitar like
+        // await ApiIntegrator.songs.unlike(currentSong.id);
+      } else {
+        await ApiIntegrator.songs.like(currentSong.id);
+      }
+      setLiked(!liked);
+    } catch (error) {
+      console.error('Error al dar like:', error);
+    } finally {
+      setLoadingLike(false);
+    }
+  };
+
+  // Manejar descarga
+  const handleDownload = async () => {
+    if (!currentSong?.id) return;
+
+    try {
+      const response = await ApiIntegrator.songs.download(currentSong.id);
+      if (response.data?.url) {
+        window.open(response.data.url, '_blank');
+      }
+    } catch (error) {
+      console.error('Error al descargar:', error);
+    }
+  };
+
+  // Crear playlist desde canciones de la API
+  const loadPlaylist = async () => {
+    try {
+      const response = await ApiIntegrator.songs.getAll();
+      const songs = response.data.results || response.data;
+      
+      if (songs.length > 0) {
+        createPlaylist(songs, 0);
+      }
+    } catch (error) {
+      console.error('Error cargando playlist:', error);
+    }
+  };
+
+  // Inicializar con playlist
+  useEffect(() => {
+    if (playlist.length === 0) {
+      loadPlaylist();
+    }
+  }, []);
+
+  // Mostrar errores
+  useEffect(() => {
+    if (error) {
+      console.error('Player error:', error);
+      // Podrías mostrar un toast aquí
+    }
+  }, [error]);
+
+  // Cerrar menú more
+  const handleMoreMenuClose = () => {
+    setMoreMenuAnchor(null);
+  };
+
+  if (!currentSong && playlist.length === 0) {
+    return (
+      <Paper 
+        elevation={3} 
+        sx={{ 
+          p: 2, 
+          borderRadius: 2,
+          bgcolor: 'background.paper',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}
+      >
+        <Typography color="text.secondary">
+          Selecciona una canción para reproducir
+        </Typography>
+      </Paper>
+    );
+  }
+
+  return (
+    <>
+      {/* Player principal */}
+      <Paper 
+        elevation={3} 
+        sx={{ 
+          p: 2, 
+          borderRadius: 2,
+          bgcolor: 'background.paper',
+          position: 'relative',
+          overflow: 'hidden'
+        }}
+      >
+        {/* Loading indicator */}
+        {isBuffering && (
+          <LinearProgress 
+            sx={{ 
+              position: 'absolute', 
+              top: 0, 
+              left: 0, 
+              right: 0 
+            }} 
+          />
+        )}
+
+        {/* Contenido del player */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {/* Cover y info */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
+            {/* Cover */}
+            <Box
+              sx={{
+                width: 60,
+                height: 60,
+                borderRadius: 1,
+                bgcolor: 'grey.300',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                flexShrink: 0
+              }}
+            >
+              {currentSong?.image ? (
+                <img 
+                  src={currentSong.image} 
+                  alt={currentSong.title}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+              ) : (
+                <Typography variant="h4" color="text.secondary">
+                  🎵
+                </Typography>
+              )}
+            </Box>
+
+            {/* Info */}
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography variant="subtitle1" noWrap fontWeight="medium">
+                {currentSong?.title || 'Sin título'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" noWrap>
+                {currentSong?.artist || 'Artista desconocido'}
+              </Typography>
+              {currentSong?.genre && (
+                <Chip 
+                  label={currentSong.genre} 
+                  size="small" 
+                  sx={{ mt: 0.5, height: 20 }}
+                />
+              )}
+            </Box>
+          </Box>
+
+          {/* Controles principales */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {/* Shuffle */}
+            <Tooltip title="Aleatorio">
+              <IconButton 
+                size="small" 
+                onClick={toggleShuffle}
+                color={shuffle ? "primary" : "default"}
+              >
+                <Shuffle fontSize="small" />
+              </IconButton>
+            </Tooltip>
+
+            {/* Anterior */}
+            <Tooltip title="Anterior">
+              <IconButton 
+                size="small" 
+                onClick={playPrev}
+                disabled={playlist.length <= 1}
+              >
+                <SkipPrevious />
+              </IconButton>
+            </Tooltip>
+
+            {/* Play/Pause */}
+            <IconButton 
+              onClick={togglePlay}
+              sx={{ 
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                '&:hover': { bgcolor: 'primary.dark' }
+              }}
+              disabled={isBuffering}
+            >
+              {isPlaying ? <Pause /> : <PlayArrow />}
+            </IconButton>
+
+            {/* Siguiente */}
+            <Tooltip title="Siguiente">
+              <IconButton 
+                size="small" 
+                onClick={playNext}
+                disabled={playlist.length <= 1}
+              >
+                <SkipNext />
+              </IconButton>
+            </Tooltip>
+
+            {/* Loop */}
+            <Tooltip title={loop ? "Repetir una" : "Repetir todas"}>
+              <IconButton 
+                size="small" 
+                onClick={toggleLoop}
+                color={loop ? "primary" : "default"}
+              >
+                {loop ? <RepeatOne fontSize="small" /> : <Repeat fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+          </Box>
+
+          {/* Controles secundarios */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {/* Like */}
+            <Tooltip title={liked ? "Quitar like" : "Dar like"}>
+              <IconButton 
+                size="small" 
+                onClick={handleLike}
+                disabled={loadingLike}
+                color={liked ? "error" : "default"}
+              >
+                {liked ? <Favorite /> : <FavoriteBorder />}
+              </IconButton>
+            </Tooltip>
+
+            {/* Volume */}
+            <Box 
+              sx={{ 
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center'
+              }}
+              onMouseEnter={() => setVolumeOpen(true)}
+              onMouseLeave={() => setVolumeOpen(false)}
+            >
+              <Tooltip title={isMuted ? "Activar sonido" : "Silenciar"}>
+                <IconButton 
+                  size="small" 
+                  onClick={toggleMute}
+                >
+                  {isMuted ? <VolumeOff /> : volume > 0.5 ? <VolumeUp /> : <VolumeDown />}
+                </IconButton>
+              </Tooltip>
+
+              {/* Slider de volumen */}
+              {volumeOpen && (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    bgcolor: 'background.paper',
+                    p: 1,
+                    borderRadius: 1,
+                    boxShadow: 3,
+                    zIndex: 1
+                  }}
+                >
+                  <Slider
+                    orientation="vertical"
+                    value={isMuted ? 0 : volume * 100}
+                    onChange={(e, value) => setVolume(value / 100)}
+                    min={0}
+                    max={100}
+                    sx={{ height: 100 }}
+                  />
+                </Box>
+              )}
+            </Box>
+
+            {/* Más opciones */}
+            <Tooltip title="Más opciones">
+              <IconButton 
+                size="small" 
+                onClick={(e) => setMoreMenuAnchor(e.currentTarget)}
+              >
+                <MoreVert />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+
+        {/* Barra de progreso */}
+        <Box sx={{ mt: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+            <Typography variant="caption" color="text.secondary">
+              {formatTime((progress / 100) * duration)}
+            </Typography>
+            <Slider
+              value={progress}
+              onChange={(e, value) => seek(value)}
+              sx={{ flex: 1 }}
+            />
+            <Typography variant="caption" color="text.secondary">
+              {formatTime(duration)}
+            </Typography>
+          </Box>
+        </Box>
+      </Paper>
+
+      {/* Menú de más opciones */}
+      <Menu
+        anchorEl={moreMenuAnchor}
+        open={Boolean(moreMenuAnchor)}
+        onClose={handleMoreMenuClose}
+      >
+        <MenuItem onClick={() => {
+          handleDownload();
+          handleMoreMenuClose();
+        }}>
+          <Download fontSize="small" sx={{ mr: 1 }} />
+          Descargar
+        </MenuItem>
+        <MenuItem onClick={() => {
+          setShowPlaylist(true);
+          handleMoreMenuClose();
+        }}>
+          <PlaylistPlay fontSize="small" sx={{ mr: 1 }} />
+          Ver playlist ({playlist.length})
+        </MenuItem>
+        <MenuItem onClick={() => {
+          stop();
+          handleMoreMenuClose();
+        }}>
+          <Close fontSize="small" sx={{ mr: 1 }} />
+          Detener
+        </MenuItem>
+      </Menu>
+
+      {/* Dialog de playlist */}
+      <Dialog 
+        open={showPlaylist} 
+        onClose={() => setShowPlaylist(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogContent>
+          <Typography variant="h6" gutterBottom>
+            Playlist ({playlist.length})
+          </Typography>
+          
+          <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+            {playlist.map((song, index) => (
+              <Box
+                key={song.id}
+                sx={{
+                  p: 1.5,
+                  borderRadius: 1,
+                  bgcolor: index === currentIndex ? 'action.selected' : 'transparent',
+                  cursor: 'pointer',
+                  '&:hover': { bgcolor: 'action.hover' },
+                  mb: 0.5
+                }}
+                onClick={() => {
+                  createPlaylist(playlist, index);
+                  setShowPlaylist(false);
+                }}
+              >
+                <Typography variant="body1">
+                  {index + 1}. {song.title}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {song.artist}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowPlaylist(false)}>
+            Cerrar
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
+  );
+};
+
+export default MusicPlayer;

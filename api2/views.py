@@ -565,90 +565,103 @@ class DownloadSongView(APIView):
 
 
 
+
+
 class StreamSongView(APIView):
     """
-    Streaming seguro con logs completos y fail-safe
+    Streaming de canciones con soporte completo de HTTP Range (seek/reanudación)
     """
     permission_classes = [IsAuthenticated]
     CHUNK_SIZE = 64 * 1024  # 64 KB
 
     def _parse_range_header(self, range_header, file_size):
+        """
+        Parser reutilizable para Range headers
+        """
+        if not range_header:
+            return None
+
         try:
-            if not range_header:
-                return None
-
             unit, range_spec = range_header.split('=', 1)
-            if unit.strip().lower() != 'bytes':
-                return HttpResponse(status=400)
-
-            parts = range_spec.split('-', 1)
-            start = int(parts[0]) if parts[0] else None
-            end = int(parts[1]) if len(parts) > 1 and parts[1] != '' else None
-
-            # Suffix-byte-range-spec
-            if start is None and end is not None:
-                if end <= 0:
-                    return HttpResponse(status=416)
-                start = max(0, file_size - end)
-                end = file_size - 1
-            else:
-                if start is None:
-                    start = 0
-                if end is None:
-                    end = file_size - 1
-
-            if start < 0 or end < start or start >= file_size:
-                return HttpResponse(status=416)
-
-            if end >= file_size:
-                end = file_size - 1
-
-            return (start, end)
-        except Exception as e:
-            logger.error("Error parsing Range header: %s | header=%s", e, range_header)
+        except ValueError:
             return HttpResponse(status=400)
 
+        if unit.strip().lower() != 'bytes':
+            return HttpResponse(status=400)
+
+        parts = range_spec.split('-', 1)
+        try:
+            start = int(parts[0]) if parts[0] else None
+            end = int(parts[1]) if len(parts) > 1 and parts[1] != '' else None
+        except ValueError:
+            return HttpResponse(status=400)
+
+        # Soporte para suffix-byte-range-spec
+        if start is None and end is not None:
+            if end <= 0:
+                return HttpResponse(status=416)
+            start = max(0, file_size - end)
+            end = file_size - 1
+        else:
+            if start is None:
+                start = 0
+            if end is None:
+                end = file_size - 1
+
+        if start < 0 or end < start or start >= file_size:
+            return HttpResponse(status=416)
+
+        if end >= file_size:
+            end = file_size - 1
+
+        return (start, end)
+
     @extend_schema(
-        description="Streaming seguro con logs detallados",
+        description="""
+        Reproducir una canción en streaming con soporte completo para seek y reanudación.
+        """,
         responses={
-            200: OpenApiResponse(description="Stream completo"),
-            206: OpenApiResponse(description="Stream parcial"),
-            404: OpenApiResponse(description="Archivo no encontrado"),
-            416: OpenApiResponse(description="Range no válido"),
-            500: OpenApiResponse(description="Error interno")
+            200: OpenApiResponse(description="Stream de audio iniciado"),
+            206: OpenApiResponse(description="Stream parcial (Range request)"),
+            404: OpenApiResponse(description="Canción o archivo no encontrado"),
+            416: OpenApiResponse(description="Range no satisfacible"),
+            500: OpenApiResponse(description="Error interno del servidor")
         }
     )
     def get(self, request, song_id):
         try:
-            logger.info("STREAM START | user=%s song_id=%s", getattr(request.user, 'id', None), song_id)
-
-            # 1️⃣ Obtener canción
+            # 1️⃣ Obtener canción y validar
             song = get_object_or_404(Song, id=song_id)
             if not song.file_key:
-                logger.warning("Archivo no disponible | song_id=%s", song_id)
-                return Response({"error": "Archivo no disponible"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "Archivo no disponible para streaming"}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
-            # 2️⃣ Verificar existencia en R2
-            exists = check_file_exists(song.file_key)
-            if not exists:
-                logger.error("Archivo no encontrado en R2 | key=%s", song.file_key)
-                return Response({"error": "Archivo no encontrado en R2"}, status=status.HTTP_404_NOT_FOUND)
+            # 2️⃣ Verificar que el archivo existe
+            if not check_file_exists(song.file_key):
+                logger.error("File not found in R2 for streaming: %s", song.file_key)
+                return Response(
+                    {"error": "El archivo de audio no está disponible en este momento"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
             # 3️⃣ Obtener metadata
             file_info = get_file_info(song.file_key)
             if not file_info:
-                logger.error("No se obtuvo file_info | key=%s", song.file_key)
-                return Response({"error": "No se pudo obtener información del archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return Response(
+                    {"error": "Error al obtener información del archivo"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
             file_size = int(file_info.get('size', 0))
-            content_type = file_info.get('content_type', 'audio/mpeg')
+            content_type = file_info.get('content_type') or get_content_type_from_key(song.file_key)
 
-            # 4️⃣ Parse Range
+            # 4️⃣ Parse Range header
             range_header = request.META.get('HTTP_RANGE', '').strip()
             parsed = self._parse_range_header(range_header, file_size) if range_header else None
             if isinstance(parsed, HttpResponse):
-                logger.warning("Range header inválido | header=%s", range_header)
-                return parsed
+                return parsed  # error 400/416
 
             if parsed:
                 start, end = parsed
@@ -656,26 +669,31 @@ class StreamSongView(APIView):
                 content_length = (end - start) + 1
                 content_range = f"bytes {start}-{end}/{file_size}"
             else:
-                start, end = 0, file_size - 1
+                start = None
+                end = None
                 status_code = 200
                 content_length = file_size
                 content_range = None
 
-            logger.info("Streaming | start=%s end=%s size=%s", start, end, file_size)
+            # 5️⃣ Obtener stream desde R2 usando la versión actualizada
+            s3_resp = stream_file_from_r2(
+                song.file_key, 
+                start=start, 
+                end=end, 
+                range_header=range_header if range_header else None
+            )
 
-            # 5️⃣ Obtener stream
-            s3_resp = stream_file_from_r2(song.file_key, start=start, end=end, range_header=range_header)
-            if not s3_resp:
-                logger.error("stream_file_from_r2 returned None | key=%s", song.file_key)
-                return Response({"error": "Error accediendo al archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if not s3_resp or 'Body' not in s3_resp:
+                logger.error("stream_file_from_r2 returned no body for key %s", song.file_key)
+                return Response(
+                    {"error": "Error al acceder al archivo para streaming"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
-            body = s3_resp.get('Body')
-            if not body or not hasattr(body, 'iter_chunks'):
-                logger.error("Body inválido o iter_chunks no disponible | key=%s | body=%s", song.file_key, body)
-                return Response({"error": "Archivo no apto para streaming"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            body = s3_resp['Body']
 
-            # 6️⃣ Generador seguro
-            def stream_gen():
+            # 6️⃣ Generador de streaming
+            def stream_generator():
                 try:
                     for chunk in body.iter_chunks(chunk_size=self.CHUNK_SIZE):
                         if chunk:
@@ -684,25 +702,44 @@ class StreamSongView(APIView):
                     try:
                         body.close()
                     except Exception:
-                        logger.debug("body.close() falló")
+                        logger.debug("body.close() failed in stream")
 
-            # 7️⃣ Preparar response
-            response = StreamingHttpResponse(stream_gen(), status=status_code, content_type=content_type)
+            response = StreamingHttpResponse(
+                stream_generator(), 
+                status=status_code, 
+                content_type=content_type
+            )
+
+            # 7️⃣ Headers optimizados
             response['Content-Length'] = str(content_length)
+            response['Content-Type'] = content_type
             response['Accept-Ranges'] = 'bytes'
             response['Cache-Control'] = 'no-cache'
-            response['X-Audio-Title'] = song.title or 'Unknown'
-            response['X-Audio-Artist'] = song.artist or 'Unknown'
-
+            response['X-Content-Duration'] = str(song.duration) if song.duration else '0'
+            response['X-Audio-Title'] = song.title
+            response['X-Audio-Artist'] = song.artist or 'Unknown Artist'
             if content_range:
                 response['Content-Range'] = content_range
 
-            logger.info("STREAM SUCCESS | user=%s song=%s", getattr(request.user, 'id', None), song_id)
+            # 8️⃣ Log de streaming
+            range_info = f"{start}-{end}" if start is not None else "full"
+            logger.info(
+                "STREAM start user=%s song=%s size=%s range=%s duration=%s",
+                request.user.id, song_id, content_length, range_info, song.duration or 'unknown'
+            )
+
             return response
 
-        except Exception as e:
-            logger.exception("STREAM ERROR | user=%s song=%s | exc=%s", getattr(request.user, 'id', None), song_id, e)
-            return Response({"error": "Error en streaming", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as exc:
+            logger.exception("ERROR STREAM - song=%s user=%s", song_id, getattr(request.user, 'id', None))
+            return Response(
+                {
+                    "error": "Error en streaming",
+                    "message": "No se pudo iniciar la reproducción. Intente nuevamente."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+# =============================================================================
 
 
 # Comments Views
