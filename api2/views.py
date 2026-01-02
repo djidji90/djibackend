@@ -356,11 +356,13 @@ class LikeSongView(APIView):
 # 🆕 DOWNLOAD SONG VIEW - VERSIÓN MEJORADA
 # =============================================================================
 
+# =============================================================================
+# ✅ DOWNLOAD SONG VIEW - VERSIÓN CORREGIDA
+# =============================================================================
+
 class DownloadSongView(APIView):
     """
-    Descarga con streaming directo desde R2 (attachment), con soporte de Range (resume).
-    Requiere que stream_file_from_r2 pueda aceptar start/end o range_header y devuelva
-    un dict con 'Body' (StreamingBody con iter_chunks y close) y opcionalmente 'content_length'.
+    Descarga con streaming directo desde R2 (attachment)
     """
     permission_classes = [IsAuthenticated]
     throttle_classes = [UserRateThrottle]
@@ -371,7 +373,6 @@ class DownloadSongView(APIView):
         """
         Parse simple 'bytes=start-end' header.
         Devuelve (start, end) o None si no hay header.
-        Lanza HttpResponse(status=400/416) si el header está mal formado / no satisfacible.
         """
         if not range_header:
             return None
@@ -425,22 +426,7 @@ class DownloadSongView(APIView):
     @extend_schema(
         description="""
         Descargar una canción con streaming eficiente y soporte para reanudación.
-        
-        Características:
-        - Streaming directo desde R2 sin intermediarios
-        - Soporte para Range requests (reanudar descargas)
-        - Control de frecuencia (1 descarga por hora por canción)
-        - Nombres de archivo compatibles con Unicode
-        - Chunks optimizados de 64KB para mejor performance
-        """,
-        responses={
-            200: OpenApiResponse(description="Stream de descarga iniciado"),
-            206: OpenApiResponse(description="Stream parcial (Range request)"),
-            404: OpenApiResponse(description="Canción o archivo no encontrado"),
-            416: OpenApiResponse(description="Range no satisfacible"),
-            429: OpenApiResponse(description="Límite de descargas excedido"),
-            500: OpenApiResponse(description="Error interno del servidor")
-        }
+        """
     )
     def get(self, request, song_id):
         try:
@@ -477,7 +463,7 @@ class DownloadSongView(APIView):
             content_type = file_info.get('content_type') or get_content_type_from_key(song.file_key)
             etag = file_info.get('etag')
 
-            # 5. Registrar descarga (no bloquear la experiencia del usuario)
+            # 5. Registrar descarga
             try:
                 with transaction.atomic():
                     Download.objects.create(user=request.user, song=song)
@@ -496,26 +482,28 @@ class DownloadSongView(APIView):
                 status_code = 206
                 content_length = (end - start) + 1
                 content_range = f"bytes {start}-{end}/{file_size}"
+                
+                # Construir Range header para R2
+                range_for_r2 = f"bytes={start}-{end}"
             else:
                 start = None
                 end = None
                 status_code = 200
                 content_length = file_size
                 content_range = None
+                range_for_r2 = None
 
-            # 7. Obtener stream desde R2 — usar start/end con la nueva función mejorada
+            # ✅ CORRECCIÓN: Llamada CORRECTA a stream_file_from_r2
             s3_resp = stream_file_from_r2(
                 song.file_key, 
-                start=start, 
-                end=end, 
-                range_header=range_header if range_header else None
+                range_header=range_for_r2  # Solo pasamos range_header
             )
 
             if not s3_resp or 'Body' not in s3_resp:
                 logger.error("stream_file_from_r2 returned no body for key %s", song.file_key)
                 return Response({"error": "Error al acceder al archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            body = s3_resp['Body']  # StreamingBody-like object expected
+            body = s3_resp['Body']
 
             # 8. Filename seguro (unicode)
             filename = slugify(song.title or f"song_{song.id}", allow_unicode=True)
@@ -527,7 +515,6 @@ class DownloadSongView(APIView):
                         if chunk:
                             yield chunk
                 finally:
-                    # Ensure the body is closed to free connection
                     try:
                         body.close()
                     except Exception:
@@ -559,13 +546,11 @@ class DownloadSongView(APIView):
             )
 
 
+
+
 # =============================================================================
-# 🆕 STREAM SONG VIEW - VERSIÓN MEJORADA  
+# ✅ STREAM SONG VIEW - VERSIÓN CORREGIDA  
 # =============================================================================
-
-
-
-
 
 class StreamSongView(APIView):
     """
@@ -619,14 +604,7 @@ class StreamSongView(APIView):
     @extend_schema(
         description="""
         Reproducir una canción en streaming con soporte completo para seek y reanudación.
-        """,
-        responses={
-            200: OpenApiResponse(description="Stream de audio iniciado"),
-            206: OpenApiResponse(description="Stream parcial (Range request)"),
-            404: OpenApiResponse(description="Canción o archivo no encontrado"),
-            416: OpenApiResponse(description="Range no satisfacible"),
-            500: OpenApiResponse(description="Error interno del servidor")
-        }
+        """
     )
     def get(self, request, song_id):
         try:
@@ -668,19 +646,21 @@ class StreamSongView(APIView):
                 status_code = 206
                 content_length = (end - start) + 1
                 content_range = f"bytes {start}-{end}/{file_size}"
+                
+                # ✅ Construir Range header para R2
+                range_for_r2 = f"bytes={start}-{end}"
             else:
                 start = None
                 end = None
                 status_code = 200
                 content_length = file_size
                 content_range = None
+                range_for_r2 = None
 
-            # 5️⃣ Obtener stream desde R2 usando la versión actualizada
+            # ✅ CORRECCIÓN: Llamada CORRECTA a stream_file_from_r2
             s3_resp = stream_file_from_r2(
                 song.file_key, 
-                start=start, 
-                end=end, 
-                range_header=range_header if range_header else None
+                range_header=range_for_r2  # Solo pasamos range_header
             )
 
             if not s3_resp or 'Body' not in s3_resp:
@@ -691,6 +671,11 @@ class StreamSongView(APIView):
                 )
 
             body = s3_resp['Body']
+            
+            # Usar ContentLength de R2 si está disponible
+            r2_content_length = s3_resp.get('ContentLength')
+            if r2_content_length is not None:
+                content_length = r2_content_length
 
             # 6️⃣ Generador de streaming
             def stream_generator():
@@ -718,8 +703,18 @@ class StreamSongView(APIView):
             response['X-Content-Duration'] = str(song.duration) if song.duration else '0'
             response['X-Audio-Title'] = song.title
             response['X-Audio-Artist'] = song.artist or 'Unknown Artist'
-            if content_range:
+            
+            # Usar ContentRange de R2 si está disponible
+            r2_content_range = s3_resp.get('ContentRange')
+            if r2_content_range:
+                response['Content-Range'] = r2_content_range
+            elif content_range:
                 response['Content-Range'] = content_range
+                
+            # ETag para caching
+            r2_etag = s3_resp.get('ETag')
+            if r2_etag:
+                response['ETag'] = r2_etag
 
             # 8️⃣ Log de streaming
             range_info = f"{start}-{end}" if start is not None else "full"
@@ -739,7 +734,6 @@ class StreamSongView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-# =============================================================================
 
 
 # Comments Views
