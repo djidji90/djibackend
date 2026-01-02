@@ -686,6 +686,12 @@ class StreamSongView(APIView):
                 end=end, 
                 range_header=range_header if range_header else None
             )
+            logger.error(
+    "R2 DEBUG | key=%s | resp=%s | type=%s",
+    song.file_key,
+    s3_resp,
+    type(s3_resp)
+)
 
             if not s3_resp or 'Body' not in s3_resp:
                 logger.error("stream_file_from_r2 returned no body for key %s", song.file_key)
