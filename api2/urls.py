@@ -18,7 +18,7 @@ urlpatterns = [
     path('songs/upload/', views.SongUploadView.as_view(), name='song-upload'),
     path('songs/random/', views.RandomSongsView.as_view(), name='random-songs'),
     path('songs/<int:song_id>/delete/', views.SongDeleteView.as_view(), name='song-delete'),
-    
+    path('search/complete/', views.complete_search, name='complete_search'),
     # =========================================================================
     # 🔄 INTERACCIONES CON CANCIONES (STREAMING & DESCARGAS)
     # =========================================================================
@@ -37,7 +37,7 @@ urlpatterns = [
     # =========================================================================
     path('songs/<int:song_id>/comments/', views.CommentListCreateView.as_view(), name='song-comments'),
     path('songs/comments/<int:pk>/', views.SongCommentsDetailView.as_view(), name='comment-detail'),
-
+    
     # =========================================================================
     # 🔍 BÚSQUEDA Y DESCUBRIMIENTO
     # =========================================================================
@@ -60,7 +60,7 @@ urlpatterns = [
     # =========================================================================
     # 🩺 HEALTH CHECKS (NUEVO)
     # =========================================================================
-    path('health/', views.health_check, name='health-check'),
+    path('health/', views.health_check, name='health_check'),
 ]
 
 # =============================================================================
