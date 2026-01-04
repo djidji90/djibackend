@@ -1,8 +1,17 @@
 # En views.py - ACTUALIZAR la sección de imports
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from django.db import DatabaseError, IntegrityError, transaction
+from .serializers import SuggestionsResponseSerializer
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.db.models.functions import Lower
+from .serializers import StreamResponseSerializer
+from .serializers import RandomSongsResponseSerializer
+from .serializers import SimpleMessageSerializer
+from .serializers import DownloadResponseSerializer
+from .serializers import SimpleMessageSerializer
+from .serializers import LikesCountSerializer
+from .serializers import SongUploadSerializer
+from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
 # AGREGAR al inicio del archivo
 from django.utils.text import slugify
 from rest_framework.decorators import permission_classes
@@ -55,6 +64,14 @@ logger = logging.getLogger(__name__)
     ]
 )
 @api_view(['GET'])
+@extend_schema(
+    description="Obtener sugerencias de búsqueda en tiempo real",
+    parameters=[
+        OpenApiParameter(name='query', description='Texto de búsqueda', required=True, type=str)
+    ],
+    responses={200: SuggestionsResponseSerializer}  # ← Agrega documentación
+)
+@api_view(['GET'])
 def song_suggestions(request):
     query = request.GET.get('query', '').strip()[:100]
     
@@ -102,7 +119,9 @@ def song_suggestions(request):
                 "display": f"{s['display']} ({s['type']})"
             })
     
-    return Response({"suggestions": unique_suggestions[:5]})
+    # ÚNICA DIFERENCIA: Usar serializador para la respuesta
+    serializer = SuggestionsResponseSerializer({"suggestions": unique_suggestions[:5]})
+    return Response(serializer.data)  # ← Con serializador
 
 class CommentPagination(PageNumberPagination):
     page_size = 3
@@ -176,6 +195,7 @@ class MusicEventDetailView(generics.RetrieveUpdateDestroyAPIView):
 # Song Likes View
 class SongLikesView(APIView):
     permission_classes = [IsAuthenticatedOrReadOnly]
+    serializer_class = LikesCountSerializer
 
     @extend_schema(description="Obtener el conteo de likes de una canción")
     def get(self, request, song_id):
@@ -283,7 +303,7 @@ class SongListView(generics.ListCreateAPIView):
 @extend_schema(description="Sugerencias de búsqueda en tiempo real")
 class SongSearchSuggestionsView(APIView):
     permission_classes = [IsAuthenticatedOrReadOnly]
-
+    serializer_class = SuggestionsResponseSerializer
     def get(self, request):
         try:
             query = self.request.query_params.get('query', '').strip()[:100]
@@ -312,6 +332,7 @@ class SongSearchSuggestionsView(APIView):
 @extend_schema(description="Dar o quitar like a una canción")
 class LikeSongView(APIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = SimpleMessageSerializer  # ✅ Agregado
 
     @transaction.atomic
     def post(self, request, song_id):
@@ -366,6 +387,7 @@ class DownloadSongView(APIView):
     """
     permission_classes = [IsAuthenticated]
     throttle_classes = [UserRateThrottle]
+    serializer_class = DownloadResponseSerializer 
     RATE_CACHE_TIMEOUT = 3600  # segundos (1 hora)
     CHUNK_SIZE = 64 * 1024  # 64 KB recommended
 
@@ -558,6 +580,7 @@ class StreamSongView(APIView):
     """
     permission_classes = [IsAuthenticated]
     CHUNK_SIZE = 64 * 1024  # 64 KB
+    serializer_class = StreamResponseSerializer
 
     def _parse_range_header(self, range_header, file_size):
         """
@@ -738,48 +761,150 @@ class StreamSongView(APIView):
 
 # Comments Views
 @extend_schema(tags=['Comentarios'])
+
+
 class CommentListCreateView(generics.ListCreateAPIView):
+    """
+    Listar y crear comentarios para una canción específica
+    """
     serializer_class = CommentSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = CommentPagination
 
-    def get_queryset(self):
+    def initial(self, request, *args, **kwargs):
+        """
+        Validar song_id al inicio de la solicitud
+        """
+        super().initial(request, *args, **kwargs)
+        
+        # Validar que song_id está presente en los kwargs
+        song_id = self.kwargs.get('song_id')
+        if not song_id:
+            logger.error("No se proporcionó song_id en la URL")
+            raise ValidationError(
+                {"error": "ID de canción no proporcionado en la URL"},
+                code="missing_song_id"
+            )
+        
+        # Verificar que la canción existe
         try:
-            song_id = self.kwargs.get('song_id')
-            if not song_id:
-                logger.error("No se proporcionó song_id en la URL")
-                return Comment.objects.none()
-                
-            return Comment.objects.filter(song_id=song_id).select_related('user').order_by("-created_at")
-        except KeyError as e:
-            logger.error(f"Error: Parámetro 'song_id' no encontrado en URL: {e}")
-            return Comment.objects.none()
+            self.song = Song.objects.get(id=song_id)
+        except Song.DoesNotExist:
+            logger.error(f"Canción no encontrada: {song_id}")
+            raise NotFound(
+                {"error": f"La canción con ID {song_id} no existe"},
+                code="song_not_found"
+            )
+
+    def get_queryset(self):
+        """
+        Obtener comentarios para la canción específica
+        """
+        try:
+            song_id = self.kwargs['song_id']  # Ya validado en initial()
+            return Comment.objects.filter(
+                song_id=song_id
+            ).select_related('user').order_by("-created_at")
+            
         except Exception as e:
             logger.error(f"Error getting comments: {e}")
-            raise ValidationError("Error al obtener comentarios")
+            return Comment.objects.none()
+
+    def list(self, request, *args, **kwargs):
+        """
+        Sobrescribir list para mejor manejo de respuestas
+        """
+        try:
+            queryset = self.get_queryset()
+            page = self.paginate_queryset(queryset)
+            
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({
+                "song_id": self.kwargs['song_id'],
+                "song_title": self.song.title if hasattr(self, 'song') else None,
+                "comments": serializer.data,
+                "total_comments": queryset.count()
+            })
+            
+        except Exception as e:
+            logger.error(f"Error listing comments: {e}")
+            return Response(
+                {"error": "Error al obtener los comentarios"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def perform_create(self, serializer):
+        """
+        Crear un comentario para la canción específica
+        """
         try:
-            song_id = self.kwargs.get('song_id')
-            if not song_id:
-                raise ValidationError("ID de canción no proporcionado en la URL")
+            # Usar el song ya validado en initial()
+            song_id = self.kwargs['song_id']
             
-            song = Song.objects.filter(id=song_id).first()
-            if not song:
-                raise ValidationError("La canción especificada no existe")
-                
-            serializer.save(user=self.request.user, song_id=song_id)
-            cache.delete(f"song_{song_id}_comments")
+            # Verificar que el usuario está autenticado (ya manejado por permission_classes)
+            if not self.request.user.is_authenticated:
+                raise ValidationError(
+                    {"error": "Debes estar autenticado para comentar"},
+                    code="authentication_required"
+                )
+            
+            # Guardar el comentario
+            comment = serializer.save(
+                user=self.request.user, 
+                song_id=song_id
+            )
+            
+            # Invalidar cache de comentarios
+            cache_key = f"song_{song_id}_comments"
+            cache.delete(cache_key)
+            
+            logger.info(f"Comentario creado: ID={comment.id} para canción={song_id} por usuario={self.request.user.id}")
             
         except IntegrityError as e:
-            logger.error(f"Error creating comment: {e}")
-            raise ValidationError("Error de integridad al crear comentario")
+            logger.error(f"Error de integridad al crear comentario: {e}")
+            raise ValidationError(
+                {"error": "Error de integridad en los datos del comentario"},
+                code="integrity_error"
+            )
         except ValidationError:
             raise
         except Exception as e:
-            logger.error(f"Error creating comment: {e}")
-            raise ValidationError("Error inesperado al crear comentario")
+            logger.error(f"Error inesperado al crear comentario: {e}")
+            raise ValidationError(
+                {"error": "Error inesperado al crear el comentario"},
+                code="unexpected_error"
+            )
 
+    def get_serializer_context(self):
+        """
+        Agregar contexto adicional al serializador
+        """
+        context = super().get_serializer_context()
+        context['song_id'] = self.kwargs.get('song_id')
+        context['song'] = getattr(self, 'song', None)
+        return context
+
+    def handle_exception(self, exc):
+        """
+        Manejo personalizado de excepciones
+        """
+        if isinstance(exc, ValidationError):
+            # Para ValidationError, extraer el mensaje adecuadamente
+            if hasattr(exc, 'detail') and isinstance(exc.detail, dict):
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": str(exc)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        elif isinstance(exc, NotFound):
+            return Response(exc.detail, status=status.HTTP_404_NOT_FOUND)
+        
+        # Para otras excepciones, usar manejo por defecto
+        return super().handle_exception(exc)
 @extend_schema(tags=['Comentarios'])
 class SongCommentsDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Comment.objects.all()
@@ -844,7 +969,7 @@ class ArtistListView(APIView):
 @extend_schema(description="Selección aleatoria de canciones")
 class RandomSongsView(APIView):
     permission_classes = [IsAuthenticated]
-
+    serializer_class = RandomSongsResponseSerializer
     def get(self, request):
         try:
             num_songs = 15
@@ -877,7 +1002,7 @@ class RandomSongsView(APIView):
 @extend_schema(description="Eliminar una canción y su archivo en R2")
 class SongDeleteView(APIView):
     permission_classes = [IsAuthenticated]
-
+    serializer_class = SimpleMessageSerializer
     def delete(self, request, song_id):
         try:
             song = get_object_or_404(Song, id=song_id)
@@ -928,6 +1053,7 @@ def custom_500(request):
 class SongUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [IsAuthenticated]
+    serializer_class = SongUploadSerializer
     
     @extend_schema(
         description="Subir una nueva canción con archivos",

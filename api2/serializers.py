@@ -366,3 +366,85 @@ class SongUploadSerializer(serializers.Serializer):
             if song.id:
                 song.delete()
             raise serializers.ValidationError(f"Error al crear la canción: {str(e)}")
+
+# api2/serializers.py - Agregar al final del archivo
+
+# Serializadores básicos para respuestas simples
+class SimpleMessageSerializer(serializers.Serializer):
+    """Serializador para respuestas de mensajes simples"""
+    message = serializers.CharField()
+    status = serializers.CharField(required=False, allow_null=True)
+    data = serializers.DictField(required=False, allow_null=True)
+
+class LikesCountSerializer(serializers.Serializer):
+    """Serializador para conteo de likes"""
+    song_id = serializers.IntegerField()
+    likes_count = serializers.IntegerField()
+    title = serializers.CharField()
+
+class ArtistListSerializer(serializers.Serializer):
+    """Serializador para lista de artistas"""
+    artists = serializers.ListField(child=serializers.CharField())
+
+class SuggestionItemSerializer(serializers.Serializer):
+    """Serializador para elementos de sugerencia"""
+    id = serializers.IntegerField()
+    title = serializers.CharField(allow_null=True)
+    artist = serializers.CharField()
+    genre = serializers.CharField()
+    type = serializers.CharField()
+    display = serializers.CharField()
+
+class SuggestionsResponseSerializer(serializers.Serializer):
+    """Serializador para respuesta de sugerencias"""
+    suggestions = SuggestionItemSerializer(many=True)
+
+class SearchSuggestionsSerializer(serializers.Serializer):
+    """Serializador para sugerencias de búsqueda"""
+    title = serializers.CharField()
+    artist = serializers.CharField()
+    genre = serializers.CharField()
+
+class RandomSongsResponseSerializer(serializers.Serializer):
+    """Serializador para respuesta de canciones aleatorias"""
+    random_songs = SongSerializer(many=True)
+
+class FileCheckSerializer(serializers.Serializer):
+    """Serializador para verificación de archivos"""
+    song_id = serializers.IntegerField()
+    title = serializers.CharField()
+    artist = serializers.CharField()
+    files = serializers.DictField()
+
+# Serializador para respuestas de APIView con archivos
+class DownloadResponseSerializer(serializers.Serializer):
+    """Serializador para respuesta de descarga (cuando hay error)"""
+    error = serializers.CharField(required=False)
+    message = serializers.CharField(required=False)
+    retry_after = serializers.IntegerField(required=False)
+
+class StreamResponseSerializer(serializers.Serializer):
+    """Serializador para respuesta de streaming (cuando hay error)"""
+    error = serializers.CharField(required=False)
+    message = serializers.CharField(required=False)
+
+# Serializador para métricas
+class MetricsSerializer(serializers.Serializer):
+    """Serializador para métricas del sistema"""
+    timestamp = serializers.DateTimeField()
+    general_stats = serializers.DictField()
+    recent_activity = serializers.DictField()
+    popular_content = serializers.DictField()
+
+class UserMetricsSerializer(serializers.Serializer):
+    """Serializador para métricas personales"""
+    user_info = serializers.DictField()
+    personal_stats = serializers.DictField()
+    recent_activity_30d = serializers.DictField()
+
+class HealthCheckSerializer(serializers.Serializer):
+    """Serializador para health check"""
+    status = serializers.CharField()
+    timestamp = serializers.DateTimeField()
+    service = serializers.CharField()
+    version = serializers.CharField()
