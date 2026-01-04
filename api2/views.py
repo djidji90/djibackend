@@ -119,9 +119,7 @@ def song_suggestions(request):
                 "display": f"{s['display']} ({s['type']})"
             })
     
-    # ÚNICA DIFERENCIA: Usar serializador para la respuesta
-    serializer = SuggestionsResponseSerializer({"suggestions": unique_suggestions[:5]})
-    return Response(serializer.data)  # ← Con serializador
+    return Response({"suggestions": unique_suggestions[:5]}) 
 
 class CommentPagination(PageNumberPagination):
     page_size = 3
