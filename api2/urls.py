@@ -23,7 +23,7 @@ urlpatterns = [
     # 🔄 INTERACCIONES CON CANCIONES (STREAMING & DESCARGAS)
     # =========================================================================
     path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
-    path('songs/<int:song_id>/download/', views.DownloadSongView.as_view(), name='song-download'),
+    path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
     path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
     path('songs/<int:song_id>/likes/', views.SongLikesView.as_view(), name='song-likes'),
     
@@ -72,4 +72,4 @@ if settings.DEBUG:
     # Health check adicional para desarrollo
     urlpatterns += [
         path('health/debug/', views.health_check, name='health-debug'),
-    ]
+    ]   

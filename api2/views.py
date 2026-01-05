@@ -448,29 +448,21 @@ class LikeSongView(APIView):
                 {"error": "Error inesperado al procesar el like"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-# Download Song View
-# REEMPLAZAR la vista DownloadSongView actual
-
-
-# =============================================================================
-# 🆕 DOWNLOAD SONG VIEW - VERSIÓN MEJORADA
-# =============================================================================
-
-# =============================================================================
-# ✅ DOWNLOAD SONG VIEW - VERSIÓN CORREGIDA
-# =============================================================================
-
-class DownloadSongView(APIView):
+@extend_schema(
+    description="""
+    Descargar una canción con streaming eficiente y soporte para reanudación.
     """
-    Descarga con streaming directo desde R2 (attachment)
+)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def download_song_view(request, song_id):
     """
-    permission_classes = [IsAuthenticated]
-    throttle_classes = [UserRateThrottle]
-    RATE_CACHE_TIMEOUT = 3600  # segundos (1 hora)
-    CHUNK_SIZE = 64 * 1024  # 64 KB recommended
-
-    def _parse_range_header(self, range_header, file_size):
+    Vista basada en función para descargas
+    """
+    CHUNK_SIZE = 64 * 1024
+    RATE_CACHE_TIMEOUT = 3600
+    
+    def _parse_range_header(range_header, file_size):
         """
         Parse simple 'bytes=start-end' header.
         Devuelve (start, end) o None si no hay header.
@@ -524,142 +516,143 @@ class DownloadSongView(APIView):
         filename_star = quote(filename)
         return f"attachment; filename=\"{ascii_name}.mp3\"; filename*=UTF-8''{filename_star}.mp3"
 
-    @extend_schema(
-        description="""
-        Descargar una canción con streaming eficiente y soporte para reanudación.
-        """
-    )
-    def get(self, request, song_id):
-        try:
-            # 1. Obtener canción
-            song = get_object_or_404(Song, id=song_id)
-            if not song.file_key:
-                logger.warning("Attempt to download song without file_key id=%s", song_id)
-                return Response({"error": "Archivo no disponible para descarga"}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        # 1. Obtener canción
+        song = get_object_or_404(Song, id=song_id)
+        if not song.file_key:
+            logger.warning("Attempt to download song without file_key id=%s", song_id)
+            return Response({"error": "Archivo no disponible para descarga"}, status=status.HTTP_404_NOT_FOUND)
 
-            # 2. Rate limiting simple por cache (por user+song)
-            cache_key = f"download_{request.user.id}_{song_id}"
-            if cache.get(cache_key):
-                return Response(
-                    {
-                        "error": "Límite de descargas alcanzado",
-                        "message": "Espere antes de volver a descargar esta canción",
-                        "retry_after": self.RATE_CACHE_TIMEOUT
-                    },
-                    status=status.HTTP_429_TOO_MANY_REQUESTS
-                )
-
-            # 3. Verificar en R2
-            if not check_file_exists(song.file_key):
-                logger.error("File not found in R2: %s", song.file_key)
-                return Response({"error": "El archivo de audio no está disponible"}, status=status.HTTP_404_NOT_FOUND)
-
-            # 4. Metadata
-            file_info = get_file_info(song.file_key)
-            if not file_info:
-                logger.error("No file_info for key: %s", song.file_key)
-                return Response({"error": "Error al obtener información del archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            file_size = int(file_info.get('size', 0))
-            content_type = file_info.get('content_type') or get_content_type_from_key(song.file_key)
-            etag = file_info.get('etag')
-
-            # 5. Registrar descarga
-            try:
-                with transaction.atomic():
-                    Download.objects.create(user=request.user, song=song)
-                    cache.set(cache_key, True, timeout=self.RATE_CACHE_TIMEOUT)
-            except IntegrityError:
-                logger.exception("Error registrando descarga (se continúa con el stream)")
-
-            # 6. Parse Range header (si existe)
-            range_header = request.META.get('HTTP_RANGE', '').strip()
-            parsed = self._parse_range_header(range_header, file_size) if range_header else None
-            if isinstance(parsed, HttpResponse):
-                return parsed  # error 400/416
-
-            if parsed:
-                start, end = parsed
-                status_code = 206
-                content_length = (end - start) + 1
-                content_range = f"bytes {start}-{end}/{file_size}"
-                
-                # Construir Range header para R2
-                range_for_r2 = f"bytes={start}-{end}"
-            else:
-                start = None
-                end = None
-                status_code = 200
-                content_length = file_size
-                content_range = None
-                range_for_r2 = None
-
-            # ✅ CORRECCIÓN: Llamada CORRECTA a stream_file_from_r2
-            s3_resp = stream_file_from_r2(
-                song.file_key, 
-                range_header=range_for_r2  # Solo pasamos range_header
-            )
-
-            if not s3_resp or 'Body' not in s3_resp:
-                logger.error("stream_file_from_r2 returned no body for key %s", song.file_key)
-                return Response({"error": "Error al acceder al archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            body = s3_resp['Body']
-
-            # 8. Filename seguro (unicode)
-            filename = slugify(song.title or f"song_{song.id}", allow_unicode=True)
-
-            # 9. StreamingHttpResponse con closure seguro
-            def stream_generator():
-                try:
-                    for chunk in body.iter_chunks(chunk_size=self.CHUNK_SIZE):
-                        if chunk:
-                            yield chunk
-                finally:
-                    try:
-                        body.close()
-                    except Exception:
-                        logger.debug("body.close() failed or not available")
-
-            response = StreamingHttpResponse(stream_generator(), status=status_code, content_type=content_type)
-            response['Content-Disposition'] = self._build_content_disposition(filename)
-            response['Content-Transfer-Encoding'] = 'binary'
-            response['Accept-Ranges'] = 'bytes'
-            response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            response['Pragma'] = 'no-cache'
-            response['Expires'] = '0'
-            response['Content-Length'] = str(content_length)
-            if etag:
-                response['ETag'] = etag
-            if content_range:
-                response['Content-Range'] = content_range
-
-            logger.info("DOWNLOAD start user=%s song=%s size=%s range=%s", 
-                       request.user.id, song_id, content_length, 
-                       f"{start}-{end}" if start is not None else "full")
-            return response
-
-        except Exception as exc:
-            logger.exception("ERROR DESCARGA - song=%s user=%s", song_id, getattr(request.user, 'id', None))
+        # 2. Rate limiting simple por cache (por user+song)
+        cache_key = f"download_{request.user.id}_{song_id}"
+        if cache.get(cache_key):
             return Response(
-                {"error": "Error interno del servidor", "message": "No se pudo completar la descarga."}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {
+                    "error": "Límite de descargas alcanzado",
+                    "message": "Espere antes de volver a descargar esta canción",
+                    "retry_after": RATE_CACHE_TIMEOUT
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
+        # 3. Verificar en R2
+        if not check_file_exists(song.file_key):
+            logger.error("File not found in R2: %s", song.file_key)
+            return Response({"error": "El archivo de audio no está disponible"}, status=status.HTTP_404_NOT_FOUND)
 
+        # 4. Metadata
+        file_info = get_file_info(song.file_key)
+        if not file_info:
+            logger.error("No file_info for key: %s", song.file_key)
+            return Response({"error": "Error al obtener información del archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        file_size = int(file_info.get('size', 0))
+        content_type = file_info.get('content_type') or get_content_type_from_key(song.file_key)
+        etag = file_info.get('etag')
 
-# =============================================================================
-# ✅ STREAM SONG VIEW - VERSIÓN CORREGIDA  
-# =============================================================================
+        # 5. Registrar descarga
+        try:
+            with transaction.atomic():
+                Download.objects.create(user=request.user, song=song)
+                cache.set(cache_key, True, timeout=RATE_CACHE_TIMEOUT)
+        except IntegrityError:
+            logger.exception("Error registrando descarga (se continúa con el stream)")
 
+        # 6. Parse Range header (si existe)
+        range_header = request.META.get('HTTP_RANGE', '').strip()
+        parsed = _parse_range_header(range_header, file_size) if range_header else None
+        if isinstance(parsed, HttpResponse):
+            return parsed  # error 400/416
+
+        if parsed:
+            start, end = parsed
+            status_code = 206
+            content_length = (end - start) + 1
+            content_range = f"bytes {start}-{end}/{file_size}"
+            
+            # Construir Range header para R2
+            range_for_r2 = f"bytes={start}-{end}"
+            logger.debug(f"DOWNLOAD Range requested: {range_header} -> {range_for_r2}")
+        else:
+            start = None
+            end = None
+            status_code = 200
+            content_length = file_size
+            content_range = None
+            range_for_r2 = None
+
+        # ✅ Llamada a stream_file_from_r2
+        s3_resp = stream_file_from_r2(
+            song.file_key, 
+            range_header=range_for_r2
+        )
+
+        if not s3_resp or 'Body' not in s3_resp:
+            logger.error("stream_file_from_r2 returned no body for key %s", song.file_key)
+            return Response({"error": "Error al acceder al archivo"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        body = s3_resp['Body']
+
+        # 8. Filename seguro (unicode)
+        filename = slugify(song.title or f"song_{song.id}", allow_unicode=True)
+
+        # 9. StreamingHttpResponse con closure seguro
+        def stream_generator():
+            try:
+                bytes_streamed = 0
+                for chunk in body.iter_chunks(chunk_size=CHUNK_SIZE):
+                    if chunk:
+                        bytes_streamed += len(chunk)
+                        yield chunk
+                logger.debug(f"DOWNLOAD Complete: {bytes_streamed} bytes downloaded")
+            finally:
+                try:
+                    body.close()
+                    logger.debug("DOWNLOAD Body closed successfully")
+                except Exception:
+                    logger.debug("body.close() failed in download")
+
+        # ✅ Usar StreamingHttpResponse
+        response = StreamingHttpResponse(
+            stream_generator(), 
+            status=status_code, 
+            content_type=content_type
+        )
+        
+        # Configurar headers
+        from urllib.parse import quote
+        filename_star = quote(filename)
+        response['Content-Disposition'] = f"attachment; filename=\"{filename}.mp3\"; filename*=UTF-8''{filename_star}.mp3"
+        response['Content-Transfer-Encoding'] = 'binary'
+        response['Accept-Ranges'] = 'bytes'
+        response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response['Pragma'] = 'no-cache'
+        response['Expires'] = '0'
+        response['Content-Length'] = str(content_length)
+        if etag:
+            response['ETag'] = etag
+        if content_range:
+            response['Content-Range'] = content_range
+
+        logger.info("DOWNLOAD START - user=%s song=%s size=%s range=%s", 
+                   request.user.id, song_id, content_length, 
+                   f"{start}-{end}" if start is not None else "full")
+        return response
+
+    except Exception as exc:
+        logger.exception("ERROR DOWNLOAD - song=%s user=%s", song_id, getattr(request.user, 'id', None))
+        return Response(
+            {"error": "Error interno del servidor", "message": "No se pudo completar la descarga."}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 class StreamSongView(APIView):
     """
     Streaming de canciones con soporte completo de HTTP Range (seek/reanudación)
     """
     permission_classes = [IsAuthenticated]
     CHUNK_SIZE = 64 * 1024  # 64 KB
-
+    # NO poner renderer_classes = [] - Esto causa el IndexError
+    
     def _parse_range_header(self, range_header, file_size):
         """
         Parser reutilizable para Range headers
@@ -678,7 +671,7 @@ class StreamSongView(APIView):
         parts = range_spec.split('-', 1)
         try:
             start = int(parts[0]) if parts[0] else None
-            end = int(parts[1]) if len(parts) > 1 and parts[1] != '' else None
+            end = int(parts[1]) if len(parts > 1) and parts[1] != '' else None
         except ValueError:
             return HttpResponse(status=400)
 
@@ -790,6 +783,7 @@ class StreamSongView(APIView):
                     except Exception:
                         logger.debug("body.close() failed in stream")
 
+            # ✅ CAMBIO CLAVE: Usar StreamingHttpResponse directamente
             response = StreamingHttpResponse(
                 stream_generator(), 
                 status=status_code, 
@@ -835,8 +829,6 @@ class StreamSongView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-
 # Comments Views
 @extend_schema(tags=['Comentarios'])
 class CommentListCreateView(generics.ListCreateAPIView):
