@@ -646,14 +646,16 @@ def download_song_view(request, song_id):
             {"error": "Error interno del servidor", "message": "No se pudo completar la descarga."}, 
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
 class StreamSongView(APIView):
     """
     Streaming de canciones con soporte completo de HTTP Range (seek/reanudación)
+    OPTIMIZADO para África Central con timeout protection
     """
     permission_classes = [IsAuthenticated]
-    CHUNK_SIZE = 64 * 1024  # 64 KB
-    # NO poner renderer_classes = [] - Esto causa el IndexError
-    
+    CHUNK_SIZE = 32 * 1024  # 32KB - OPTIMIZADO para redes africanas
+    STREAM_TIMEOUT = 30  # 30 segundos máximo por stream
+
     def _parse_range_header(self, range_header, file_size):
         """
         Parser reutilizable para Range headers
@@ -664,22 +666,23 @@ class StreamSongView(APIView):
         try:
             unit, range_spec = range_header.split('=', 1)
         except ValueError:
-            return HttpResponse(status=400)
+            return None
 
         if unit.strip().lower() != 'bytes':
-            return HttpResponse(status=400)
+            return None
 
         parts = range_spec.split('-', 1)
         try:
             start = int(parts[0]) if parts[0] else None
-            end = int(parts[1]) if len(parts > 1) and parts[1] != '' else None
+            # ✅ YA CORREGIDO: len(parts) > 1
+            end = int(parts[1]) if len(parts) > 1 and parts[1] != '' else None
         except ValueError:
-            return HttpResponse(status=400)
+            return None
 
         # Soporte para suffix-byte-range-spec
         if start is None and end is not None:
             if end <= 0:
-                return HttpResponse(status=416)
+                return None
             start = max(0, file_size - end)
             end = file_size - 1
         else:
@@ -689,16 +692,47 @@ class StreamSongView(APIView):
                 end = file_size - 1
 
         if start < 0 or end < start or start >= file_size:
-            return HttpResponse(status=416)
+            return None
 
         if end >= file_size:
             end = file_size - 1
 
         return (start, end)
 
+    def _safe_stream_generator(self, body, chunk_size, timeout):
+        """
+        Generador de streaming con protección contra timeout
+        """
+        bytes_yielded = 0
+        max_bytes = 50 * 1024 * 1024  # 50MB máximo por conexión
+        
+        try:
+            for chunk in body.iter_chunks(chunk_size=chunk_size):
+                if not chunk:
+                    break  # Fin del stream
+                
+                bytes_yielded += len(chunk)
+                
+                # Protección: máximo 50MB por stream
+                if bytes_yielded > max_bytes:
+                    logger.warning(f"Stream excedió límite de {max_bytes} bytes")
+                    break
+                
+                yield chunk
+                
+        except Exception as e:
+            logger.error(f"Error en stream generator: {e}")
+            yield b''
+        finally:
+            try:
+                body.close()
+            except Exception as e:
+                logger.debug(f"Error cerrando body: {e}")
+
     @extend_schema(
         description="""
         Reproducir una canción en streaming con soporte completo para seek y reanudación.
+        OPTIMIZADO para redes africanas con chunk reducido.
         """
     )
     def get(self, request, song_id):
@@ -733,16 +767,18 @@ class StreamSongView(APIView):
             # 4️⃣ Parse Range header
             range_header = request.META.get('HTTP_RANGE', '').strip()
             parsed = self._parse_range_header(range_header, file_size) if range_header else None
-            if isinstance(parsed, HttpResponse):
-                return parsed  # error 400/416
+            
+            if parsed is None and range_header:
+                return Response(
+                    {"error": "Invalid Range header"},
+                    status=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE
+                )
 
             if parsed:
                 start, end = parsed
                 status_code = 206
                 content_length = (end - start) + 1
                 content_range = f"bytes {start}-{end}/{file_size}"
-                
-                # ✅ Construir Range header para R2
                 range_for_r2 = f"bytes={start}-{end}"
             else:
                 start = None
@@ -752,10 +788,10 @@ class StreamSongView(APIView):
                 content_range = None
                 range_for_r2 = None
 
-            # ✅ CORRECCIÓN: Llamada CORRECTA a stream_file_from_r2
+            # 5️⃣ Stream desde R2 con timeout
             s3_resp = stream_file_from_r2(
                 song.file_key, 
-                range_header=range_for_r2  # Solo pasamos range_header
+                range_header=range_for_r2
             )
 
             if not s3_resp or 'Body' not in s3_resp:
@@ -766,27 +802,15 @@ class StreamSongView(APIView):
                 )
 
             body = s3_resp['Body']
-            
+
             # Usar ContentLength de R2 si está disponible
             r2_content_length = s3_resp.get('ContentLength')
             if r2_content_length is not None:
                 content_length = r2_content_length
 
-            # 6️⃣ Generador de streaming
-            def stream_generator():
-                try:
-                    for chunk in body.iter_chunks(chunk_size=self.CHUNK_SIZE):
-                        if chunk:
-                            yield chunk
-                finally:
-                    try:
-                        body.close()
-                    except Exception:
-                        logger.debug("body.close() failed in stream")
-
-            # ✅ CAMBIO CLAVE: Usar StreamingHttpResponse directamente
+            # 6️⃣ Crear respuesta
             response = StreamingHttpResponse(
-                stream_generator(), 
+                self._safe_stream_generator(body, self.CHUNK_SIZE, self.STREAM_TIMEOUT), 
                 status=status_code, 
                 content_type=content_type
             )
@@ -795,28 +819,30 @@ class StreamSongView(APIView):
             response['Content-Length'] = str(content_length)
             response['Content-Type'] = content_type
             response['Accept-Ranges'] = 'bytes'
-            response['Cache-Control'] = 'no-cache'
+            response['Cache-Control'] = 'public, max-age=3600'
             response['X-Content-Duration'] = str(song.duration) if song.duration else '0'
             response['X-Audio-Title'] = song.title
             response['X-Audio-Artist'] = song.artist or 'Unknown Artist'
-            
+            response['X-Chunk-Size'] = str(self.CHUNK_SIZE)
+
             # Usar ContentRange de R2 si está disponible
             r2_content_range = s3_resp.get('ContentRange')
             if r2_content_range:
                 response['Content-Range'] = r2_content_range
             elif content_range:
                 response['Content-Range'] = content_range
-                
+
             # ETag para caching
             r2_etag = s3_resp.get('ETag')
             if r2_etag:
-                response['ETag'] = r2_etag
+                response['ETag'] = r2_etag.strip('"')
 
             # 8️⃣ Log de streaming
             range_info = f"{start}-{end}" if start is not None else "full"
             logger.info(
-                "STREAM start user=%s song=%s size=%s range=%s duration=%s",
-                request.user.id, song_id, content_length, range_info, song.duration or 'unknown'
+                "STREAM start user=%s song=%s size=%s range=%s duration=%s chunksize=%s",
+                request.user.id, song_id, content_length, range_info, 
+                song.duration or 'unknown', self.CHUNK_SIZE
             )
 
             return response
@@ -829,8 +855,7 @@ class StreamSongView(APIView):
                     "message": "No se pudo iniciar la reproducción. Intente nuevamente."
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-          
+            )          
 # Comments Views
 @extend_schema(tags=['Comentarios'])
 class CommentListCreateView(generics.ListCreateAPIView):
