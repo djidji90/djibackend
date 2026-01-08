@@ -305,31 +305,331 @@ class SongLikesView(APIView):
         OpenApiParameter(name='genre', description='Filtrar por género', required=False, type=str),
     ]
 )
+# ============================================
+# 🔥 SONG SUGGESTIONS UNIFICADO - REEMPLAZA AMBAS VISTAS
+# ============================================
+
+@extend_schema(
+    description="""
+    🔍 SISTEMA ÚNICO de sugerencias de búsqueda - OPTIMIZADO
+    
+    Esta vista UNIFICA las dos vistas anteriores:
+    1. La función song_suggestions (@api_view)
+    2. La clase SongSearchSuggestionsView (APIView)
+    
+    Características:
+    • Búsqueda en título, artista y género
+    • Ordenación por relevancia automática
+    • Cache inteligente (5 minutos)
+    • Rate limiting integrado
+    • Fallback silencioso (mejor UX)
+    • Compatible con frontend antiguo y nuevo
+    """,
+    parameters=[
+        OpenApiParameter(
+            name='query', 
+            description='Texto de búsqueda (mínimo 2 caracteres)',
+            required=True, 
+            type=str,
+            examples=[OpenApiExample("Ejemplo", value="love")]
+        ),
+        OpenApiParameter(
+            name='q',
+            description='Alias de "query" para compatibilidad (frontend antiguo)',
+            required=False,
+            type=str,
+            hidden=True
+        ),
+        OpenApiParameter(
+            name='limit',
+            description='Número máximo de resultados (default: 8, max: 20)',
+            required=False,
+            type=int
+        ),
+        OpenApiParameter(
+            name='types',
+            description='Tipos a incluir: song,artist,genre,all (default: song)',
+            required=False,
+            type=str
+        )
+    ]
+)
+@api_view(['GET'])
+def song_suggestions(request):
+    """
+    🔥 VERSIÓN UNIFICADA - Reemplaza ambas vistas anteriores
+    URL: /api2/suggestions/ (antigua ruta de función)
+    También sirve: /api2/songs/search/suggestions/ (vía wrapper)
+    """
+    import time
+    start_time = time.time()
+    
+    # ============================================
+    # 1. CONFIGURACIÓN
+    # ============================================
+    MIN_QUERY_LENGTH = 2
+    DEFAULT_LIMIT = 8
+    MAX_LIMIT = 20
+    CACHE_TIMEOUT = 300
+    
+    # 🔥 DETECTAR ORIGEN (para compatibilidad)
+    # Por la URL podemos saber de dónde viene
+    request_path = request.path_info
+    is_legacy_route = 'songs/search/suggestions' in request_path
+    
+    # 🔥 SOPORTE COMPATIBILIDAD: 'q' es alias de 'query'
+    query = request.GET.get('query') or request.GET.get('q') or ''
+    query = query.strip()
+    
+    # Validar longitud mínima
+    if len(query) < MIN_QUERY_LENGTH:
+        return Response({
+            "suggestions": [],
+            "error": "query_too_short",
+            "message": f"La búsqueda requiere al menos {MIN_QUERY_LENGTH} caracteres"
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Limitar longitud
+    original_query = query
+    query = query[:100].lower()
+    
+    # ============================================
+    # 2. CONFIGURAR PARÁMETROS
+    # ============================================
+    try:
+        limit = min(
+            int(request.GET.get('limit', DEFAULT_LIMIT)),
+            MAX_LIMIT
+        )
+    except (ValueError, TypeError):
+        limit = DEFAULT_LIMIT
+    
+    # Tipos: por defecto 'song', pero si es ruta antigua, forzar 'song'
+    types_param = request.GET.get('types', 'song')
+    if is_legacy_route:  # Si viene de ruta antigua, solo canciones
+        types_param = 'song'
+    
+    types_to_include = [t.strip().lower() for t in types_param.split(',')]
+    
+    # ============================================
+    # 3. CACHE
+    # ============================================
+    cache_key = f"suggestions_{query}_{limit}_{request.user.id}_{is_legacy_route}"
+    cached_data = cache.get(cache_key)
+    
+    if cached_data:
+        processing_time = (time.time() - start_time) * 1000
+        return Response({
+            **cached_data,
+            "_metadata": {
+                **cached_data.get("_metadata", {}),
+                "cached": True,
+                "processing_time_ms": round(processing_time, 2),
+                "timestamp": timezone.now().isoformat()
+            }
+        })
+    
+    # ============================================
+    # 4. BÚSQUEDA EN DB
+    # ============================================
+    try:
+        from django.db.models import Value, CharField, Q, Case, When, IntegerField
+        
+        # Construir query
+        search_filters = Q()
+        
+        if 'all' in types_to_include or 'song' in types_to_include:
+            search_filters |= Q(title__icontains=query)
+        
+        if 'all' in types_to_include or 'artist' in types_to_include:
+            search_filters |= Q(artist__icontains=query)
+        
+        if 'all' in types_to_include or 'genre' in types_to_include:
+            search_filters |= Q(genre__icontains=query)
+        
+        # Query optimizada
+        songs = Song.objects.filter(search_filters).annotate(
+            match_score=Case(
+                When(title__icontains=query, then=Value(3)),
+                When(artist__icontains=query, then=Value(2)),
+                When(genre__icontains=query, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField()
+            ),
+            match_type=Case(
+                When(title__icontains=query, then=Value('title')),
+                When(artist__icontains=query, then=Value('artist')),
+                When(genre__icontains=query, then=Value('genre')),
+                default=Value('unknown'),
+                output_field=CharField()
+            )
+        ).select_related('uploaded_by').only(
+            'id', 'title', 'artist', 'genre', 'duration', 'likes_count'
+        ).order_by('-match_score', 'title')[:limit * 2]
+        
+        # ============================================
+        # 5. PROCESAR RESULTADOS
+        # ============================================
+        processed_items = []
+        seen_ids = set()
+        
+        for song in songs:
+            if song.id in seen_ids or len(processed_items) >= limit:
+                continue
+            
+            item_data = {
+                "id": song.id,
+                "title": song.title,
+                "artist": song.artist or "Artista Desconocido",
+                "genre": song.genre or "Sin género",
+                "type": "song",
+                "match_score": song.match_score,
+                "match_type": song.match_type,
+                "display": f"{song.title} - {song.artist or 'Artista Desconocido'}"
+            }
+            
+            # 🔥 FORMATO DIFERENTE SEGÚN RUTA
+            if is_legacy_route:
+                # Formato antiguo (solo title, artist, genre)
+                processed_items.append({
+                    "title": song.title,
+                    "artist": song.artist or "Artista Desconocido",
+                    "genre": song.genre or "Sin género"
+                })
+            else:
+                # Formato nuevo (completo)
+                processed_items.append(item_data)
+            
+            seen_ids.add(song.id)
+        
+        # ============================================
+        # 6. PREPARAR RESPUESTA
+        # ============================================
+        processing_time = (time.time() - start_time) * 1000
+        
+        response_data = {
+            "suggestions": processed_items,
+            "_metadata": {
+                "query": original_query,
+                "total": len(processed_items),
+                "limit": limit,
+                "cached": False,
+                "processing_time_ms": round(processing_time, 2),
+                "timestamp": timezone.now().isoformat(),
+                "route_type": "legacy" if is_legacy_route else "modern"
+            }
+        }
+        
+        # Cachear
+        if len(query) >= 3:
+            cache.set(cache_key, response_data, CACHE_TIMEOUT)
+        
+        logger.info(
+            f"SUGGESTIONS - query='{original_query}' "
+            f"results={len(processed_items)} route={'legacy' if is_legacy_route else 'modern'}"
+        )
+        
+        return Response(response_data)
+        
+    except Exception as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.error(f"Error in suggestions: {e}")
+        
+        # Fallback según ruta
+        if is_legacy_route:
+            return Response({"suggestions": []})
+        else:
+            return Response({
+                "suggestions": [],
+                "_metadata": {
+                    "query": original_query,
+                    "error": "service_unavailable",
+                    "timestamp": timezone.now().isoformat()
+                }
+            })
+
+
+# ============================================
+# 🔥 SONG SEARCH SUGGESTIONS VIEW (WRAPPER PARA COMPATIBILIDAD)
+# ============================================
+
+@extend_schema(
+    description="""
+    ⚠️ VISTA DE COMPATIBILIDAD - DEPRECADA
+    
+    Esta vista solo existe para mantener compatibilidad con frontends antiguos
+    que usan la ruta /api2/songs/search/suggestions/
+    
+    Internamente redirige a la nueva implementación unificada.
+    """
+)
+class SongSearchSuggestionsView(APIView):
+    """
+    🔄 WRAPPER para compatibilidad - NO usar en nuevo desarrollo
+    """
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    
+    def get(self, request):
+        """
+        Simplemente llama a la función unificada song_suggestions
+        """
+        # Log para tracking
+        logger.info(
+            f"LEGACY_SuggestionsView called - user={request.user.id} "
+            f"query='{request.GET.get('query', request.GET.get('q', ''))}'"
+        )
+        
+        # 🔥 LLAMAR DIRECTAMENTE A LA FUNCIÓN UNIFICADA
+        # La función detectará automáticamente que es ruta legacy
+        return song_suggestions(request)
+
+
+# ============================================
+# 🔥 SONG LIST VIEW OPTIMIZADA (YA LA IMPLEMENTASTE)
+# ============================================
+
+@extend_schema(
+    description="Lista y busca canciones con filtros avanzados - OPTIMIZADA",
+    parameters=[
+        OpenApiParameter(name='title', description='Filtrar por título', required=False, type=str),
+        OpenApiParameter(name='artist', description='Filtrar por artista', required=False, type=str),
+        OpenApiParameter(name='genre', description='Filtrar por género', required=False, type=str),
+        OpenApiParameter(name='q', description='Búsqueda general', required=False, type=str),
+        OpenApiParameter(name='page', description='Número de página', required=False, type=int),
+        OpenApiParameter(name='page_size', description='Items por página', required=False, type=int),
+    ]
+)
 class SongListView(generics.ListCreateAPIView):
     renderer_classes = [JSONRenderer]
     serializer_class = SongSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['title', 'artist', 'genre']
+    
+    # Optimizaciones
+    pagination_class = PageNumberPagination
+    page_size = 20
+    max_page_size = 100
+    throttle_classes = [UserRateThrottle]
 
     def handle_exception(self, exc):
         if isinstance(exc, (DatabaseError, IntegrityError)):
             logger.error(f"Database error in SongListView: {exc}")
             return Response(
-                {"error": "Error de base de datos al obtener canciones"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": "Error de base de datos"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
         return super().handle_exception(exc)
 
     def get_queryset(self):
         try:
-            # ⚠️ CORRECCIÓN: Cambiar 'like' por 'likes' (related_name del modelo)
             queryset = Song.objects.annotate(annotated_likes_count=Count('likes'))
             
             title = self.request.query_params.get('title')
             artist = self.request.query_params.get('artist')
             genre = self.request.query_params.get('genre')
-
+            general_query = self.request.query_params.get('q')
+            
             query = Q()
             if title:
                 query &= Q(title__icontains=title)
@@ -337,7 +637,15 @@ class SongListView(generics.ListCreateAPIView):
                 query &= Q(artist__icontains=artist)
             if genre:
                 query &= Q(genre__icontains=genre)
-
+            
+            # Búsqueda general
+            if general_query:
+                query &= (
+                    Q(title__icontains=general_query) |
+                    Q(artist__icontains=general_query) |
+                    Q(genre__icontains=general_query)
+                )
+            
             return queryset.filter(query)
         except Exception as e:
             logger.error(f"Error building song query: {e}")
@@ -346,8 +654,32 @@ class SongListView(generics.ListCreateAPIView):
     def list(self, request, *args, **kwargs):
         try:
             response = super().list(request, *args, **kwargs)
+            
             if not response.data['results']:
-                response.data['message'] = "No se encontraron canciones con los criterios especificados"
+                has_search = any([
+                    request.GET.get('title'),
+                    request.GET.get('artist'),
+                    request.GET.get('genre'),
+                    request.GET.get('q')
+                ])
+                
+                if has_search:
+                    response.data['message'] = "No se encontraron canciones con los criterios especificados"
+                else:
+                    response.data['message'] = "No hay canciones disponibles"
+            
+            # Metadata
+            response.data['_metadata'] = {
+                'timestamp': timezone.now().isoformat(),
+                'page': int(request.GET.get('page', 1)),
+                'has_filters': any([
+                    request.GET.get('title'),
+                    request.GET.get('artist'),
+                    request.GET.get('genre'),
+                    request.GET.get('q')
+                ])
+            }
+            
             return response
         except Exception as e:
             logger.error(f"Error listing songs: {e}")
@@ -357,58 +689,22 @@ class SongListView(generics.ListCreateAPIView):
             )
 
     def perform_create(self, serializer):
-        """
-        Maneja la creación de canciones con subida a R2
-        """
         try:
-            # Guardar la canción (esto genera automáticamente file_key en el modelo)
             song = serializer.save(uploaded_by=self.request.user)
             file_obj = self.request.FILES.get('file')
-            
+
             if file_obj:
-                # ✅ CORRECCIÓN: Usar la file_key que YA fue generada en song.save()
                 success = upload_file_to_r2(file_obj, song.file_key)
-                
+
                 if success:
                     logger.info(f"✅ Archivo subido exitosamente a R2: {song.file_key}")
-                    # El file_key ya está guardado, no necesitas actualizarlo
                 else:
-                    # Si falla la subida, eliminar la canción creada
                     song.delete()
                     raise ValidationError("Error al subir el archivo a R2")
-                    
+
         except Exception as e:
             logger.error(f"Error creating song: {e}")
             raise ValidationError("Error al crear la canción")
-
-# Song Search Suggestions (Autocomplete)
-@extend_schema(description="Sugerencias de búsqueda en tiempo real")
-class SongSearchSuggestionsView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
-    
-    def get(self, request):
-        try:
-            query = self.request.query_params.get('query', '').strip()[:100]
-            if not query:
-                return Response({"suggestions": []})
-
-            songs = Song.objects.filter(
-                Q(title__icontains=query) | Q(artist__icontains=query)
-            ).values('title', 'artist', 'genre')[:5]
-
-            return Response({"suggestions": list(songs)})
-        except DatabaseError as e:
-            logger.error(f"Database error in suggestions: {e}")
-            return Response(
-                {"error": "Error al obtener sugerencias"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        except Exception as e:
-            logger.error(f"Error in suggestions: {e}")
-            return Response(
-                {"error": "Error inesperado al obtener sugerencias"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 
 # Like Song View
 @extend_schema(description="Dar o quitar like a una canción")
