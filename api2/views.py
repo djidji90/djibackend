@@ -1,5 +1,4 @@
 
-# En views.py - ACTUALIZAR la sección de imports
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse, OpenApiExample
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from django.db import DatabaseError, IntegrityError, transaction
@@ -50,12 +49,47 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 
 # En tu views.py
+
 @extend_schema(
-    description="Obtener sugerencias de búsqueda optimizadas (1 query en lugar de 3)",
+    description="""
+    🔍 SISTEMA ÚNICO de sugerencias de búsqueda - OPTIMIZADO
+    
+    Esta vista UNIFICA las dos vistas anteriores:
+    1. La función song_suggestions (@api_view)
+    2. La clase SongSearchSuggestionsView (APIView)
+    
+    Características:
+    • Búsqueda en título, artista y género
+    • Ordenación por relevancia automática
+    • Cache inteligente (5 minutos)
+    • Fallback silencioso (mejor UX)
+    • Compatible con frontend antiguo y nuevo
+    """,
     parameters=[
-        OpenApiParameter(name='query', description='Texto de búsqueda', required=True, type=str),
-        OpenApiParameter(name='limit', description='Número máximo de sugerencias (default: 10, max: 20)', required=False, type=int),
-        OpenApiParameter(name='types', description='Tipos a incluir (song,artist,genre) separados por coma', required=False, type=str)
+        OpenApiParameter(
+            name='query', 
+            description='Texto de búsqueda (mínimo 2 caracteres)',
+            required=True, 
+            type=str
+        ),
+        OpenApiParameter(
+            name='q',
+            description='Alias de "query" para compatibilidad',
+            required=False,
+            type=str
+        ),
+        OpenApiParameter(
+            name='limit',
+            description='Número máximo de resultados (default: 8, max: 20)',
+            required=False,
+            type=int
+        ),
+        OpenApiParameter(
+            name='types',
+            description='Tipos a incluir: song,artist,genre,all (default: song)',
+            required=False,
+            type=str
+        )
     ]
 )
 @api_view(['GET'])
