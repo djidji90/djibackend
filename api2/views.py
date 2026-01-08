@@ -50,6 +50,106 @@ logger = logging.getLogger(__name__)
 
 # En tu views.py
 
+
+class CommentPagination(PageNumberPagination):
+    page_size = 3
+    page_size_query_param = 'page_size'
+
+# Music Event List View
+@extend_schema(description="Listar eventos de música")
+class MusicEventListView(generics.ListCreateAPIView):
+    queryset = MusicEvent.objects.all()
+    serializer_class = MusicEventSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def handle_exception(self, exc):
+        if isinstance(exc, (DatabaseError, IntegrityError)):
+            logger.error(f"Database error in MusicEventListView: {exc}")
+            return Response(
+                {"error": "Error de base de datos al procesar eventos"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        return super().handle_exception(exc)
+
+    def perform_create(self, serializer):
+        try:
+            serializer.save()
+        except IntegrityError as e:
+            logger.error(f"Integrity error creating event: {e}")
+            raise ValidationError("Error de integridad en los datos del evento")
+        except Exception as e:
+            logger.error(f"Error creating event: {e}")
+            raise ValidationError("Error inesperado al crear el evento")
+
+# Music Event Detail View
+@extend_schema(description="Obtener, actualizar o eliminar un evento de música")
+class MusicEventDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = MusicEvent.objects.all()
+    serializer_class = MusicEventSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def handle_exception(self, exc):
+        if isinstance(exc, (DatabaseError, IntegrityError)):
+            logger.error(f"Database error in MusicEventDetailView: {exc}")
+            return Response(
+                {"error": "Error de base de datos al procesar el evento"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        return super().handle_exception(exc)
+
+    def perform_update(self, serializer):
+        try:
+            if not self.request.user.is_authenticated:
+                raise PermissionDenied("No puedes editar este evento.")
+            super().perform_update(serializer)
+        except PermissionDenied:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating event: {e}")
+            raise ValidationError("Error inesperado al actualizar el evento")
+
+    def perform_destroy(self, instance):
+        try:
+            if not self.request.user.is_authenticated:
+                raise PermissionDenied("No puedes eliminar este evento.")
+            super().perform_destroy(instance)
+        except DatabaseError as e:
+            logger.error(f"Database error deleting event: {e}")
+            raise ValidationError("Error de base de datos al eliminar el evento")
+        except Exception as e:
+            logger.error(f"Error deleting event: {e}")
+            raise ValidationError("Error inesperado al eliminar el evento")
+
+# Song Likes View
+class SongLikesView(APIView):
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    @extend_schema(description="Obtener el conteo de likes de una canción")
+    def get(self, request, song_id):
+        try:
+            song = get_object_or_404(Song, id=song_id)
+            likes_count = cache.get(f"song_{song_id}_likes_count", song.likes_count)
+            return Response({
+                "song_id": song_id,
+                "likes_count": likes_count,
+                "title": song.title
+            })
+        except Exception as e:
+            logger.error(f"Error getting song likes: {e}")
+            return Response(
+                {"error": "Error al obtener los likes de la canción"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+# Song List View with Flexible Search
+@extend_schema(
+    description="Lista y busca canciones con filtros avanzados",
+    parameters=[
+        OpenApiParameter(name='title', description='Filtrar por título', required=False, type=str),
+        OpenApiParameter(name='artist', description='Filtrar por artista', required=False, type=str),
+        OpenApiParameter(name='genre', description='Filtrar por género', required=False, type=str),
+    ]
+)
 @extend_schema(
     description="""
     🔍 SISTEMA ÚNICO de sugerencias de búsqueda - OPTIMIZADO
@@ -241,154 +341,6 @@ def song_suggestions(request):
             }
         }, status=200)
 
-class CommentPagination(PageNumberPagination):
-    page_size = 3
-    page_size_query_param = 'page_size'
-
-# Music Event List View
-@extend_schema(description="Listar eventos de música")
-class MusicEventListView(generics.ListCreateAPIView):
-    queryset = MusicEvent.objects.all()
-    serializer_class = MusicEventSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
-
-    def handle_exception(self, exc):
-        if isinstance(exc, (DatabaseError, IntegrityError)):
-            logger.error(f"Database error in MusicEventListView: {exc}")
-            return Response(
-                {"error": "Error de base de datos al procesar eventos"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        return super().handle_exception(exc)
-
-    def perform_create(self, serializer):
-        try:
-            serializer.save()
-        except IntegrityError as e:
-            logger.error(f"Integrity error creating event: {e}")
-            raise ValidationError("Error de integridad en los datos del evento")
-        except Exception as e:
-            logger.error(f"Error creating event: {e}")
-            raise ValidationError("Error inesperado al crear el evento")
-
-# Music Event Detail View
-@extend_schema(description="Obtener, actualizar o eliminar un evento de música")
-class MusicEventDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = MusicEvent.objects.all()
-    serializer_class = MusicEventSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
-
-    def handle_exception(self, exc):
-        if isinstance(exc, (DatabaseError, IntegrityError)):
-            logger.error(f"Database error in MusicEventDetailView: {exc}")
-            return Response(
-                {"error": "Error de base de datos al procesar el evento"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        return super().handle_exception(exc)
-
-    def perform_update(self, serializer):
-        try:
-            if not self.request.user.is_authenticated:
-                raise PermissionDenied("No puedes editar este evento.")
-            super().perform_update(serializer)
-        except PermissionDenied:
-            raise
-        except Exception as e:
-            logger.error(f"Error updating event: {e}")
-            raise ValidationError("Error inesperado al actualizar el evento")
-
-    def perform_destroy(self, instance):
-        try:
-            if not self.request.user.is_authenticated:
-                raise PermissionDenied("No puedes eliminar este evento.")
-            super().perform_destroy(instance)
-        except DatabaseError as e:
-            logger.error(f"Database error deleting event: {e}")
-            raise ValidationError("Error de base de datos al eliminar el evento")
-        except Exception as e:
-            logger.error(f"Error deleting event: {e}")
-            raise ValidationError("Error inesperado al eliminar el evento")
-
-# Song Likes View
-class SongLikesView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
-
-    @extend_schema(description="Obtener el conteo de likes de una canción")
-    def get(self, request, song_id):
-        try:
-            song = get_object_or_404(Song, id=song_id)
-            likes_count = cache.get(f"song_{song_id}_likes_count", song.likes_count)
-            return Response({
-                "song_id": song_id,
-                "likes_count": likes_count,
-                "title": song.title
-            })
-        except Exception as e:
-            logger.error(f"Error getting song likes: {e}")
-            return Response(
-                {"error": "Error al obtener los likes de la canción"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-# Song List View with Flexible Search
-@extend_schema(
-    description="Lista y busca canciones con filtros avanzados",
-    parameters=[
-        OpenApiParameter(name='title', description='Filtrar por título', required=False, type=str),
-        OpenApiParameter(name='artist', description='Filtrar por artista', required=False, type=str),
-        OpenApiParameter(name='genre', description='Filtrar por género', required=False, type=str),
-    ]
-)
-# ============================================
-# 🔥 SONG SUGGESTIONS UNIFICADO - REEMPLAZA AMBAS VISTAS
-# ============================================
-
-@extend_schema(
-    description="""
-    🔍 SISTEMA ÚNICO de sugerencias de búsqueda - OPTIMIZADO
-    
-    Esta vista UNIFICA las dos vistas anteriores:
-    1. La función song_suggestions (@api_view)
-    2. La clase SongSearchSuggestionsView (APIView)
-    
-    Características:
-    • Búsqueda en título, artista y género
-    • Ordenación por relevancia automática
-    • Cache inteligente (5 minutos)
-    • Rate limiting integrado
-    • Fallback silencioso (mejor UX)
-    • Compatible con frontend antiguo y nuevo
-    """,
-    parameters=[
-        OpenApiParameter(
-            name='query', 
-            description='Texto de búsqueda (mínimo 2 caracteres)',
-            required=True, 
-            type=str,
-            examples=[OpenApiExample("Ejemplo", value="love")]
-        ),
-        OpenApiParameter(
-            name='q',
-            description='Alias de "query" para compatibilidad (frontend antiguo)',
-            required=False,
-            type=str,
-            hidden=True
-        ),
-        OpenApiParameter(
-            name='limit',
-            description='Número máximo de resultados (default: 8, max: 20)',
-            required=False,
-            type=int
-        ),
-        OpenApiParameter(
-            name='types',
-            description='Tipos a incluir: song,artist,genre,all (default: song)',
-            required=False,
-            type=str
-        )
-    ]
-)
 @api_view(['GET'])
 def song_suggestions(request):
     """
