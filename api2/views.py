@@ -1,3 +1,4 @@
+
 # En views.py - ACTUALIZAR la sección de imports
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from django.db import DatabaseError, IntegrityError, transaction
@@ -828,6 +829,7 @@ class StreamSongView(APIView):
                     "message": "No se pudo iniciar la reproducción. Intente nuevamente."
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
             )
 # Comments Views
 @extend_schema(tags=['Comentarios'])
