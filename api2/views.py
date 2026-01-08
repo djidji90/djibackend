@@ -1,5 +1,6 @@
 
 # En views.py - ACTUALIZAR la sección de imports
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse, OpenApiExample
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from django.db import DatabaseError, IntegrityError, transaction
 from rest_framework.exceptions import ValidationError, PermissionDenied
