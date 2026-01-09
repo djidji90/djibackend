@@ -41,10 +41,14 @@ urlpatterns = [
     # =========================================================================
     # 🔍 BÚSQUEDA Y DESCUBRIMIENTO
     # =========================================================================
+     path('songs/search/suggestions/', views.SongSearchSuggestionsView.as_view(), name='song-search-suggestions'),
     path('suggestions/', views.song_suggestions, name='song-suggestions'),
+     path('search/suggestions/', views.song_suggestions, name='search-suggestions'),
     path('search/suggestions/', views.SongSearchSuggestionsView.as_view(), name='song-search-suggestions'),
     path('artists/', views.ArtistListView.as_view(), name='artist-list'),
+     path('debug/suggestions/', views.debug_suggestions, name='debug-suggestions'),
 
+    
     # =========================================================================
     # 📅 EVENTOS MUSICALES
     # =========================================================================
