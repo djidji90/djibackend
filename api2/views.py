@@ -1810,8 +1810,8 @@ def health_check(request):
         OpenApiParameter(name='q', description='Texto de búsqueda', required=True, type=str),
         OpenApiParameter(name='limit', description='Límite por categoría (default: 5, max: 10)', required=False, type=int),
         OpenApiParameter(name='include', description='Incluir: songs,artists,suggestions,all', required=False, type=str)
-    ]
-)
+   )
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def complete_search(request):
@@ -1823,7 +1823,7 @@ def complete_search(request):
     query = request.GET.get('q', '').strip()
     limit = min(int(request.GET.get('limit', 5)), 10)
     include = request.GET.get('include', 'all').split(',')
-    
+
     # Validaciones básicas
     if not query or len(query) < 2:
         return Response({
@@ -1840,20 +1840,20 @@ def complete_search(request):
                 "cache_hit": False
             }
         })
-    
+
     if len(query) > 100:
         query = query[:100]
-    
+
     try:
         from django.db.models import Count, F, Value, CharField, Case, When
         from django.core.cache import cache
         import hashlib
         import json
-        
+
         # Generar cache key
         cache_key = f"complete_search:{hashlib.md5(f'{query}:{limit}:{include}'.encode()).hexdigest()}"
         cache_timeout = 300  # 5 minutos para búsquedas
-        
+
         # Intentar cache primero
         if 'no_cache' not in request.GET:
             cached = cache.get(cache_key)
@@ -1862,9 +1862,9 @@ def complete_search(request):
                 cached['_metadata']['cache_hit'] = True
                 cached['_metadata']['cached_at'] = timezone.now().isoformat()
                 return Response(cached)
-        
+
         logger.debug(f"Cache MISS para búsqueda: {query}")
-        
+
         result = {
             "songs": [],
             "artists": [],
@@ -1872,13 +1872,14 @@ def complete_search(request):
             "albums": [],
             "playlists": [],
         }
-        
-        # 1. BUSCAR CANCIONES (si está incluido)
+
+        # 1. BUSCAR CANCIONES (si está incluido) - ERROR CORREGIDO AQUÍ
         if 'all' in include or 'songs' in include:
             songs = Song.objects.filter(
                 Q(title__icontains=query) | Q(artist__icontains=query) | Q(genre__icontains=query)
             ).annotate(
-                likes_count=Count('likes'),
+                # SOLO anotar match_relevance - NO usar likes_count aquí
+                # porque ya existe como campo en el modelo Song
                 match_relevance=Case(
                     When(title__icontains=query, artist__icontains=query, then=Value(100)),
                     When(title__icontains=query, then=Value(80)),
@@ -1889,16 +1890,16 @@ def complete_search(request):
                 )
             ).select_related('uploaded_by').values(
                 'id', 'title', 'artist', 'genre', 'duration',
-                'uploaded_by__username', 'created_at', 'likes_count',
+                'uploaded_by__username', 'created_at', 'likes_count',  # ← Usar campo existente del modelo
                 'file_key', 'stream_url', 'download_url'
-            ).order_by('-match_relevance', '-likes_count', '-created_at')[:limit]
-            
+            ).order_by('-match_relevance', '-likes_count', '-created_at')[:limit]  # ← Ordenar por campo existente
+
             result["songs"] = list(songs)
-        
+
         # 2. BUSCAR ARTISTAS (si está incluido)
         if 'all' in include or 'artists' in include:
             from django.db.models import Subquery, OuterRef
-            
+
             artists = Song.objects.filter(
                 artist__icontains=query
             ).values('artist').annotate(
@@ -1919,7 +1920,7 @@ def complete_search(request):
                     .values('total')[:1]
                 )
             ).distinct().order_by('-song_count')[:limit]
-            
+
             result["artists"] = [
                 {
                     "name": a['artist'],
@@ -1932,7 +1933,7 @@ def complete_search(request):
                 }
                 for a in artists
             ]
-        
+
         # 3. SUGERENCIAS (usar el endpoint optimizado)
         if 'all' in include or 'suggestions' in include:
             # Crear request simulada para llamar a song_suggestions internamente
@@ -1940,19 +1941,19 @@ def complete_search(request):
             factory = RequestFactory()
             mock_request = factory.get(f'/api2/suggestions/?query={query}&limit={limit}')
             mock_request.user = request.user
-            
+
             # Llamar a la función optimizada
             suggestions_response = song_suggestions(mock_request)
             if suggestions_response.status_code == 200:
                 result["suggestions"] = suggestions_response.data.get("suggestions", [])
-        
+
         # 4. METADATA ENRIQUECIDA
         total_items = (
             len(result["songs"]) + 
             len(result["artists"]) + 
             len(result["suggestions"])
         )
-        
+
         metadata = {
             "query": query,
             "timestamp": timezone.now().isoformat(),
@@ -1967,25 +1968,25 @@ def complete_search(request):
             "query_length": len(query),
             "response_time_ms": 0  # Podrías calcular esto
         }
-        
+
         result["_metadata"] = metadata
-        
+
         # Guardar en cache (excepto para queries muy cortas)
         if len(query) >= 3 and total_items > 0:
             cache.set(cache_key, result, timeout=cache_timeout)
             logger.debug(f"Cache SET para búsqueda: {query} ({total_items} items)")
-        
+
         return Response(result)
-        
+
     except Exception as e:
         logger.error(f"Error en búsqueda completa para '{query}': {e}", exc_info=True)
-        
+
         return Response({
             "songs": [],
             "artists": [],
             "suggestions": [],
             "albums": [],
-            "playlists": [],
+            "playlist": [],
             "_metadata": {
                 "query": query,
                 "timestamp": timezone.now().isoformat(),
