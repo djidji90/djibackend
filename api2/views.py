@@ -1810,8 +1810,8 @@ def health_check(request):
         OpenApiParameter(name='q', description='Texto de búsqueda', required=True, type=str),
         OpenApiParameter(name='limit', description='Límite por categoría (default: 5, max: 10)', required=False, type=int),
         OpenApiParameter(name='include', description='Incluir: songs,artists,suggestions,all', required=False, type=str)
-   ]
-
+    ]  # ← CIERRA LA LISTA
+)  # ← ¡Y ESTE ES EL PARÉNTESIS QUE FALTA! CIERRA EL DECORADOR
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def complete_search(request):
