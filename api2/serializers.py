@@ -278,142 +278,396 @@ class MusicEventCreateSerializer(serializers.ModelSerializer):
 
 # Agrega esto al final de tu api2/serializers.py
 
+# api2/serializers.py - SOLO SongUploadSerializer (versión completa corregida)
+
 class SongUploadSerializer(serializers.Serializer):
-    """Serializer optimizado para subir canciones"""
-    title = serializers.CharField(max_length=255)
-    artist = serializers.CharField(max_length=255)
-    genre = serializers.CharField(max_length=100)
-    duration = serializers.CharField(max_length=20, required=False, allow_blank=True)
-    is_public = serializers.BooleanField(default=True)
+    """
+    Serializador optimizado para subir canciones a R2 Cloudflare
+    Versión corregida definitiva - Compatible con r2_client.py configurado
+    """
+    
+    # Campos básicos de la canción
+    title = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Título de la canción"
+    )
+    
+    artist = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Artista o banda"
+    )
+    
+    genre = serializers.CharField(
+        max_length=100,
+        required=True,
+        help_text="Género musical (Rock, Pop, Jazz, etc.)"
+    )
+    
+    duration = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text="Duración en formato MM:SS (ej: 03:45)"
+    )
+    
+    is_public = serializers.BooleanField(
+        default=True,
+        help_text="¿La canción es pública?"
+    )
     
     # Campos de archivo
     audio_file = serializers.FileField(
+        required=True,
         max_length=500,
         allow_empty_file=False,
-        help_text="Archivo de audio (MP3, WAV, etc.)"
+        help_text="Archivo de audio (MP3, WAV, OGG, etc.) - Máx 100MB"
     )
+    
     image_file = serializers.ImageField(
-        max_length=500,
         required=False,
         allow_empty_file=True,
-        help_text="Imagen de portada (JPG, PNG, etc.)"
+        max_length=500,
+        help_text="Imagen de portada (JPG, PNG, WEBP) - Máx 10MB"
     )
 
     def validate_audio_file(self, value):
-        """Validación optimizada por performance"""
-        # 1. Chequear tamaño primero (más rápido)
-        max_size = 100 * 1024 * 1024  # 100MB
-        if value.size > max_size:
-            raise serializers.ValidationError("El archivo no puede ser mayor a 100MB")
-        
-        # 2. Chequear extensión con set para O(1)
-        valid_extensions = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.webm'}
-        ext = os.path.splitext(value.name)[1].lower()
-        
-        if ext not in valid_extensions:
+        """
+        Validación optimizada para archivos de audio
+        """
+        # Validación 1: Tamaño máximo (100MB)
+        MAX_SIZE = 100 * 1024 * 1024  # 100MB en bytes
+        if value.size > MAX_SIZE:
             raise serializers.ValidationError(
-                f"Formato no soportado. Usa: MP3, WAV, OGG, M4A, FLAC, AAC, WEBM"
+                f"El archivo de audio es demasiado grande. "
+                f"Máximo permitido: {MAX_SIZE / (1024*1024):.0f}MB"
             )
         
-        # 3. Chequear MIME type si está disponible
-        if hasattr(value, 'content_type'):
-            audio_mimes = {
+        # Validación 2: Extensión permitida
+        valid_extensions = {
+            '.mp3', '.wav', '.ogg', '.m4a', '.flac', 
+            '.aac', '.webm', '.opus', '.mp4'
+        }
+        
+        file_name = getattr(value, 'name', '')
+        if not file_name:
+            raise serializers.ValidationError("El archivo no tiene nombre")
+        
+        file_ext = os.path.splitext(file_name)[1].lower()
+        if file_ext not in valid_extensions:
+            raise serializers.ValidationError(
+                f"Formato de audio no soportado. "
+                f"Formatos permitidos: {', '.join(sorted(valid_extensions))}"
+            )
+        
+        # Validación 3: MIME type si está disponible
+        content_type = getattr(value, 'content_type', '')
+        if content_type:
+            valid_mime_types = {
                 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/flac',
-                'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/webm'
+                'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/webm',
+                'audio/opus', 'audio/x-m4a', 'audio/mp3'
             }
-            if value.content_type not in audio_mimes:
-                raise serializers.ValidationError("Tipo de archivo no válido")
+            
+            if content_type not in valid_mime_types:
+                # Verificar si es un MIME type genérico que podríamos aceptar
+                if not content_type.startswith('audio/'):
+                    raise serializers.ValidationError(
+                        "El archivo no parece ser un archivo de audio válido"
+                    )
         
         return value
 
     def validate_image_file(self, value):
-        """Validación optimizada para imágenes"""
+        """
+        Validación para archivos de imagen
+        """
         if not value:
-            return value
+            return value  # Es opcional, así que None está bien
         
-        # 1. Chequear tamaño primero
-        max_size = 10 * 1024 * 1024  # 10MB
-        if value.size > max_size:
-            raise serializers.ValidationError("La imagen no puede ser mayor a 10MB")
-        
-        # 2. Chequear extensión
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-        ext = os.path.splitext(value.name)[1].lower()
-        
-        if ext not in valid_extensions:
+        # Validación 1: Tamaño máximo (10MB)
+        MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
+        if value.size > MAX_IMAGE_SIZE:
             raise serializers.ValidationError(
-                f"Formato de imagen no soportado. Usa: JPG, PNG, WEBP, GIF"
+                f"La imagen es demasiado grande. "
+                f"Máximo permitido: {MAX_IMAGE_SIZE / (1024*1024):.0f}MB"
+            )
+        
+        # Validación 2: Extensión permitida
+        valid_image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+        
+        file_name = getattr(value, 'name', '')
+        file_ext = os.path.splitext(file_name)[1].lower()
+        
+        if file_ext not in valid_image_extensions:
+            raise serializers.ValidationError(
+                f"Formato de imagen no soportado. "
+                f"Formatos permitidos: {', '.join(sorted(valid_image_extensions))}"
             )
         
         return value
 
-    def create(self, validated_data):
+    def validate_duration(self, value):
         """
-        Creación atómica optimizada:
-        1. Sube archivos a R2
-        2. Si todo OK, crea registro en BD
-        3. Si hay error, limpia todo
+        Validar formato de duración MM:SS
         """
-        request = self.context.get('request')
-        if not request or not request.user:
-            raise serializers.ValidationError("Usuario no autenticado")
+        if not value or value.strip() == "":
+            return ""  # Permitir vacío
         
-        # Extraer archivos
-        audio_file = validated_data.pop('audio_file')
-        image_file = validated_data.pop('image_file', None)
+        value = value.strip()
         
-        # Generar keys únicas ANTES de subir
-        unique_id = uuid.uuid4().hex[:12]
-        audio_key = f"songs/{unique_id}_audio{os.path.splitext(audio_file.name)[1].lower()}"
-        image_key = None
-        
-        if image_file:
-            image_key = f"images/{unique_id}_cover{os.path.splitext(image_file.name)[1].lower()}"
-        
-        uploaded_files = []  # Para limpieza en caso de error
+        # Validar formato básico
+        if ':' not in value:
+            raise serializers.ValidationError(
+                "Formato de duración inválido. Use MM:SS (ej: 03:45)"
+            )
         
         try:
-            # Transacción atómica
+            minutes_str, seconds_str = value.split(':')
+            minutes = int(minutes_str)
+            seconds = int(seconds_str)
+            
+            # Validar rangos razonables
+            if minutes < 0 or minutes > 60:
+                raise serializers.ValidationError(
+                    "Los minutos deben estar entre 0 y 60"
+                )
+            
+            if seconds < 0 or seconds >= 60:
+                raise serializers.ValidationError(
+                    "Los segundos deben estar entre 0 y 59"
+                )
+            
+            # Validar duración mínima
+            if minutes == 0 and seconds < 10:
+                raise serializers.ValidationError(
+                    "La duración mínima es 10 segundos"
+                )
+            
+        except (ValueError, TypeError):
+            raise serializers.ValidationError(
+                "Formato de duración inválido. Use números (ej: 03:45)"
+            )
+        
+        return value
+
+    def validate(self, attrs):
+        """
+        Validación cruzada de campos
+        """
+        # Validar que el título no sea solo espacios
+        title = attrs.get('title', '').strip()
+        if not title:
+            raise serializers.ValidationError({
+                "title": "El título no puede estar vacío"
+            })
+        
+        # Validar que el artista no sea solo espacios
+        artist = attrs.get('artist', '').strip()
+        if not artist:
+            raise serializers.ValidationError({
+                "artist": "El artista no puede estar vacío"
+            })
+        
+        # Validar que el género no sea solo espacios
+        genre = attrs.get('genre', '').strip()
+        if not genre:
+            raise serializers.ValidationError({
+                "genre": "El género no puede estar vacío"
+            })
+        
+        # Si se proporcionó imagen, asegurar que no sea un archivo de audio
+        image_file = attrs.get('image_file')
+        if image_file:
+            image_name = getattr(image_file, 'name', '').lower()
+            if any(image_name.endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a']):
+                raise serializers.ValidationError({
+                    "image_file": "El archivo parece ser un audio, no una imagen"
+                })
+        
+        return attrs
+
+    def create(self, validated_data):
+        """
+        Creación atómica de canción con subida a R2
+        VERSIÓN CORREGIDA DEFINITIVA - Compatible con tu r2_client.py
+        """
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user'):
+            raise serializers.ValidationError({
+                "error": "No se pudo identificar al usuario"
+            })
+        
+        user = request.user
+        if not user.is_authenticated:
+            raise serializers.ValidationError({
+                "error": "Usuario no autenticado"
+            })
+        
+        # Extraer datos
+        title = validated_data['title'].strip()
+        artist = validated_data['artist'].strip()
+        genre = validated_data['genre'].strip()
+        duration = validated_data.get('duration', '').strip()
+        is_public = validated_data.get('is_public', True)
+        audio_file = validated_data['audio_file']
+        image_file = validated_data.get('image_file')
+        
+        # Generar keys únicas para R2
+        import uuid
+        import datetime
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
+        
+        # Generar key para audio
+        audio_ext = os.path.splitext(audio_file.name)[1].lower()
+        audio_key = f"songs/audio/{unique_id}{audio_ext}"
+        
+        # Generar key para imagen (si existe)
+        image_key = None
+        if image_file:
+            image_ext = os.path.splitext(image_file.name)[1].lower()
+            image_key = f"songs/images/{unique_id}{image_ext}"
+        
+        # Iniciar transacción atómica
+        from django.db import transaction
+        
+        try:
             with transaction.atomic():
-                # 1. Subir audio a R2
+                # 1. Subir archivo de audio a R2
                 audio_content_type = getattr(audio_file, 'content_type', None)
                 if not upload_file_to_r2(audio_file, audio_key, content_type=audio_content_type):
-                    raise serializers.ValidationError("Error al subir archivo de audio")
-                uploaded_files.append(('audio', audio_key))
+                    raise serializers.ValidationError({
+                        "audio_file": "No se pudo subir el archivo de audio a R2"
+                    })
                 
-                # 2. Subir imagen si existe
+                # 2. Subir imagen a R2 (si existe)
                 if image_file and image_key:
                     image_content_type = getattr(image_file, 'content_type', None)
                     if not upload_file_to_r2(image_file, image_key, content_type=image_content_type):
-                        # Limpiar audio si falla imagen
+                        # Si falla la imagen, limpiar el audio ya subido
                         delete_file_from_r2(audio_key)
-                        raise serializers.ValidationError("Error al subir imagen")
-                    uploaded_files.append(('image', image_key))
+                        raise serializers.ValidationError({
+                            "image_file": "No se pudo subir la imagen a R2"
+                        })
                 
-                # 3. Crear canción en BD CON TODOS los datos
+                # 3. Crear registro en base de datos
                 song = Song.objects.create(
-                    **validated_data,
+                    title=title,
+                    artist=artist,
+                    genre=genre,
+                    duration=duration,
+                    is_public=is_public,
                     file_key=audio_key,
                     image_key=image_key,
-                    uploaded_by=request.user  # ← Asignado aquí, no después
+                    uploaded_by=user,
+                    # Campos adicionales útiles
+                    file_size=audio_file.size,
+                    file_format=audio_ext.lstrip('.'),
+                )
+                
+                # 4. Actualizar estadísticas del usuario
+                try:
+                    profile, created = UserProfile.objects.get_or_create(
+                        user=user,
+                        defaults={'songs_uploaded': 1}
+                    )
+                    if not created:
+                        profile.songs_uploaded += 1
+                        profile.save(update_fields=['songs_uploaded'])
+                except Exception as profile_error:
+                    # No fallar la creación si hay error con el perfil
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error actualizando perfil de usuario: {profile_error}")
+                
+                # 5. Registrar log de creación
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    f"Canción creada: ID={song.id}, "
+                    f"Título='{title}', "
+                    f"Artista='{artist}', "
+                    f"Audio Key='{audio_key}', "
+                    f"Usuario='{user.username}'"
                 )
                 
                 return song
                 
-        except Exception as e:
-            # 4. LIMPIEZA EN CASO DE ERROR
-            for file_type, file_key in uploaded_files:
-                try:
-                    delete_file_from_r2(file_key)
-                except Exception:
-                    pass  # Loggear en producción
+        except serializers.ValidationError:
+            # Re-lanzar ValidationErrors para que DRF los maneje
+            raise
             
-            # Re-lanzar error apropiado
-            if isinstance(e, serializers.ValidationError):
-                raise e
-            raise serializers.ValidationError(f"Error al crear la canción: {str(e)}")
+        except Exception as e:
+            # Manejo de errores inesperados
+            
+            # 6. LIMPIEZA EN CASO DE ERROR
+            cleanup_errors = []
+            
+            # Intentar eliminar audio de R2
+            try:
+                if 'audio_key' in locals() and audio_key:
+                    delete_file_from_r2(audio_key)
+            except Exception as cleanup_error:
+                cleanup_errors.append(f"Audio: {cleanup_error}")
+            
+            # Intentar eliminar imagen de R2
+            try:
+                if 'image_key' in locals() and image_key:
+                    delete_file_from_r2(image_key)
+            except Exception as cleanup_error:
+                cleanup_errors.append(f"Imagen: {cleanup_error}")
+            
+            # Loggear error detallado
+            import logging
+            import traceback
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Error creando canción: {str(e)}\n"
+                f"Traceback:\n{traceback.format_exc()}\n"
+                f"Cleanup errors: {cleanup_errors}"
+            )
+            
+            # Mensaje de error amigable
+            error_message = str(e)
+            if "timeout" in error_message.lower():
+                error_message = "Timeout al subir archivos. Intenta de nuevo."
+            elif "connection" in error_message.lower():
+                error_message = "Error de conexión con el almacenamiento."
+            else:
+                error_message = "Error interno al procesar la solicitud."
+            
+            raise serializers.ValidationError({
+                "error": error_message,
+                "detail": "Por favor, intenta de nuevo. Si el problema persiste, contacta al administrador."
+            })
 
-# api2/serializers.py - Agregar al final del archivo
+    def to_representation(self, instance):
+        """
+        Personalizar respuesta después de crear la canción
+        """
+        from .serializers import SongSerializer
+        
+        # Usar SongSerializer para la respuesta
+        song_serializer = SongSerializer(
+            instance,
+            context=self.context
+        )
+        
+        # Añadir información adicional específica del upload
+        representation = song_serializer.data
+        representation.update({
+            "upload_status": "success",
+            "message": "Canción subida exitosamente",
+            "audio_file_uploaded": bool(instance.file_key),
+            "image_file_uploaded": bool(instance.image_key),
+            "timestamp": instance.created_at.isoformat() if instance.created_at else None
+        })
+        
+        return representation
 
 # Serializadores básicos para respuestas simples
 class SimpleMessageSerializer(serializers.Serializer):
