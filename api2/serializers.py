@@ -3,6 +3,10 @@ from .models import Song, Like, Download, Comment, CommentReaction, MusicEvent, 
 from .r2_utils import generate_presigned_url
 from typing import List, Dict, Any, Optional
 from django.contrib.auth import get_user_model
+from .r2_utils import upload_file_to_r2, delete_file_from_r2, generate_presigned_url
+import os
+import uuid
+from django.db import transaction
 
 User = get_user_model()
 
@@ -273,19 +277,9 @@ class MusicEventCreateSerializer(serializers.ModelSerializer):
         ]
 
 # Agrega esto al final de tu api2/serializers.py
-import os
-from rest_framework import serializers
-from .models import Song
-from .r2_utils import upload_file_to_r2
-
-# api2/serializers.py - Agrega esto al final
-import os
-from rest_framework import serializers
-from .models import Song
-from .r2_utils import upload_file_to_r2
 
 class SongUploadSerializer(serializers.Serializer):
-    """Serializer para subir canciones con archivos"""
+    """Serializer optimizado para subir canciones"""
     title = serializers.CharField(max_length=255)
     artist = serializers.CharField(max_length=255)
     genre = serializers.CharField(max_length=100)
@@ -306,65 +300,117 @@ class SongUploadSerializer(serializers.Serializer):
     )
 
     def validate_audio_file(self, value):
-        """Validar archivo de audio"""
-        valid_extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac']
-        ext = os.path.splitext(value.name)[1].lower()
-        if ext not in valid_extensions:
-            raise serializers.ValidationError(
-                f"Formato de archivo no soportado. Formatos válidos: {valid_extensions}"
-            )
-        # Validar tamaño (max 100MB)
-        max_size = 100 * 1024 * 1024
+        """Validación optimizada por performance"""
+        # 1. Chequear tamaño primero (más rápido)
+        max_size = 100 * 1024 * 1024  # 100MB
         if value.size > max_size:
             raise serializers.ValidationError("El archivo no puede ser mayor a 100MB")
+        
+        # 2. Chequear extensión con set para O(1)
+        valid_extensions = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.webm'}
+        ext = os.path.splitext(value.name)[1].lower()
+        
+        if ext not in valid_extensions:
+            raise serializers.ValidationError(
+                f"Formato no soportado. Usa: MP3, WAV, OGG, M4A, FLAC, AAC, WEBM"
+            )
+        
+        # 3. Chequear MIME type si está disponible
+        if hasattr(value, 'content_type'):
+            audio_mimes = {
+                'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/flac',
+                'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/webm'
+            }
+            if value.content_type not in audio_mimes:
+                raise serializers.ValidationError("Tipo de archivo no válido")
+        
         return value
 
     def validate_image_file(self, value):
-        """Validar archivo de imagen"""
-        if value:
-            valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif']
-            ext = os.path.splitext(value.name)[1].lower()
-            if ext not in valid_extensions:
-                raise serializers.ValidationError(
-                    f"Formato de imagen no soportado. Formatos válidos: {valid_extensions}"
-                )
-            # Validar tamaño (max 10MB)
-            max_size = 10 * 1024 * 1024
-            if value.size > max_size:
-                raise serializers.ValidationError("La imagen no puede ser mayor a 10MB")
+        """Validación optimizada para imágenes"""
+        if not value:
+            return value
+        
+        # 1. Chequear tamaño primero
+        max_size = 10 * 1024 * 1024  # 10MB
+        if value.size > max_size:
+            raise serializers.ValidationError("La imagen no puede ser mayor a 10MB")
+        
+        # 2. Chequear extensión
+        valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+        ext = os.path.splitext(value.name)[1].lower()
+        
+        if ext not in valid_extensions:
+            raise serializers.ValidationError(
+                f"Formato de imagen no soportado. Usa: JPG, PNG, WEBP, GIF"
+            )
+        
         return value
 
     def create(self, validated_data):
-        """Crear la canción y subir archivos a R2"""
+        """
+        Creación atómica optimizada:
+        1. Sube archivos a R2
+        2. Si todo OK, crea registro en BD
+        3. Si hay error, limpia todo
+        """
+        request = self.context.get('request')
+        if not request or not request.user:
+            raise serializers.ValidationError("Usuario no autenticado")
+        
         # Extraer archivos
         audio_file = validated_data.pop('audio_file')
         image_file = validated_data.pop('image_file', None)
         
-        # Crear instancia de Song
-        song = Song.objects.create(**validated_data)
+        # Generar keys únicas ANTES de subir
+        unique_id = uuid.uuid4().hex[:12]
+        audio_key = f"songs/{unique_id}_audio{os.path.splitext(audio_file.name)[1].lower()}"
+        image_key = None
+        
+        if image_file:
+            image_key = f"images/{unique_id}_cover{os.path.splitext(image_file.name)[1].lower()}"
+        
+        uploaded_files = []  # Para limpieza en caso de error
         
         try:
-            # Subir archivo de audio
-            audio_key = f"songs/{song.id}/audio{os.path.splitext(audio_file.name)[1]}"
-            if upload_file_to_r2(audio_file, audio_key, 'audio/mpeg'):
-                song.file_key = audio_key
-            else:
-                song.delete()
-                raise serializers.ValidationError("Error al subir el archivo de audio a R2")
-            
-            # Subir imagen si existe
-            if image_file:
-                image_key = f"songs/{song.id}/cover{os.path.splitext(image_file.name)[1]}"
-                if upload_file_to_r2(image_file, image_key, 'image/jpeg'):
-                    song.image_key = image_key
-            
-            song.save()
-            return song
-            
+            # Transacción atómica
+            with transaction.atomic():
+                # 1. Subir audio a R2
+                audio_content_type = getattr(audio_file, 'content_type', None)
+                if not upload_file_to_r2(audio_file, audio_key, content_type=audio_content_type):
+                    raise serializers.ValidationError("Error al subir archivo de audio")
+                uploaded_files.append(('audio', audio_key))
+                
+                # 2. Subir imagen si existe
+                if image_file and image_key:
+                    image_content_type = getattr(image_file, 'content_type', None)
+                    if not upload_file_to_r2(image_file, image_key, content_type=image_content_type):
+                        # Limpiar audio si falla imagen
+                        delete_file_from_r2(audio_key)
+                        raise serializers.ValidationError("Error al subir imagen")
+                    uploaded_files.append(('image', image_key))
+                
+                # 3. Crear canción en BD CON TODOS los datos
+                song = Song.objects.create(
+                    **validated_data,
+                    file_key=audio_key,
+                    image_key=image_key,
+                    uploaded_by=request.user  # ← Asignado aquí, no después
+                )
+                
+                return song
+                
         except Exception as e:
-            # Limpiar en caso de error
-            if song.id:
-                song.delete()
+            # 4. LIMPIEZA EN CASO DE ERROR
+            for file_type, file_key in uploaded_files:
+                try:
+                    delete_file_from_r2(file_key)
+                except Exception:
+                    pass  # Loggear en producción
+            
+            # Re-lanzar error apropiado
+            if isinstance(e, serializers.ValidationError):
+                raise e
             raise serializers.ValidationError(f"Error al crear la canción: {str(e)}")
 
 # api2/serializers.py - Agregar al final del archivo

@@ -1,55 +1,46 @@
-# api2/tests/test_r2_configuration.py
-import os
+# api2/tests/test_download_models.py
 from django.test import TestCase
-from django.conf import settings
+from api2.models import Song, Download
+from django.contrib.auth import get_user_model
 
-class TestR2Configuration(TestCase):
-    """Pruebas de configuración de R2"""
+User = get_user_model()
+
+class TestDownloadModel(TestCase):
+    def setUp(self):
+        """Configuración inicial para todas las pruebas"""
+        self.user = User.objects.create_user(
+            username='downloaduser',
+            email='download@example.com',
+            password='testpass123'
+        )
+        self.song = Song.objects.create(
+            title="Download Test Song",
+            artist="Download Test Artist",
+            genre="Rock",
+            uploaded_by=self.user
+        )
+        print("✅ Configuración de DownloadModel completada")
     
-    def test_r2_settings(self):
-        """Verificar que las configuraciones R2 están presentes"""
-        print("⚙️ Verificando configuración R2...")
+    def test_download_creation(self):
+        """Test creación de descarga"""
+        print("📥 Probando creación de descarga...")
+        download = Download.objects.create(user=self.user, song=self.song)
         
-        # Verificar variables de entorno/configuración
-        required_settings = [
-            'R2_ACCOUNT_ID',
-            'R2_ACCESS_KEY', 
-            'R2_SECRET_KEY',
-            'R2_BUCKET_NAME'
-        ]
-        
-        missing_settings = []
-        for setting in required_settings:
-            if not hasattr(settings, setting) or not getattr(settings, setting):
-                missing_settings.append(setting)
-        
-        if missing_settings:
-            print(f"⚠️  Configuraciones faltantes: {missing_settings}")
-            print("💡 Configura las variables de entorno:")
-            print("""
-            R2_ACCOUNT_ID=tu_account_id
-            R2_ACCESS_KEY=tu_access_key
-            R2_SECRET_KEY=tu_secret_key  
-            R2_BUCKET_NAME=tu-bucket-name
-            """)
-        else:
-            print("✅ Todas las configuraciones R2 presentes")
-        
-        # No fallar la prueba - solo informar
-        self.assertTrue(True)
+        self.assertEqual(download.user, self.user)
+        self.assertEqual(download.song, self.song)
+        self.assertIsNotNone(download.downloaded_at)
+        print("✅ Test de creación de descarga pasado")
     
-    def test_r2_client_initialization(self):
-        """Verificar que el cliente R2 se inicializa correctamente"""
-        print("🔧 Probando inicialización del cliente R2...")
+    def test_download_updates_song_count(self):
+        """Test que descarga actualiza el contador"""
+        print("📥 Probando actualización de contador de descargas...")
         
-        from api2.r2_utils import r2_client, R2_BUCKET_NAME
+        # Contador inicial debería ser 0
+        self.assertEqual(self.song.downloads_count, 0)
         
-        if r2_client:
-            print("✅ Cliente R2 inicializado correctamente")
-            print(f"📦 Bucket configurado: {R2_BUCKET_NAME}")
-        else:
-            print("❌ Cliente R2 no inicializado")
-            print("💡 Revisa la configuración en r2_client.py")
+        # Crear descarga debería actualizar el contador
+        download = Download.objects.create(user=self.user, song=self.song)
+        self.song.refresh_from_db()
         
-        # No fallar - solo diagnóstico
-        self.assertTrue(True)
+        self.assertEqual(self.song.downloads_count, 1)
+        print("✅ Test de actualización de contador de descargas pasado")

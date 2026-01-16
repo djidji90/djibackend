@@ -6,6 +6,8 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.db.models.functions import Lower
 from django.http import HttpRequest, HttpResponse, StreamingHttpResponse, JsonResponse
 # AGREGAR al inicio del archivo
+from django.shortcuts import get_object_or_404
+from django.http import Http404
 from django.utils.text import slugify
 import time
 from drf_spectacular.utils import extend_schema, OpenApiParameter
@@ -1486,47 +1488,81 @@ def custom_500(request):
 
 # api2/views.py - Agrega esto al final del archivo
 
+import logging
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
+from drf_spectacular.utils import extend_schema, OpenApiResponse
+
+# Importa tus modelos y serializers
+from .models import Song
+from .serializers import SongUploadSerializer
+
+logger = logging.getLogger(__name__)
+
 class SongUploadView(APIView):
+    """
+    Vista SIMPLIFICADA que delega todo al serializer
+    """
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [IsAuthenticated]
     
-    @extend_schema(
-        description="Subir una nueva canción con archivos",
-        request=SongUploadSerializer
-    )
     def post(self, request):
-        serializer = SongUploadSerializer(data=request.data)
+        # Rate limiting simple
+        from django.core.cache import cache
+        
+        user_key = f"upload_{request.user.id}_{timezone.now().hour}"
+        if cache.get(user_key, 0) >= 20:
+            return Response(
+                {"error": "Límite de subidas por hora alcanzado"},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
+        # DELEGAR TODO al serializer
+        serializer = SongUploadSerializer(
+            data=request.data,
+            context={'request': request}
+        )
         
         if serializer.is_valid():
             try:
-                song = serializer.save()
-                song.uploaded_by = request.user
-                song.save()
+                song = serializer.save()  # Serializer maneja uploads y creación
+                
+                # Actualizar rate limit
+                cache.set(user_key, cache.get(user_key, 0) + 1, 3600)
                 
                 return Response({
                     "message": "Canción subida exitosamente",
                     "song_id": song.id,
                     "title": song.title,
-                    "file_url": generate_presigned_url(song.file_key) if song.file_key else None,
-                    "image_url": generate_presigned_url(song.image_key) if song.image_key else None
+                    "artist": song.artist,
                 }, status=status.HTTP_201_CREATED)
                 
             except Exception as e:
+                logger.error(f"Upload error: {e}")
                 return Response(
-                    {"error": str(e)},
+                    {"error": "Error al procesar la subida"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-# AGREGAR esta vista para debugging y mantenimiento
+
+
 @extend_schema(
     description="Verificar estado de archivos en R2 para una canción",
     responses={
         200: OpenApiResponse(description="Estado de archivos obtenido"),
-        404: OpenApiResponse(description="Canción no encontrada")
+        404: OpenApiResponse(description="Canción no encontrada"),
+        403: OpenApiResponse(description="No autorizado")
     }
 )
+ # ← IMPORTANTE: Agrega este import en la parte superior
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def check_song_files(request, song_id):
@@ -1536,46 +1572,58 @@ def check_song_files(request, song_id):
     try:
         song = get_object_or_404(Song, id=song_id)
         
+        # Verificar permisos (solo owner o admin)
+        if not (request.user == song.uploaded_by or request.user.is_staff):
+            return Response(
+                {"error": "No tienes permisos para verificar esta canción"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        from .r2_utils import get_file_info
+        
         file_status = {
             'song_id': song_id,
             'title': song.title,
-            'artist': song.artist,
+            'artist': song.artist or '',
+            'uploaded_by': song.uploaded_by.username if song.uploaded_by else None,
             'files': {}
         }
         
         # Verificar archivo de audio
-        if song.file_key:
-            file_info = get_file_info(song.file_key)
+        if song.file_key and song.file_key != "songs/temp_file":
+            audio_info = get_file_info(song.file_key)
             file_status['files']['audio'] = {
                 'key': song.file_key,
-                'exists': check_file_exists(song.file_key),
-                'size': file_info['size'] if file_info else None,
-                'content_type': file_info.get('content_type') if file_info else None
+                'exists': bool(audio_info),  # get_file_info devuelve None si no existe
+                'size': audio_info.get('size') if audio_info else 0,
+                'content_type': audio_info.get('content_type', 'audio/mpeg') if audio_info else None
             }
         else:
-            file_status['files']['audio'] = {'exists': False, 'error': 'No file_key'}
+            file_status['files']['audio'] = {'exists': False, 'error': 'No file_key o temp_file'}
         
-        # Verificar imagen si existe
-        if song.image:
-            # Asumiendo que song.image contiene la key de R2
-            image_info = get_file_info(song.image)
+        # Verificar imagen (usa image_key, no image)
+        if song.image_key:
+            image_info = get_file_info(song.image_key)
             file_status['files']['image'] = {
-                'key': song.image,
-                'exists': check_file_exists(song.image),
-                'size': image_info['size'] if image_info else None,
-                'content_type': image_info.get('content_type') if image_info else None
+                'key': song.image_key,
+                'exists': bool(image_info),
+                'size': image_info.get('size') if image_info else 0,
+                'content_type': image_info.get('content_type', 'image/jpeg') if image_info else None
             }
         
         return Response(file_status)
         
+    except Http404:  # ← MANEJO EXPLÍCITO DE 404
+        return Response(
+            {"error": "Canción no encontrada"},
+            status=status.HTTP_404_NOT_FOUND
+        )
     except Exception as e:
-        logger.error(f"Error verificando archivos de canción {song_id}: {e}")
+        logger.error(f"Error check_song_files {song_id}: {e}")
         return Response(
             {"error": "Error al verificar archivos"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
-# =============================================================================
 # 📊 VISTAS DE MÉTRICAS - AGREGAR AL FINAL DE views.py
 # =============================================================================
 
