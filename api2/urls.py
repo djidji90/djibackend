@@ -77,3 +77,5 @@ if settings.DEBUG:
     urlpatterns += [
         path('health/debug/', views.health_check, name='health-debug'),
     ]   
+
+    
