@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import dj_database_url
 
+
 # Cargar variables de entorno
 load_dotenv()
 
@@ -18,6 +19,10 @@ ALLOWED_HOSTS = os.getenv(
     '127.0.0.1,localhost,djibackend-production.up.railway.app,djidjimusic.com,www.djidjimusic.com,api.djidjimusic.com'
 ).split(',')
 
+# Configuración para archivos grandes
+DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
 # ================================
 # 🔐 CSRF + CORS (CORREGIDO)
 # ================================
@@ -90,6 +95,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'api2.middleware.TimeoutMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -317,3 +323,5 @@ LOGGING = {
 }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+

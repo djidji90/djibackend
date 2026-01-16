@@ -5,6 +5,13 @@ from django.core.files.uploadedfile import InMemoryUploadedFile, TemporaryUpload
 from .r2_client import r2_client, R2_BUCKET_NAME
 import logging
 from botocore.exceptions import ClientError
+import os
+from io import BytesIO
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
+R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +27,15 @@ def validate_key(key):
     return True
 
 def get_content_type_from_key(key):
-    """
-    Determina el content type basado en la extensión del archivo.
-    """
+    """Determina el content type basado en la extensión"""
     if not key:
         return 'application/octet-stream'
     
-    # Extraer extensión
     if '.' in key:
         extension = key.split('.')[-1].lower()
     else:
         return 'application/octet-stream'
     
-    # Mapeo de extensiones a MIME types
     content_types = {
         'mp3': 'audio/mpeg',
         'wav': 'audio/wav',
@@ -45,18 +48,12 @@ def get_content_type_from_key(key):
         'png': 'image/png',
         'gif': 'image/gif',
         'webp': 'image/webp',
-        'mp4': 'video/mp4',
-        'pdf': 'application/pdf'
     }
     
     return content_types.get(extension, 'application/octet-stream')
 
-# =============================================================================
-# ✅ FUNCIONES PRINCIPALES
-# =============================================================================
-
 def upload_file_to_r2(file_obj, key, content_type=None):
-    """Sube un archivo a R2 Cloudflare Storage."""
+    """Sube un archivo a R2 Cloudflare Storage - VERSIÓN SIMPLE Y FUNCIONAL"""
     if not r2_client:
         logger.error("Cliente R2 no disponible")
         return False
@@ -71,45 +68,62 @@ def upload_file_to_r2(file_obj, key, content_type=None):
             if hasattr(file_obj, 'content_type') and file_obj.content_type:
                 content_type = file_obj.content_type
             else:
-                if isinstance(file_obj, str):
-                    content_type, _ = mimetypes.guess_type(file_obj)
-                if not content_type:
-                    content_type = get_content_type_from_key(key)
+                content_type = get_content_type_from_key(key)
+        
+        # Asegurar content_type válido
+        if not content_type:
+            content_type = 'application/octet-stream'
 
-        extra_args = {'ACL': 'private', 'ContentType': content_type}
+        # Configuración simple para R2
+        extra_args = {'ContentType': content_type}
 
-        # Si file_obj es una ruta de archivo
-        if isinstance(file_obj, str):
-            with open(file_obj, 'rb') as f:
-                r2_client.upload_fileobj(Fileobj=f, Bucket=R2_BUCKET_NAME, Key=key, ExtraArgs=extra_args)
-
-        # Si file_obj es un objeto tipo file
-        elif hasattr(file_obj, 'read'):
+        # Si file_obj es un objeto UploadedFile de Django
+        if hasattr(file_obj, 'read'):
+            # Asegurarse de que estamos al inicio del archivo
             if hasattr(file_obj, 'seek'):
                 try:
                     file_obj.seek(0)
-                except ValueError:
-                    # Archivo ya cerrado, intentar reabrir si tiene temporary_file_path
-                    if hasattr(file_obj, 'temporary_file_path'):
+                except (AttributeError, ValueError) as e:
+                    logger.warning(f"No se pudo seek en el archivo: {e}")
+                    # Si falla seek, crear nuevo BytesIO
+                    if hasattr(file_obj, 'file'):
+                        file_content = file_obj.file.read()
+                        file_obj = BytesIO(file_content)
+                        file_obj.seek(0)
+                    elif hasattr(file_obj, 'temporary_file_path'):
+                        # Archivo temporal en disco
                         with open(file_obj.temporary_file_path(), 'rb') as f:
-                            r2_client.upload_fileobj(Fileobj=f, Bucket=R2_BUCKET_NAME, Key=key, ExtraArgs=extra_args)
+                            r2_client.upload_fileobj(
+                                Fileobj=f,
+                                Bucket=R2_BUCKET_NAME,
+                                Key=key,
+                                ExtraArgs=extra_args
+                            )
+                        logger.info(f"✅ Archivo subido desde temp path: {key}")
                         return True
                     else:
-                        logger.error(f"El archivo proporcionado está cerrado: {key}")
+                        logger.error("No se puede procesar el archivo")
                         return False
-
-            r2_client.upload_fileobj(Fileobj=file_obj, Bucket=R2_BUCKET_NAME, Key=key, ExtraArgs=extra_args)
-
+            
+            # Subir el archivo CON EL CLIENTE ORIGINAL
+            r2_client.upload_fileobj(
+                Fileobj=file_obj,
+                Bucket=R2_BUCKET_NAME,
+                Key=key,
+                ExtraArgs=extra_args
+            )
+        
         else:
             logger.error(f"Tipo de archivo no soportado: {type(file_obj)}")
             return False
 
-        logger.info(f"Archivo subido exitosamente a R2: {key}")
+        logger.info(f"✅ Archivo subido exitosamente a R2: {key}")
         return True
 
     except Exception as e:
-        logger.error(f"Error subiendo archivo '{key}' a R2: {str(e)}")
+        logger.error(f"❌ Error subiendo archivo '{key}' a R2: {str(e)}", exc_info=True)
         return False
+
 
 def generate_presigned_url(key, expiration=3600):
     """Genera una URL temporal para acceder a un archivo privado en R2"""
