@@ -8,7 +8,9 @@ from django.core.files.uploadedfile import UploadedFile
 import uuid
 import os
 import logging
-
+import time
+import socket
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -471,50 +473,174 @@ class MusicEventAdmin(admin.ModelAdmin):
     image_url.short_description = 'URL Imagen'
     
     def save_model(self, request, obj, form, change):
+        """
+        Maneja la subida de imágenes de eventos a R2 con timeout controlado
+        """
+        import socket
+        from django.db import transaction
+        
+        # Configurar timeout para operaciones de red (evita timeout de Railway)
+        original_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(60)  # 60 segundos máximo
+        
         event_image = form.cleaned_data.get('event_image')
         old_image_key = obj.image_key if change else None
         
-        # Generar key antes de guardar
-        if event_image and isinstance(event_image, UploadedFile):
-            # Generar nueva key única
-            file_extension = os.path.splitext(event_image.name)[1].lower()
-            if not file_extension:
-                file_extension = '.jpg'
+        # DEBUG: Log inicial
+        logger.info(f"🔄 Guardando evento - ID: {obj.id if change else 'Nueva'}, Cambio: {change}")
+        
+        if event_image:
+            logger.info(f"📤 Imagen recibida: {event_image.name}, Size: {event_image.size}")
+        
+        try:
+            # Usar transacción atómica
+            with transaction.atomic():
+                # Generar key única ANTES de guardar
+                if event_image and isinstance(event_image, UploadedFile):
+                    file_extension = os.path.splitext(event_image.name)[1].lower()
+                    if not file_extension or file_extension not in ['.jpg', '.jpeg', '.png', '.webp', '.gif']:
+                        file_extension = '.jpg'  # Default seguro
+                    
+                    # Generar nombre único con timestamp para evitar colisiones
+                    import time
+                    timestamp = int(time.time())
+                    unique_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
+                    new_image_key = f"events/{unique_id}{file_extension}"
+                    
+                    logger.info(f"📝 Nueva key generada: {new_image_key}")
+                    obj.image_key = new_image_key
+                
+                # 1. GUARDAR PRIMERO EN DB
+                super().save_model(request, obj, form, change)
+                logger.info(f"💾 Evento guardado en DB - ID: {obj.id}")
+                
+                # 2. SUBIR A R2 SI HAY IMAGEN (después de guardar DB)
+                if event_image and isinstance(event_image, UploadedFile):
+                    self._upload_event_image(request, event_image, obj, old_image_key)
+        
+        except socket.timeout:
+            logger.error(f"⏰ TIMEOUT guardando evento {obj.id if hasattr(obj, 'id') else 'Nuevo'}")
+            messages.error(
+                request, 
+                "⏰ Timeout al procesar la imagen. El evento se guardó pero la imagen puede no estar disponible. "
+                "Intenta editar el evento para subir la imagen nuevamente."
+            )
             
-            new_image_key = f"events/{uuid.uuid4().hex[:16]}{file_extension}"
-            obj.image_key = new_image_key
+        except Exception as e:
+            logger.error(f"❌ Error crítico guardando evento: {str(e)}", exc_info=True)
+            messages.error(
+                request, 
+                f"Error guardando evento: {str(e)}"
+            )
+            
+        finally:
+            # Restaurar timeout original
+            socket.setdefaulttimeout(original_timeout)
+
+    def _upload_event_image(self, request, event_image, obj, old_image_key):
+        """
+        Método separado para subir imagen con manejo de errores robusto
+        """
+        MAX_RETRIES = 2
+        retry_count = 0
         
-        super().save_model(request, obj, form, change)
-        
-        # Subir imagen después de guardar
-        if event_image and isinstance(event_image, UploadedFile):
+        while retry_count <= MAX_RETRIES:
             try:
-                # Asegurar seek(0)
+                # Asegurar que el archivo está al inicio
                 if hasattr(event_image, 'seek'):
                     event_image.seek(0)
                 
-                # Usar content_type correctamente
+                # Obtener content_type
                 image_content_type = getattr(event_image, 'content_type', 'image/jpeg')
-                success = upload_file_to_r2(event_image, obj.image_key, content_type=image_content_type)
                 
-                if success and check_file_exists(obj.image_key):
-                    messages.success(request, f"✅ Imagen de evento subida: {obj.image_key}")
+                # Validar tamaño antes de subir (opcional pero recomendado)
+                max_size = 10 * 1024 * 1024  # 10MB
+                if hasattr(event_image, 'size') and event_image.size > max_size:
+                    messages.error(request, f"❌ Imagen demasiado grande. Máximo: {max_size/(1024*1024)}MB")
+                    return
+                
+                logger.info(f"⬆️ Subiendo imagen a R2: {obj.image_key} ({retry_count+1}/{MAX_RETRIES+1} intento)")
+                
+                # Subir a R2 con timeout específico
+                success = upload_file_to_r2(
+                    file_obj=event_image,
+                    key=obj.image_key,
+                    content_type=image_content_type
+                )
+                
+                if success:
+                    # Verificar que se subió correctamente
+                    time.sleep(1)  # Pequeña pausa para que R2 procese
                     
-                    # Eliminar imagen antigua si existe
-                    if old_image_key and old_image_key != obj.image_key:
-                        try:
-                            if check_file_exists(old_image_key):
-                                delete_file_from_r2(old_image_key)
-                        except Exception:
-                            pass
+                    if check_file_exists(obj.image_key):
+                        logger.info(f"✅ Imagen subida exitosamente: {obj.image_key}")
+                        messages.success(request, f"✅ Imagen de evento subida correctamente")
+                        
+                        # Limpiar imagen antigua si existe y es diferente
+                        self._cleanup_old_image(old_image_key, obj.image_key)
+                        
+                        # Actualizar tamaño en DB si el campo existe
+                        if hasattr(obj, 'image_size') and hasattr(event_image, 'size'):
+                            obj.image_size = event_image.size
+                            obj.save(update_fields=['image_size'])
+                        
+                        return  # Éxito, salir
+                    else:
+                        logger.warning(f"⚠️ Upload marcado como éxito pero imagen no encontrada: {obj.image_key}")
+                        messages.warning(
+                            request, 
+                            f"Imagen subida pero necesita verificación. Key: {obj.image_key}"
+                        )
                 else:
-                    messages.error(request, f"❌ Error subiendo imagen de evento: {obj.image_key}")
+                    logger.error(f"❌ Falló subida de imagen (intento {retry_count+1}): {obj.image_key}")
+                    
+                    if retry_count < MAX_RETRIES:
+                        retry_count += 1
+                        logger.info(f"🔄 Reintentando ({retry_count}/{MAX_RETRIES})...")
+                        time.sleep(2)  # Esperar antes de reintentar
+                        continue
+                    else:
+                        messages.error(request, f"❌ Error subiendo imagen después de {MAX_RETRIES+1} intentos")
+                        return
+            
+            except socket.timeout:
+                logger.error(f"⏰ Timeout subiendo imagen (intento {retry_count+1}): {obj.image_key}")
+                
+                if retry_count < MAX_RETRIES:
+                    retry_count += 1
+                    logger.info(f"🔄 Reintentando después de timeout ({retry_count}/{MAX_RETRIES})...")
+                    time.sleep(3)  # Esperar más después de timeout
+                    continue
+                else:
+                    messages.error(
+                        request, 
+                        "⏰ Timeout al subir imagen después de múltiples intentos. "
+                        "La imagen puede no estar disponible."
+                    )
+                    return
+                    
             except Exception as e:
-                messages.error(request, f"Excepción subiendo imagen: {e}")
+                logger.error(f"❌ Error inesperado subiendo imagen: {str(e)}", exc_info=True)
+                messages.error(request, f"Error subiendo imagen: {str(e)}")
+                return
 
-# =============================================
-# ADMIN PARA USERPROFILE - CORREGIDO
-# =============================================
+    def _cleanup_old_image(self, old_image_key, new_image_key):
+        """
+        Elimina imagen antigua de R2 de manera segura
+        """
+        if old_image_key and old_image_key != new_image_key:
+            try:
+                if check_file_exists(old_image_key):
+                    logger.info(f"🗑️ Eliminando imagen antigua: {old_image_key}")
+                    if delete_file_from_r2(old_image_key):
+                        logger.info(f"✅ Imagen antigua eliminada: {old_image_key}")
+                    else:
+                        logger.warning(f"⚠️ No se pudo eliminar imagen antigua: {old_image_key}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error limpiando imagen antigua {old_image_key}: {e}")
+    # =============================================
+    # ADMIN PARA USERPROFILE - CORREGIDO
+    # =============================================
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
