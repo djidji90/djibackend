@@ -755,7 +755,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 import os
 import json
-import magic
+
 from datetime import datetime, timedelta
 import re
 
