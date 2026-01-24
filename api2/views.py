@@ -1,23 +1,44 @@
-
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse, OpenApiExample
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
-from django.db import DatabaseError, IntegrityError, transaction
-from rest_framework.exceptions import ValidationError, PermissionDenied
-from django.db.models.functions import Lower
-from django.http import HttpRequest, HttpResponse, StreamingHttpResponse, JsonResponse
-# AGREGAR al inicio del archivo
-from .r2_utils import get_file_info, stream_file_from_r2, get_content_type_from_key
-from django.shortcuts import get_object_or_404
-from django.http import Http404
-from django.utils.text import slugify
+from datetime import datetime, timedelta
+import json
+import logging
+import re
 import time
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from rest_framework.decorators import permission_classes
-from django.db.models import Value, CharField, Q, Count , IntegerField, Case, When, BooleanField
-from rest_framework.response import Response
-from rest_framework.decorators import api_view
-from .models import Song, Like, Download, Comment, MusicEvent
+import random
+from django.db import models
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.db import transaction, DatabaseError, IntegrityError
+from django.db.models import (
+    Q, Count, Case, When, Value, 
+    CharField, IntegerField, BooleanField
+)
+from django.db.models.functions import Lower
+from django.http import (
+    HttpRequest, HttpResponse, StreamingHttpResponse, 
+    JsonResponse, Http404
+)
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.text import slugify
+from django_filters.rest_framework import DjangoFilterBackend
+
+from rest_framework import status, generics
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError, PermissionDenied
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
+from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
+from rest_framework.views import APIView
+from rest_framework.pagination import PageNumberPagination  # AGREGAR esta línea
+from drf_spectacular.utils import (
+    extend_schema, OpenApiParameter, OpenApiResponse, OpenApiExample
+)
+
+from api2.models import UploadSession, UploadQuota, Song, UserProfile, Like, Download, Comment, MusicEvent
+from api2.tasks import process_direct_upload
+from api2.utils.r2_direct import r2_direct, R2UploadValidator
 from .r2_utils import (
     upload_file_to_r2, 
     generate_presigned_url, 
@@ -25,36 +46,22 @@ from .r2_utils import (
     check_file_exists,
     get_file_info,
     get_file_size,
-    stream_file_from_r2,  # AGREGAR esta importación
-    get_content_type_from_key  # AGREGAR esta importación
+    stream_file_from_r2,
+    get_content_type_from_key
 )
-from . import serializers
+from . import serializers  # AGREGAR esta línea
+from .serializers import (
+    DirectUploadRequestSerializer,
+    UploadConfirmationSerializer,
+    UploadSessionSerializer,
+    SongSerializer,
+    CommentSerializer,
+    MusicEventSerializer,
+    SongUploadSerializer
+)
 
-from .serializers import SongSerializer, CommentSerializer, MusicEventSerializer
-import logging
-from rest_framework.renderers import JSONRenderer
-
-from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
-from django.shortcuts import get_object_or_404
-from rest_framework.views import APIView
-from rest_framework import status
-from django.core.cache import cache
-from rest_framework.pagination import PageNumberPagination
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.throttling import UserRateThrottle
-import random
-from api2.serializers import SongUploadSerializer
-from rest_framework.parsers import MultiPartParser, FormParser
-
-# ✅ AGREGAR estos imports faltantes
-from django.http import HttpResponse, StreamingHttpResponse, JsonResponse
-import re
-from django.contrib.auth import get_user_model
-from django.utils import timezone
-
-User = get_user_model()
 logger = logging.getLogger(__name__)
+User = get_user_model()
 
 # En tu views.py
 
@@ -2265,3 +2272,912 @@ def complete_search(request):
                 "cache_hit": False
             }
         }, status=200)  # Siempre 200 para que frontend maneje el error
+    
+class UploadRateThrottle(UserRateThrottle):
+    """Rate limiting para uploads"""
+    scope = 'uploads'
+    rate = '100/hour'
+
+
+class DirectUploadRequestView(APIView):
+    """
+    Endpoint para solicitar URL de upload directo a R2
+    POST /api/upload/direct/request/
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [UploadRateThrottle]
+    
+    def post(self, request):
+        """Solicitar URL firmada para upload directo"""
+        # Rate limiting por IP adicional
+        ip = self._get_client_ip(request)
+        ip_cache_key = f'upload_ip_limit_{ip}'
+        ip_requests = cache.get(ip_cache_key, 0)
+        
+        if ip_requests > 50:
+            return Response(
+                {
+                    "error": "rate_limit_exceeded",
+                    "message": "Demasiadas solicitudes desde esta IP"
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
+        # 1. Validar datos de entrada
+        serializer = DirectUploadRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            logger.warning(f"Validation error for user {request.user.id}: {serializer.errors}")
+            return Response(
+                {
+                    "error": "validation_error",
+                    "errors": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        user = request.user
+        file_name = serializer.validated_data['file_name']
+        file_size = serializer.validated_data['file_size']
+        file_type = serializer.validated_data.get('file_type', '')
+        metadata = serializer.validated_data.get('metadata', {})
+        
+        # 2. Verificar cuota (con transacción para evitar race conditions)
+        try:
+            with transaction.atomic():
+                quota, created = UploadQuota.objects.select_for_update().get_or_create(
+                    user=user
+                )
+                
+                can_upload, error_message = quota.can_upload(file_size)
+                if not can_upload:
+                    logger.warning(
+                        f"Quota exceeded for user {user.id}: {error_message}"
+                    )
+                    return Response(
+                        {
+                            "error": "quota_exceeded",
+                            "message": error_message,
+                            "quota": quota.get_quota_info()
+                        },
+                        status=status.HTTP_429_TOO_MANY_REQUESTS
+                    )
+                
+                # 3. Generar URL firmada para R2 (CORREGIDO - sin custom_key)
+                try:
+                    upload_data = r2_direct.generate_presigned_post(
+                        user_id=user.id,
+                        file_name=file_name,
+                        file_size=file_size,
+                        file_type=file_type,
+                        # expires_in usa valor por defecto de 3600
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error generating signed URL for user {user.id}: {str(e)}",
+                        exc_info=True
+                    )
+                    return Response(
+                        {
+                            "error": "upload_config_error",
+                            "message": "Error configurando upload. Intenta nuevamente."
+                        },
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                # 4. Crear sesión de upload (CORREGIDO - timestamp a datetime)
+                try:
+                    # Convertir timestamp a datetime
+                    expires_at_timestamp = upload_data['expires_at']
+                    expires_at = datetime.fromtimestamp(expires_at_timestamp, tz=timezone.utc)
+                    
+                    upload_session = UploadSession.objects.create(
+                        user=user,
+                        file_name=file_name,
+                        file_size=file_size,
+                        file_type=file_type,
+                        original_file_name=metadata.get('original_name', file_name),
+                        file_key=upload_data['key'],
+                        status='pending',
+                        expires_at=expires_at,  # Usar datetime
+                        metadata={
+                            **metadata,
+                            'ip_address': ip,
+                            'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+                            'upload_timestamp': timezone.now().isoformat()
+                        }
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error creating upload session for user {user.id}: {str(e)}",
+                        exc_info=True
+                    )
+                    return Response(
+                        {
+                            "error": "session_creation_error",
+                            "message": "Error creando sesión de upload"
+                        },
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                # 5. Reservar cuota (transaccional)
+                quota.reserve_quota(file_size)
+                
+                # 6. Actualizar cache de rate limiting
+                cache.set(ip_cache_key, ip_requests + 1, 3600)
+        
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in upload request for user {user.id}: {str(e)}",
+                exc_info=True
+            )
+            return Response(
+                {
+                    "error": "internal_error",
+                    "message": "Error interno del servidor"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # 7. Respuesta exitosa
+        logger.info(
+            f"Upload URL generated for user {user.id}: "
+            f"{upload_session.id}, key: {upload_data['key']}"
+        )
+        
+        return Response({
+            "success": True,
+            "upload_id": str(upload_session.id),
+            "upload_url": upload_data['url'],
+            "fields": upload_data['fields'],
+            "file_key": upload_data['key'],
+            "expires_at": upload_session.expires_at.isoformat(),
+            "expires_in": 3600,
+            "max_size": file_size,
+            "confirmation_url": self._get_confirmation_url(upload_session.id),
+            "instructions": {
+                "method": "POST",
+                "content_type": "multipart/form-data",
+                "steps": [
+                    "1. Crear FormData",
+                    "2. Agregar todos los campos de 'fields'",
+                    "3. Agregar archivo en campo 'file'",
+                    "4. POST a 'upload_url'",
+                    "5. Confirmar upload en 'confirmation_url'"
+                ]
+            }
+        })
+    
+    def _get_client_ip(self, request):
+        """Obtiene IP real del cliente"""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+    
+    def _get_confirmation_url(self, upload_id):
+        """Genera URL para confirmación"""
+        from django.conf import settings
+        api_base = settings.API_URL.rstrip('/')
+        return f"{api_base}/api/upload/direct/confirm/{upload_id}/"
+
+
+class UploadConfirmationView(APIView):
+    """
+    Endpoint para confirmar que un archivo fue subido exitosamente
+    POST /api/upload/direct/confirm/<upload_id>/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, upload_id):
+        """Confirmar que un archivo fue subido a R2"""
+        try:
+            # 1. Obtener y validar sesión
+            upload_session = UploadSession.objects.get(
+                id=upload_id,
+                user=request.user
+            )
+            
+            # 2. Validar que puede confirmarse
+            if not upload_session.can_confirm:
+                return Response(
+                    {
+                        "error": "cannot_confirm",
+                        "message": "Esta sesión no puede ser confirmada",
+                        "status": upload_session.status,
+                        "is_expired": upload_session.is_expired,
+                        "confirmed": upload_session.confirmed
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 3. Validar datos de confirmación
+            serializer = UploadConfirmationSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(
+                    {"error": "validation_error", "errors": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 4. Verificar que el archivo existe en R2
+            file_exists, file_metadata = r2_direct.verify_file_uploaded(
+                upload_session.file_key
+            )
+            
+            if not file_exists:
+                upload_session.mark_as_failed("Archivo no encontrado en R2")
+                
+                # Liberar cuota pendiente
+                quota = UploadQuota.objects.get(user=request.user)
+                quota.release_pending_quota(upload_session.file_size)
+                
+                return Response(
+                    {
+                        "error": "file_not_found",
+                        "message": "El archivo no fue subido exitosamente",
+                        "metadata": file_metadata
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # 5. Validar integridad del archivo (CORREGIDO - método renombrado)
+            validation_result = r2_direct.validate_upload_integrity(
+                key=upload_session.file_key,
+                expected_size=upload_session.file_size,
+                expected_uploader_id=request.user.id
+            )
+            
+            if not validation_result['valid']:
+                issues = validation_result.get('issues', [])
+                error_msg = f"Archivo inválido: {', '.join(issues)}"
+                
+                upload_session.mark_as_failed(error_msg)
+                
+                # Liberar cuota
+                quota = UploadQuota.objects.get(user=request.user)
+                quota.release_pending_quota(upload_session.file_size)
+                
+                # Opcional: eliminar archivo inválido de R2
+                if serializer.validated_data.get('delete_invalid', False):
+                    r2_direct.delete_file(upload_session.file_key)
+                
+                return Response(
+                    {
+                        "error": "file_invalid",
+                        "message": error_msg,
+                        "validation": validation_result
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 6. Confirmar upload (transaccional)
+            try:
+                with transaction.atomic():
+                    # Marcar sesión como confirmada
+                    upload_session.mark_as_confirmed()
+                    
+                    # Actualizar cuota
+                    quota = UploadQuota.objects.select_for_update().get(
+                        user=request.user
+                    )
+                    quota.confirm_upload(upload_session.file_size)
+                    
+                    # Encolar procesamiento
+                    process_direct_upload.delay(
+                        upload_session_id=str(upload_session.id),
+                        file_key=upload_session.file_key,
+                        file_size=upload_session.file_size,
+                        content_type=upload_session.file_type,
+                        metadata={
+                            **upload_session.metadata,
+                            **validation_result.get('metadata', {})
+                        }
+                    )
+                    
+                    logger.info(
+                        f"Upload confirmed: {upload_id}, "
+                        f"user: {request.user.id}, "
+                        f"key: {upload_session.file_key}"
+                    )
+                    
+            except Exception as e:
+                logger.error(
+                    f"Error confirming upload {upload_id}: {str(e)}",
+                    exc_info=True
+                )
+                return Response(
+                    {
+                        "error": "confirmation_failed",
+                        "message": "Error confirmando upload"
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # 7. Respuesta exitosa
+            return Response({
+                "success": True,
+                "upload_id": str(upload_session.id),
+                "status": upload_session.status,
+                "confirmed_at": upload_session.confirmed_at.isoformat(),
+                "processing_started": True,
+                "estimated_time": "30-60 segundos",
+                "check_status_url": f"/api/upload/direct/status/{upload_id}/"
+            })
+            
+        except UploadSession.DoesNotExist:
+            return Response(
+                {
+                    "error": "not_found",
+                    "message": "Sesión de upload no encontrada o no autorizada"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in confirmation for upload {upload_id}: {str(e)}",
+                exc_info=True
+            )
+            return Response(
+                {
+                    "error": "internal_error",
+                    "message": "Error interno confirmando upload"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class DirectUploadStatusView(APIView):
+    """
+    Verifica estado de un upload directo
+    GET /api/upload/direct/status/<upload_id>/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, upload_id):
+        try:
+            # Obtener sesión (solo el dueño puede ver)
+            upload_session = UploadSession.objects.get(
+                id=upload_id,
+                user=request.user
+            )
+            
+            # Verificar si necesita actualizar estado por archivo en R2
+            if upload_session.status in ['pending', 'uploaded']:
+                # Verificar si el archivo existe en R2
+                file_exists, file_metadata = r2_direct.verify_file_uploaded(
+                    upload_session.file_key
+                )
+                
+                if file_exists and upload_session.status == 'pending':
+                    # Frontend subió pero no confirmó aún
+                    upload_session.mark_as_uploaded()
+            
+            # Construir respuesta
+            response_data = self._build_status_response(upload_session)
+            
+            return Response(response_data)
+            
+        except UploadSession.DoesNotExist:
+            return Response(
+                {
+                    "error": "not_found",
+                    "message": "Upload session no encontrada"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error obteniendo estado: {str(e)}", exc_info=True)
+            return Response(
+                {
+                    "error": "status_check_error",
+                    "message": "Error verificando estado"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def _build_status_response(self, upload_session):
+        """Construye respuesta de estado detallada"""
+        base_data = {
+            "upload_id": str(upload_session.id),
+            "status": upload_session.status,
+            "status_message": upload_session.status_message,
+            "file_name": upload_session.file_name,
+            "file_size": upload_session.file_size,
+            "file_type": upload_session.file_type,
+            "created_at": upload_session.created_at.isoformat(),
+            "updated_at": upload_session.updated_at.isoformat(),
+            "expires_at": upload_session.expires_at.isoformat(),
+            "is_expired": upload_session.is_expired,
+            "confirmed": upload_session.confirmed,
+            "confirmed_at": upload_session.confirmed_at.isoformat() if upload_session.confirmed_at else None,
+            "can_confirm": upload_session.can_confirm,
+        }
+        
+        # Agregar info según estado
+        if upload_session.status == 'ready' and upload_session.song:
+            base_data['song'] = {
+                "id": upload_session.song.id,
+                "title": upload_session.song.title,
+                "artist": upload_session.song.artist,
+                "file_key": upload_session.song.file_key,
+                "stream_url": f"/api/stream/{upload_session.song.id}/",
+                "duration": upload_session.song.duration
+            }
+        elif upload_session.status == 'failed':
+            base_data['can_retry'] = upload_session.is_expired
+            base_data['retry_instructions'] = "Solicita una nueva URL de upload"
+        
+        # Para estados pendientes, agregar info de R2
+        if upload_session.status in ['pending', 'uploaded']:
+            file_exists, file_metadata = r2_direct.verify_file_uploaded(
+                upload_session.file_key
+            )
+            base_data['file_in_r2'] = file_exists
+            if file_exists:
+                base_data['file_metadata'] = file_metadata
+        
+        return base_data
+
+
+class UserUploadQuotaView(APIView):
+    """
+    Muestra la cuota de upload del usuario
+    GET /api/upload/quota/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            quota, created = UploadQuota.objects.get_or_create(user=request.user)
+            quota_info = quota.get_quota_info()
+            
+            # Agregar información de sesiones activas
+            active_sessions = UploadSession.objects.filter(
+                user=request.user,
+                status__in=['pending', 'uploaded', 'confirmed', 'processing']
+            ).count()
+            
+            quota_info['active_sessions'] = active_sessions
+            
+            return Response(quota_info)
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo cuota para user {request.user.id}: {str(e)}")
+            return Response(
+                {
+                    "error": "quota_error",
+                    "message": "Error obteniendo información de cuota"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UploadCancellationView(APIView):
+    """
+    Cancela un upload pendiente
+    POST /api/upload/direct/cancel/<upload_id>/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, upload_id):
+        try:
+            upload_session = UploadSession.objects.get(
+                id=upload_id,
+                user=request.user
+            )
+            
+            # Solo se puede cancelar si está pendiente o subido
+            if upload_session.status not in ['pending', 'uploaded']:
+                return Response(
+                    {
+                        "error": "cannot_cancel",
+                        "message": f"No se puede cancelar en estado: {upload_session.status}"
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Transacción para consistencia
+            with transaction.atomic():
+                # Marcar como cancelado
+                upload_session.status = 'cancelled'
+                upload_session.save(update_fields=['status', 'updated_at'])
+                
+                # Liberar cuota pendiente
+                quota = UploadQuota.objects.select_for_update().get(
+                    user=request.user
+                )
+                quota.release_pending_quota(upload_session.file_size)
+                
+                # Opcional: eliminar archivo de R2 si existe
+                if request.data.get('delete_from_r2', False):
+                    file_exists, _ = r2_direct.verify_file_uploaded(
+                        upload_session.file_key
+                    )
+                    if file_exists:
+                        r2_direct.delete_file(upload_session.file_key)
+            
+            return Response({
+                "success": True,
+                "upload_id": str(upload_session.id),
+                "status": "cancelled",
+                "quota_released": True
+            })
+            
+        except UploadSession.DoesNotExist:
+            return Response(
+                {"error": "not_found", "message": "Sesión no encontrada"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error cancelando upload {upload_id}: {str(e)}")
+            return Response(
+                {"error": "cancellation_error", "message": "Error cancelando upload"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+
+# ================================
+# VISTAS DE ADMINISTRACIÓN PARA UPLOADS (AGREGAR AL FINAL)
+# ================================
+
+class UploadAdminDashboardView(APIView):
+    """
+    Dashboard de administración para uploads (solo staff)
+    GET /api/upload/admin/dashboard/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Verificar que el usuario sea staff
+        if not request.user.is_staff:
+            return Response(
+                {"error": "unauthorized", "message": "Acceso denegado"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Obtener estadísticas generales
+        total_uploads = UploadSession.objects.count()
+        today = timezone.now().date()
+        uploads_today = UploadSession.objects.filter(
+            created_at__date=today
+        ).count()
+        
+        uploads_by_status = UploadSession.objects.values('status').annotate(
+            count=models.Count('id')
+        ).order_by('status')
+        
+        recent_uploads = UploadSession.objects.select_related('user').order_by('-created_at')[:10]
+        
+        # Calcular cuota total usada
+        total_quota_used = UploadSession.objects.filter(
+            status__in=['confirmed', 'ready']
+        ).aggregate(total_size=models.Sum('file_size'))['total_size'] or 0
+        
+        data = {
+            "stats": {
+                "total_uploads": total_uploads,
+                "uploads_today": uploads_today,
+                "uploads_last_7_days": UploadSession.objects.filter(
+                    created_at__gte=timezone.now() - timedelta(days=7)
+                ).count(),
+                "total_quota_used_bytes": total_quota_used,
+                "total_quota_used_gb": round(total_quota_used / (1024**3), 2),
+                "active_uploads": UploadSession.objects.filter(
+                    status__in=['pending', 'uploaded', 'processing']
+                ).count(),
+            },
+            "uploads_by_status": list(uploads_by_status),
+            "recent_uploads": self._serialize_recent_uploads(recent_uploads),
+            "top_users": self._get_top_uploaders(),
+        }
+        
+        return Response(data)
+    
+    def _serialize_recent_uploads(self, uploads):
+        """Serializa uploads recientes de forma simple"""
+        result = []
+        for upload in uploads:
+            result.append({
+                'id': str(upload.id),
+                'user_id': upload.user.id,
+                'username': upload.user.username,
+                'file_name': upload.file_name,
+                'file_size': upload.file_size,
+                'status': upload.status,
+                'created_at': upload.created_at.isoformat(),
+                'expires_at': upload.expires_at.isoformat() if upload.expires_at else None,
+            })
+        return result
+    
+    def _get_top_uploaders(self):
+        """Obtiene los usuarios con más uploads"""
+        from django.db.models import Count
+        from django.contrib.auth import get_user_model
+        
+        User = get_user_model()
+        
+        top_users = UploadSession.objects.values('user').annotate(
+            upload_count=Count('id'),
+            total_size=models.Sum('file_size')
+        ).order_by('-upload_count')[:10]
+        
+        result = []
+        for item in top_users:
+            try:
+                user = User.objects.get(id=item['user'])
+                result.append({
+                    'user_id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'upload_count': item['upload_count'],
+                    'total_size': item['total_size'],
+                    'total_size_gb': round((item['total_size'] or 0) / (1024**3), 2),
+                })
+            except User.DoesNotExist:
+                continue
+        
+        return result
+
+
+class UploadStatsView(APIView):
+    """
+    Estadísticas detalladas de uploads para monitoreo
+    GET /api/upload/admin/stats/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        if not request.user.is_staff:
+            return Response(
+                {"error": "unauthorized", "message": "Acceso denegado"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Configurar el rango de tiempo (por defecto últimos 30 días)
+        days = int(request.query_params.get('days', 30))
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Estadísticas por día
+        daily_stats = []
+        for day in range(days):
+            day_start = start_date + timedelta(days=day)
+            day_end = day_start + timedelta(days=1)
+            
+            day_uploads = UploadSession.objects.filter(
+                created_at__gte=day_start,
+                created_at__lt=day_end
+            )
+            
+            count = day_uploads.count()
+            total_size = day_uploads.aggregate(total=models.Sum('file_size'))['total'] or 0
+            
+            daily_stats.append({
+                "date": day_start.date().isoformat(),
+                "count": count,
+                "total_size_bytes": total_size,
+                "total_size_mb": round(total_size / (1024*1024), 2)
+            })
+        
+        # Tamaños de archivo
+        size_stats = {
+            "small": UploadSession.objects.filter(file_size__lt=5*1024*1024).count(),  # <5MB
+            "medium": UploadSession.objects.filter(
+                file_size__gte=5*1024*1024, 
+                file_size__lt=50*1024*1024
+            ).count(),  # 5-50MB
+            "large": UploadSession.objects.filter(
+                file_size__gte=50*1024*1024, 
+                file_size__lt=200*1024*1024
+            ).count(),  # 50-200MB
+            "xlarge": UploadSession.objects.filter(file_size__gte=200*1024*1024).count(),  # >200MB
+        }
+        
+        # Tipos de archivo más comunes
+        file_types = UploadSession.objects.exclude(file_type='').exclude(
+            file_type__isnull=True
+        ).values('file_type').annotate(
+            count=models.Count('id'),
+            avg_size=models.Avg('file_size')
+        ).order_by('-count')[:15]
+        
+        # Estadísticas de éxito
+        success_stats = {
+            'total': UploadSession.objects.filter(created_at__gte=start_date).count(),
+            'successful': UploadSession.objects.filter(
+                created_at__gte=start_date,
+                status='ready'
+            ).count(),
+            'failed': UploadSession.objects.filter(
+                created_at__gte=start_date,
+                status='failed'
+            ).count(),
+            'pending': UploadSession.objects.filter(
+                created_at__gte=start_date,
+                status__in=['pending', 'uploaded', 'processing']
+            ).count(),
+        }
+        
+        if success_stats['total'] > 0:
+            success_stats['success_rate'] = round(
+                (success_stats['successful'] / success_stats['total']) * 100, 2
+            )
+            success_stats['failure_rate'] = round(
+                (success_stats['failed'] / success_stats['total']) * 100, 2
+            )
+        
+        return Response({
+            "time_range": {
+                "days": days,
+                "start_date": start_date.isoformat(),
+                "end_date": timezone.now().isoformat()
+            },
+            "daily_stats": daily_stats,
+            "size_distribution": size_stats,
+            "file_types": list(file_types),
+            "success_rates": success_stats,
+            "summary": {
+                "total_uploads": success_stats['total'],
+                "successful_uploads": success_stats['successful'],
+                "failed_uploads": success_stats['failed'],
+                "pending_uploads": success_stats['pending'],
+            }
+        })
+
+
+class CleanupExpiredUploadsView(APIView):
+    """
+    Limpieza manual de uploads expirados
+    POST /api/upload/admin/cleanup/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        if not request.user.is_staff:
+            return Response(
+                {"error": "unauthorized", "message": "Acceso denegado"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Encontrar uploads expirados
+            expired_uploads = UploadSession.objects.filter(
+                expires_at__lt=timezone.now(),
+                status__in=['pending', 'uploaded']
+            )
+            
+            count = expired_uploads.count()
+            
+            if count == 0:
+                return Response({
+                    "success": True,
+                    "message": "No hay uploads expirados para limpiar",
+                    "count": 0
+                })
+            
+            # Marcar como expirados
+            expired_ids = list(expired_uploads.values_list('id', flat=True))
+            expired_uploads.update(status='expired', updated_at=timezone.now())
+            
+            # Liberar cuota pendiente
+            from django.db.models import Sum
+            
+            # Agrupar por usuario para liberar cuota eficientemente
+            user_quotas = expired_uploads.values('user').annotate(
+                total_size=Sum('file_size')
+            )
+            
+            for item in user_quotas:
+                try:
+                    quota = UploadQuota.objects.get(user_id=item['user'])
+                    quota.release_pending_quota(item['total_size'])
+                except UploadQuota.DoesNotExist:
+                    pass
+            
+            # Opcional: eliminar archivos de R2
+            delete_from_r2 = request.data.get('delete_from_r2', False)
+            deleted_from_r2 = 0
+            
+            if delete_from_r2:
+                for upload in expired_uploads:
+                    try:
+                        file_exists, _ = r2_direct.verify_file_uploaded(upload.file_key)
+                        if file_exists:
+                            r2_direct.delete_file(upload.file_key)
+                            deleted_from_r2 += 1
+                    except Exception as e:
+                        logger.error(f"Error eliminando archivo {upload.file_key}: {str(e)}")
+            
+            logger.info(f"Limpieza completada: {count} uploads expirados marcados")
+            
+            return Response({
+                "success": True,
+                "message": f"Se limpiaron {count} uploads expirados",
+                "count": count,
+                "expired_ids": expired_ids[:50],  # Limitar para respuesta
+                "deleted_from_r2": deleted_from_r2 if delete_from_r2 else None,
+                "details": {
+                    "uploads_marked_expired": count,
+                    "files_deleted_from_r2": deleted_from_r2,
+                    "quota_freed": sum(item['total_size'] for item in user_quotas)
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error en limpieza: {str(e)}", exc_info=True)
+            return Response(
+                {
+                    "error": "cleanup_error",
+                    "message": f"Error en limpieza: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CheckOrphanedFilesView(APIView):
+    """
+    Verifica archivos huérfanos en R2
+    GET /api/upload/admin/check-orphaned/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        if not request.user.is_staff:
+            return Response(
+                {"error": "unauthorized", "message": "Acceso denegado"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Obtener todas las keys de la base de datos
+            db_keys = set(UploadSession.objects.exclude(
+                file_key__isnull=True
+            ).exclude(
+                file_key=''
+            ).values_list('file_key', flat=True))
+            
+            # Verificar archivos en DB que no están en R2
+            missing_in_r2 = []
+            
+            # Solo verificar algunos para no sobrecargar
+            sample_keys = list(db_keys)[:50]  # Límite para no saturar
+            
+            for key in sample_keys:
+                try:
+                    exists, metadata = r2_direct.verify_file_uploaded(key)
+                    if not exists:
+                        missing_in_r2.append({
+                            'key': key,
+                            'reason': 'No encontrado en R2',
+                            'metadata': metadata
+                        })
+                except Exception as e:
+                    missing_in_r2.append({
+                        'key': key,
+                        'reason': f'Error verificando: {str(e)}'
+                    })
+            
+            return Response({
+                "check_type": "partial",  # Solo verificación parcial
+                "db_files_checked": len(sample_keys),
+                "missing_in_r2": {
+                    "count": len(missing_in_r2),
+                    "files": missing_in_r2[:20]  # Limitar respuesta
+                },
+                "summary": {
+                    "total_files_in_db": len(db_keys),
+                    "sample_checked": len(sample_keys),
+                    "missing_percentage": f"{(len(missing_in_r2)/max(len(sample_keys),1))*100:.1f}%"
+                },
+                "note": "Para verificación completa de archivos huérfanos, implementa list_files en r2_direct"
+            })
+            
+        except Exception as e:
+            logger.error(f"Error verificando archivos huérfanos: {str(e)}", exc_info=True)
+            return Response(
+                {
+                    "error": "check_error",
+                    "message": f"Error verificando archivos: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )        

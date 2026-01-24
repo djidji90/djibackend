@@ -7,6 +7,7 @@ from .r2_utils import upload_file_to_r2, delete_file_from_r2, generate_presigned
 import os
 import uuid
 from django.db import transaction
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -748,3 +749,598 @@ class HealthCheckSerializer(serializers.Serializer):
     timestamp = serializers.DateTimeField()
     service = serializers.CharField()
     version = serializers.CharField()
+
+# api2/serializers/upload_direct.py
+from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
+import os
+import json
+import magic
+from datetime import datetime, timedelta
+import re
+
+
+class DirectUploadRequestSerializer(serializers.Serializer):
+    """
+    Serializer para solicitar upload directo a R2
+    Valida y sanitiza datos del frontend
+    """
+    
+    file_name = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Nombre del archivo con extensión (ej: 'mi-cancion.mp3')"
+    )
+    
+    file_size = serializers.IntegerField(
+        min_value=1,
+        max_value=500 * 1024 * 1024,  # 500MB máximo absoluto
+        required=True,
+        help_text="Tamaño del archivo en bytes"
+    )
+    
+    file_type = serializers.CharField(
+        max_length=100,
+        required=False,
+        default="",
+        allow_blank=True,
+        help_text="Tipo MIME (ej: 'audio/mpeg', 'image/jpeg'). Si no se especifica, se detectará automáticamente."
+    )
+    
+    metadata = serializers.DictField(
+        required=False,
+        default=dict,
+        help_text="Metadatos adicionales del archivo"
+    )
+    
+    class Meta:
+        fields = ['file_name', 'file_size', 'file_type', 'metadata']
+    
+    def validate_file_name(self, value):
+        """
+        Validar nombre de archivo: seguridad y formato
+        """
+        if not value or not value.strip():
+            raise ValidationError("El nombre del archivo no puede estar vacío")
+        
+        # Limpiar nombre
+        cleaned_name = self._sanitize_filename(value)
+        
+        # Validar longitud después de limpieza
+        if len(cleaned_name) > 200:
+            raise ValidationError("El nombre del archivo es demasiado largo (máx. 200 caracteres)")
+        
+        # Validar que tenga extensión
+        name_without_path = os.path.basename(cleaned_name)
+        if '.' not in name_without_path:
+            raise ValidationError("El archivo debe tener una extensión")
+        
+        # Obtener extensión
+        _, ext = os.path.splitext(name_without_path)
+        ext = ext.lower()
+        
+        # Extensiones permitidas
+        allowed_extensions = {
+            # Audio
+            '.mp3', '.mpeg',
+            '.wav', '.wave',
+            '.ogg', '.oga',
+            '.flac',
+            '.m4a', '.mp4',
+            '.aac',
+            '.opus',
+            '.wma',
+            
+            # Imágenes (para portadas)
+            '.jpg', '.jpeg',
+            '.png',
+            '.webp',
+            '.gif',
+            '.bmp',
+            '.svg',
+            
+            # Otros (metadata, letras, etc.)
+            '.txt', '.json', '.xml',
+            '.lrc',  # Lyrics
+            '.pdf'
+        }
+        
+        if ext not in allowed_extensions:
+            raise ValidationError(
+                f"Extensión '{ext}' no permitida. "
+                f"Extensiones válidas: {', '.join(sorted(allowed_extensions))}"
+            )
+        
+        # Validar nombres peligrosos
+        dangerous_patterns = [
+            r'\.\.',  # Directory traversal
+            r'/', r'\\',  # Path separators
+            r'^\s+', r'\s+$',  # Leading/trailing spaces
+            r'[<>:"|?*]',  # Caracteres inválidos en Windows
+        ]
+        
+        for pattern in dangerous_patterns:
+            if re.search(pattern, name_without_path):
+                raise ValidationError(
+                    f"Nombre de archivo inválido: contiene caracteres no permitidos"
+                )
+        
+        return cleaned_name
+    
+    def validate_file_size(self, value):
+        """
+        Validar tamaño del archivo con límites configurables
+        """
+        from django.conf import settings
+        
+        # Límite absoluto del sistema
+        absolute_max = getattr(settings, 'MAX_UPLOAD_SIZE', 500 * 1024 * 1024)  # 500MB
+        
+        if value > absolute_max:
+            mb = absolute_max // (1024 * 1024)
+            raise ValidationError(
+                f"El archivo es demasiado grande. Máximo permitido: {mb}MB"
+            )
+        
+        # Validar que no sea 0 o negativo
+        if value <= 0:
+            raise ValidationError("El tamaño del archivo debe ser mayor a 0 bytes")
+        
+        # Validar tamaño mínimo (ej: 1KB para audio)
+        min_size = 1024  # 1KB
+        if value < min_size:
+            raise ValidationError(
+                f"El archivo es demasiado pequeño. Mínimo: {min_size} bytes"
+            )
+        
+        return value
+    
+    def validate_file_type(self, value):
+        """
+        Validar/sanitizar tipo MIME
+        """
+        if not value:
+            return ""
+        
+        # Tipos MIME permitidos
+        allowed_mime_types = {
+            # Audio
+            'audio/mpeg', 'audio/mp3', 'audio/mp4',
+            'audio/wav', 'audio/wave', 'audio/x-wav',
+            'audio/ogg', 'audio/oga', 'application/ogg',
+            'audio/flac', 'audio/x-flac',
+            'audio/aac', 'audio/aacp',
+            'audio/opus',
+            'audio/x-ms-wma',
+            'audio/webm',
+            
+            # Imágenes
+            'image/jpeg', 'image/jpg',
+            'image/png',
+            'image/webp',
+            'image/gif',
+            'image/bmp',
+            'image/svg+xml',
+            
+            # Otros
+            'text/plain',
+            'application/json',
+            'application/xml', 'text/xml',
+            'application/pdf',
+            'application/octet-stream'  # Fallback genérico
+        }
+        
+        # Limpiar y validar
+        mime_type = value.strip().lower()
+        
+        # Si no está en la lista, intentar mapear por extensión
+        if mime_type not in allowed_mime_types:
+            # Podría ser un tipo válido pero con encoding diferente
+            base_type = mime_type.split(';')[0].strip()
+            if base_type in allowed_mime_types:
+                return base_type
+            
+            # Si no se reconoce, usar vacío y detectar después
+            return ""
+        
+        return mime_type
+    
+    def validate_metadata(self, value):
+        """
+        Validar metadatos adicionales
+        """
+        if not isinstance(value, dict):
+            raise ValidationError("Los metadatos deben ser un objeto JSON")
+        
+        # Limitar tamaño de metadata (10KB máximo)
+        metadata_json = json.dumps(value, separators=(',', ':'))
+        if len(metadata_json) > 10 * 1024:  # 10KB
+            raise ValidationError("Los metadatos son demasiado grandes (máx. 10KB)")
+        
+        # Validar/sanitizar campos específicos
+        sanitized_metadata = {}
+        
+        # Campos permitidos en metadata
+        allowed_fields = {
+            'title', 'artist', 'album', 'genre', 'year',
+            'track_number', 'disc_number', 'composer', 'lyricist',
+            'is_public', 'license', 'language', 'mood', 'bpm',
+            'original_name', 'custom_key', 'description', 'tags',
+            'recording_date', 'location', 'instruments', 'duration',
+            'bitrate', 'sample_rate', 'channels'
+        }
+        
+        for key, val in value.items():
+            # Sanitizar nombres de campos
+            if key not in allowed_fields:
+                # Campos personalizados deben tener prefijo 'custom_'
+                if not key.startswith('custom_'):
+                    continue  # Ignorar campos no permitidos
+            
+            # Sanitizar valores según tipo
+            if isinstance(val, str):
+                # Limitar longitud de strings
+                sanitized_val = val[:500]  # Máximo 500 caracteres
+            elif isinstance(val, (int, float)):
+                sanitized_val = val
+            elif isinstance(val, bool):
+                sanitized_val = val
+            elif isinstance(val, list):
+                # Listas solo de strings, máximo 50 items
+                sanitized_val = [
+                    str(item)[:100] for item in val[:50] if isinstance(item, (str, int, float))
+                ]
+            elif isinstance(val, dict):
+                # Sub-objetos limitados
+                sanitized_val = {k: str(v)[:100] for k, v in list(val.items())[:10]}
+            else:
+                # Convertir otros tipos a string
+                sanitized_val = str(val)[:200]
+            
+            sanitized_metadata[key] = sanitized_val
+        
+        return sanitized_metadata
+    
+    def validate(self, data):
+        """
+        Validación cruzada entre campos
+        """
+        # Verificar consistencia entre nombre de archivo y tipo MIME
+        file_name = data.get('file_name', '')
+        file_type = data.get('file_type', '')
+        
+        if file_name and not file_type:
+            # Intentar detectar tipo MIME por extensión
+            detected_type = self._detect_mime_from_extension(file_name)
+            if detected_type:
+                data['file_type'] = detected_type
+        
+        # Verificar que metadata no sobrescriba campos reservados
+        metadata = data.get('metadata', {})
+        reserved_fields = ['file_name', 'file_size', 'file_type', 'upload_id']
+        for field in reserved_fields:
+            if field in metadata:
+                raise ValidationError(
+                    f"El campo '{field}' está reservado y no puede usarse en metadata"
+                )
+        
+        # Validar tamaño máximo basado en tipo de archivo
+        file_size = data.get('file_size', 0)
+        file_type = data.get('file_type', '')
+        
+        if file_type.startswith('audio/'):
+            max_audio_size = 300 * 1024 * 1024  # 300MB para audio
+            if file_size > max_audio_size:
+                raise ValidationError(
+                    f"Los archivos de audio no pueden exceder {max_audio_size // (1024*1024)}MB"
+                )
+        elif file_type.startswith('image/'):
+            max_image_size = 50 * 1024 * 1024  # 50MB para imágenes
+            if file_size > max_image_size:
+                raise ValidationError(
+                    f"Las imágenes no pueden exceder {max_image_size // (1024*1024)}MB"
+                )
+        
+        return data
+    
+    # ==================== MÉTODOS HELPER ====================
+    
+    def _sanitize_filename(self, filename):
+        """
+        Sanitiza nombre de archivo para seguridad
+        """
+        # Remover path traversal attempts
+        filename = os.path.basename(filename)
+        
+        # Remover caracteres peligrosos
+        dangerous_chars = ['<', '>', ':', '"', '|', '?', '*', '\\', '/']
+        for char in dangerous_chars:
+            filename = filename.replace(char, '_')
+        
+        # Remover múltiples espacios y puntos
+        filename = re.sub(r'\s+', ' ', filename)
+        filename = re.sub(r'\.\.+', '.', filename)
+        
+        # Trim y limitar longitud
+        filename = filename.strip()
+        
+        return filename[:200]  # Limitar a 200 caracteres
+    
+    def _detect_mime_from_extension(self, filename):
+        """
+        Detecta tipo MIME basado en extensión de archivo
+        """
+        _, ext = os.path.splitext(filename.lower())
+        
+        mime_map = {
+            # Audio
+            '.mp3': 'audio/mpeg',
+            '.mpeg': 'audio/mpeg',
+            '.wav': 'audio/wav',
+            '.wave': 'audio/wav',
+            '.ogg': 'audio/ogg',
+            '.oga': 'audio/ogg',
+            '.flac': 'audio/flac',
+            '.m4a': 'audio/mp4',
+            '.mp4': 'audio/mp4',
+            '.aac': 'audio/aac',
+            '.opus': 'audio/opus',
+            '.wma': 'audio/x-ms-wma',
+            
+            # Imágenes
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.webp': 'image/webp',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.svg': 'image/svg+xml',
+            
+            # Otros
+            '.txt': 'text/plain',
+            '.json': 'application/json',
+            '.xml': 'application/xml',
+            '.lrc': 'text/plain',  # Lyrics
+            '.pdf': 'application/pdf',
+        }
+        
+        return mime_map.get(ext, '')
+
+
+class UploadConfirmationSerializer(serializers.Serializer):
+    """
+    Serializer para confirmar que un archivo fue subido exitosamente
+    """
+    
+    checksum = serializers.CharField(
+        required=False,
+        max_length=64,
+        allow_blank=True,
+        help_text="SHA256 checksum del archivo (opcional, para validación extra)"
+    )
+    
+    delete_invalid = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Si es True, elimina archivos inválidos de R2 automáticamente"
+    )
+    
+    validate_audio = serializers.BooleanField(
+        required=False,
+        default=True,
+        help_text="Si es True, valida que sea un archivo de audio válido"
+    )
+    
+    metadata_updates = serializers.DictField(
+        required=False,
+        default=dict,
+        help_text="Actualizaciones a metadata (ej: título corregido)"
+    )
+    
+    def validate_checksum(self, value):
+        """Validar formato de checksum SHA256"""
+        if not value:
+            return ""
+        
+        # SHA256 debe ser hex string de 64 caracteres
+        if not re.match(r'^[a-fA-F0-9]{64}$', value):
+            raise ValidationError(
+                "El checksum debe ser un string hexadecimal SHA256 de 64 caracteres"
+            )
+        
+        return value.lower()  # Normalizar a minúsculas
+    
+    def validate_metadata_updates(self, value):
+        """Validar actualizaciones de metadata"""
+        if not isinstance(value, dict):
+            raise ValidationError("Las actualizaciones de metadata deben ser un objeto")
+        
+        # Limitar tamaño
+        updates_json = json.dumps(value)
+        if len(updates_json) > 5 * 1024:  # 5KB máximo
+            raise ValidationError("Las actualizaciones de metadata son demasiado grandes")
+        
+        return value
+
+
+class UploadSessionSerializer(serializers.ModelSerializer):
+    """
+    Serializer para sesiones de upload
+    """
+    
+    user = serializers.SerializerMethodField()
+    can_confirm = serializers.SerializerMethodField()
+    file_in_r2 = serializers.SerializerMethodField()
+    
+    class Meta:
+        from api2.models import UploadSession
+        model = UploadSession
+        fields = [
+            'id',
+            'user',
+            'file_name',
+            'file_size',
+            'file_type',
+            'original_file_name',
+            'status',
+            'status_message',
+            'confirmed',
+            'confirmed_at',
+            'can_confirm',
+            'expires_at',
+            'created_at',
+            'updated_at',
+            'completed_at',
+            'file_in_r2',
+            'metadata'
+        ]
+        read_only_fields = fields
+    
+    def get_user(self, obj):
+        """Obtener información básica del usuario"""
+        return {
+            'id': obj.user.id,
+            'username': obj.user.username,
+            'email': obj.user.email
+        }
+    
+    def get_can_confirm(self, obj):
+        """Determinar si la sesión puede ser confirmada"""
+        return obj.can_confirm
+    
+    def get_file_in_r2(self, obj):
+        """Verificar si el archivo existe en R2"""
+        from api2.utils.r2_direct import r2_direct
+        if not obj.file_key:
+            return False
+        
+        file_exists, _ = r2_direct.verify_file_uploaded(obj.file_key)
+        return file_exists
+
+
+class UploadQuotaSerializer(serializers.ModelSerializer):
+    """
+    Serializer para información de cuota de upload
+    """
+    
+    class Meta:
+        from api2.models import UploadQuota
+        model = UploadQuota
+        fields = [
+            'daily_uploads_count',
+            'daily_uploads_size',
+            'daily_uploads_reset_at',
+            'pending_uploads_count',
+            'pending_uploads_size',
+            'total_uploads_count',
+            'total_uploads_size',
+            'max_daily_uploads',
+            'max_daily_size',
+            'max_file_size',
+            'max_total_storage',
+            'updated_at'
+        ]
+        read_only_fields = fields
+    
+    def to_representation(self, instance):
+        """Formatear datos para frontend"""
+        data = super().to_representation(instance)
+        
+        # Convertir bytes a unidades legibles
+        def format_bytes(bytes_value):
+            if bytes_value >= 1024 * 1024 * 1024:  # GB
+                return f"{bytes_value / (1024 * 1024 * 1024):.2f} GB"
+            elif bytes_value >= 1024 * 1024:  # MB
+                return f"{bytes_value / (1024 * 1024):.2f} MB"
+            elif bytes_value >= 1024:  # KB
+                return f"{bytes_value / 1024:.2f} KB"
+            else:
+                return f"{bytes_value} bytes"
+        
+        # Formatear tamaños
+        data['daily_uploads_size_formatted'] = format_bytes(data['daily_uploads_size'])
+        data['pending_uploads_size_formatted'] = format_bytes(data['pending_uploads_size'])
+        data['total_uploads_size_formatted'] = format_bytes(data['total_uploads_size'])
+        data['max_daily_size_formatted'] = format_bytes(data['max_daily_size'])
+        data['max_file_size_formatted'] = format_bytes(data['max_file_size'])
+        data['max_total_storage_formatted'] = format_bytes(data['max_total_storage'])
+        
+        # Calcular porcentajes y disponibilidad
+        data['daily_usage_percent'] = min(100, int(
+            (data['daily_uploads_size'] / data['max_daily_size']) * 100
+        )) if data['max_daily_size'] > 0 else 0
+        
+        data['storage_usage_percent'] = min(100, int(
+            (data['total_uploads_size'] / data['max_total_storage']) * 100
+        )) if data['max_total_storage'] > 0 else 0
+        
+        data['daily_uploads_remaining'] = max(
+            0, data['max_daily_uploads'] - data['daily_uploads_count']
+        )
+        
+        data['daily_size_remaining'] = max(
+            0, data['max_daily_size'] - data['daily_uploads_size']
+        )
+        
+        data['daily_size_remaining_formatted'] = format_bytes(data['daily_size_remaining'])
+        
+        # Tiempo hasta reset
+        reset_at = instance.daily_uploads_reset_at
+        now = timezone.now()
+        next_reset = reset_at + timedelta(days=1)
+        
+        if now > next_reset:
+            data['next_reset_in'] = "Ya debería haberse reseteado"
+            data['next_reset_seconds'] = 0
+        else:
+            delta = next_reset - now
+            data['next_reset_in'] = str(delta).split('.')[0]  # Remover microsegundos
+            data['next_reset_seconds'] = int(delta.total_seconds())
+        
+        return data
+
+
+class BatchUploadSerializer(serializers.Serializer):
+    """
+    Serializer para uploads por lotes (futura implementación)
+    """
+    
+    files = serializers.ListField(
+        child=DirectUploadRequestSerializer(),
+        max_length=10,  # Máximo 10 archivos por batch
+        help_text="Lista de archivos para upload por lotes"
+    )
+    
+    batch_id = serializers.CharField(
+        required=False,
+        max_length=50,
+        help_text="ID personalizado para el batch (opcional)"
+    )
+    
+    parallel_uploads = serializers.IntegerField(
+        required=False,
+        default=3,
+        min_value=1,
+        max_value=5,
+        help_text="Número máximo de uploads paralelos"
+    )
+    
+    def validate(self, data):
+        """Validaciones cruzadas para batch"""
+        files = data.get('files', [])
+        
+        # Verificar límite total de tamaño
+        total_size = sum(file_data.get('file_size', 0) for file_data in files)
+        max_batch_size = 1 * 1024 * 1024 * 1024  # 1GB por batch
+        
+        if total_size > max_batch_size:
+            raise ValidationError(
+                f"El tamaño total del batch no puede exceder {max_batch_size // (1024*1024*1024)}GB"
+            )
+        
+        # Verificar que no haya nombres duplicados
+        filenames = [f.get('file_name') for f in files if f.get('file_name')]
+        if len(filenames) != len(set(filenames)):
+            raise ValidationError("No se permiten nombres de archivo duplicados en un batch")
+        
+        return data

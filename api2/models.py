@@ -314,3 +314,269 @@ class UserProfile(models.Model):
             delete_file_from_r2(self.avatar_key)
             
         super().delete(*args, **kwargs)
+
+
+# musica/models.py - AGREGAR AL FINAL
+import uuid
+from django.db import models
+from django.conf import settings
+from django.utils import timezone
+
+class UploadSession(models.Model):
+    """Sesión de upload directo a R2 con confirmación manual"""
+    
+    UPLOAD_STATUS_CHOICES = [
+        ('pending', 'Pendiente - URL generada'),
+        ('uploaded', 'Subido a R2 - Esperando confirmación'),
+        ('confirmed', 'Confirmado - En procesamiento'),
+        ('processing', 'Procesando en background'),
+        ('ready', 'Completado - Canción lista'),
+        ('failed', 'Fallido'),
+        ('expired', 'Expirado'),
+        ('cancelled', 'Cancelado'),
+    ]
+    
+    # Identificación
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='upload_sessions'
+    )
+    
+    # Metadata del archivo
+    file_name = models.CharField(max_length=255)
+    file_size = models.BigIntegerField()  # en bytes
+    file_type = models.CharField(max_length=100, blank=True, default='')  # audio/mpeg, image/jpeg
+    original_file_name = models.CharField(max_length=255)
+    
+    # R2 Keys
+    file_key = models.CharField(max_length=500)
+    image_key = models.CharField(max_length=500, blank=True, null=True)
+    
+    # Estado y tracking
+    status = models.CharField(
+        max_length=20, 
+        choices=UPLOAD_STATUS_CHOICES, 
+        default='pending'
+    )
+    status_message = models.TextField(blank=True, null=True)
+    
+    # Confirmación manual (en lugar de webhook)
+    confirmed = models.BooleanField(default=False)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Tiempos
+    expires_at = models.DateTimeField()  # URL expira
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Resultado
+    song = models.ForeignKey(
+        'Song',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='upload_sessions'
+    )
+    
+    # Metadata adicional (para validación)
+    metadata = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['status', 'expires_at']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['confirmed']),
+        ]
+    
+    def __str__(self):
+        return f"Upload {self.id} - {self.user.username} - {self.status}"
+    
+    @property
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+    
+    @property
+    def can_upload(self):
+        return self.status in ['pending', 'uploaded'] and not self.is_expired
+    
+    @property
+    def can_confirm(self):
+        """Puede confirmar si está subido y no expirado"""
+        return (self.status == 'uploaded' and 
+                not self.is_expired and 
+                not self.confirmed)
+    
+    def mark_as_uploaded(self):
+        """Marcar como subido (frontend notifica)"""
+        self.status = 'uploaded'
+        self.save(update_fields=['status', 'updated_at'])
+    
+    def mark_as_confirmed(self):
+        """Marcar como confirmado por backend"""
+        self.status = 'confirmed'
+        self.confirmed = True
+        self.confirmed_at = timezone.now()
+        self.save(update_fields=['status', 'confirmed', 'confirmed_at', 'updated_at'])
+    
+    def mark_as_processing(self):
+        self.status = 'processing'
+        self.save(update_fields=['status', 'updated_at'])
+    
+    def mark_as_ready(self, song):
+        self.status = 'ready'
+        self.song = song
+        self.completed_at = timezone.now()
+        self.save(update_fields=['status', 'song', 'completed_at', 'updated_at'])
+    
+    def mark_as_failed(self, error_message):
+        self.status = 'failed'
+        self.status_message = error_message[:500]  # Limitar tamaño
+        self.save(update_fields=['status', 'status_message', 'updated_at'])
+    
+    def mark_as_expired(self):
+        self.status = 'expired'
+        self.save(update_fields=['status', 'updated_at'])
+
+
+class UploadQuota(models.Model):
+    """Límites de upload por usuario con estado transaccional"""
+    
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='upload_quota'
+    )
+    
+    # Límites diarios (uploads confirmados)
+    daily_uploads_count = models.PositiveIntegerField(default=0)
+    daily_uploads_size = models.BigIntegerField(default=0)  # bytes hoy
+    daily_uploads_reset_at = models.DateTimeField(default=timezone.now)
+    
+    # Límites pendientes (uploads en proceso)
+    pending_uploads_count = models.PositiveIntegerField(default=0)
+    pending_uploads_size = models.BigIntegerField(default=0)  # bytes pendientes
+    
+    # Totales
+    total_uploads_count = models.PositiveIntegerField(default=0)
+    total_uploads_size = models.BigIntegerField(default=0)  # bytes total
+    
+    # Límites configurados
+    max_daily_uploads = models.PositiveIntegerField(default=50)
+    max_daily_size = models.BigIntegerField(default=500 * 1024 * 1024)  # 500MB/día
+    max_file_size = models.BigIntegerField(default=100 * 1024 * 1024)  # 100MB/archivo
+    max_total_storage = models.BigIntegerField(
+        default=5 * 1024 * 1024 * 1024  # 5GB total por defecto
+    )
+    
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['daily_uploads_reset_at']),
+        ]
+    
+    def reset_if_needed(self):
+        """Resetear contadores diarios si pasó un día"""
+        if timezone.now() > self.daily_uploads_reset_at + timezone.timedelta(days=1):
+            self.daily_uploads_count = 0
+            self.daily_uploads_size = 0
+            self.daily_uploads_reset_at = timezone.now()
+            self.save()
+    
+    def can_upload(self, file_size, check_pending=True):
+        """Verificar si el usuario puede subir un archivo"""
+        self.reset_if_needed()
+        
+        # Verificar límites absolutos
+        if file_size > self.max_file_size:
+            return False, f"Archivo demasiado grande. Máximo: {self.max_file_size // (1024*1024)}MB"
+        
+        # Verificar límite de almacenamiento total
+        if self.total_uploads_size + file_size > self.max_total_storage:
+            available_mb = (self.max_total_storage - self.total_uploads_size) // (1024 * 1024)
+            return False, f"Límite de almacenamiento alcanzado. Disponible: {available_mb}MB"
+        
+        # Verificar límites diarios (solo uploads confirmados)
+        if self.daily_uploads_count >= self.max_daily_uploads:
+            return False, "Límite diario de uploads alcanzado"
+        
+        if self.daily_uploads_size + file_size > self.max_daily_size:
+            available_mb = (self.max_daily_size - self.daily_uploads_size) // (1024 * 1024)
+            return False, f"Límite diario de tamaño alcanzado. Disponible: {available_mb}MB"
+        
+        # Verificar límites pendientes (si se solicita)
+        if check_pending:
+            pending_with_new = self.pending_uploads_size + file_size
+            # Reservar algo de espacio para pendientes (máximo 2x el límite diario)
+            max_pending = self.max_daily_size * 2
+            if pending_with_new > max_pending:
+                return False, "Demasiados uploads en proceso. Espera a que se completen algunos."
+        
+        return True, None
+    
+    def reserve_quota(self, file_size):
+        """Reservar cuota para un upload pendiente"""
+        self.pending_uploads_count += 1
+        self.pending_uploads_size += file_size
+        self.save()
+    
+    def release_pending_quota(self, file_size):
+        """Liberar cuota pendiente (cuando expira o falla)"""
+        self.pending_uploads_count = max(0, self.pending_uploads_count - 1)
+        self.pending_uploads_size = max(0, self.pending_uploads_size - file_size)
+        self.save()
+    
+    def confirm_upload(self, file_size):
+        """Confirmar un upload exitoso"""
+        # Liberar pendiente
+        self.pending_uploads_count = max(0, self.pending_uploads_count - 1)
+        self.pending_uploads_size = max(0, self.pending_uploads_size - file_size)
+        
+        # Agregar a confirmados
+        self.daily_uploads_count += 1
+        self.daily_uploads_size += file_size
+        self.total_uploads_count += 1
+        self.total_uploads_size += file_size
+        
+        self.save()
+    
+    def get_quota_info(self):
+        """Obtener información de cuota para frontend"""
+        self.reset_if_needed()
+        
+        return {
+            'daily': {
+                'uploads': {
+                    'used': self.daily_uploads_count,
+                    'max': self.max_daily_uploads,
+                    'remaining': self.max_daily_uploads - self.daily_uploads_count
+                },
+                'size': {
+                    'used_bytes': self.daily_uploads_size,
+                    'used_mb': round(self.daily_uploads_size / (1024 * 1024), 2),
+                    'max_bytes': self.max_daily_size,
+                    'max_mb': self.max_daily_size // (1024 * 1024),
+                    'remaining_bytes': self.max_daily_size - self.daily_uploads_size,
+                    'remaining_mb': (self.max_daily_size - self.daily_uploads_size) // (1024 * 1024)
+                }
+            },
+            'pending': {
+                'count': self.pending_uploads_count,
+                'size_bytes': self.pending_uploads_size,
+                'size_mb': round(self.pending_uploads_size / (1024 * 1024), 2)
+            },
+            'limits': {
+                'file_size_mb': self.max_file_size // (1024 * 1024),
+                'total_storage_gb': self.max_total_storage // (1024 * 1024 * 1024)
+            },
+            'totals': {
+                'count': self.total_uploads_count,
+                'size_gb': round(self.total_uploads_size / (1024 * 1024 * 1024), 2)
+            },
+            'reset_at': self.daily_uploads_reset_at.isoformat()
+        }
