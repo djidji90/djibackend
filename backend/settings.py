@@ -143,6 +143,7 @@ INSTALLED_APPS = [
     'django_filters',
     
     # Librerías externas
+    "django_celery_beat",
     'rest_framework',
     'corsheaders',
     'rest_framework_simplejwt',
