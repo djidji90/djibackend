@@ -6,11 +6,15 @@ from .models import Song, MusicEvent, UserProfile, Like, Download, Comment, Play
 from .r2_utils import upload_file_to_r2, delete_file_from_r2, check_file_exists, generate_presigned_url
 from django.core.files.uploadedfile import UploadedFile
 import uuid
+from django.utils import timezone
 import os
 import logging
 import time
 import socket
 from django.db import transaction
+
+# Al inicio de imports, agrega:
+from .models import UploadSession, UploadQuota  # Agregar estos
 
 logger = logging.getLogger(__name__)
 
@@ -748,3 +752,226 @@ class PlayHistoryAdmin(admin.ModelAdmin):
     list_filter = ['played_at']
     search_fields = ['user__username', 'song__title']
     readonly_fields = ['played_at']
+
+
+@admin.register(UploadSession)
+class UploadSessionAdmin(admin.ModelAdmin):
+    list_display = [
+        'id_short', 'user', 'file_name', 'file_size_mb', 
+        'status_display', 'expires_in', 'created_at'
+    ]
+    list_filter = ['status', 'created_at', 'expires_at']
+    search_fields = ['user__username', 'file_name', 'file_key']
+    readonly_fields = [
+        'id', 'user', 'file_name', 'file_size', 'file_type',
+        'file_key', 'status', 'status_message', 'expires_at',
+        'confirmed_at', 'created_at', 'updated_at', 'metadata_display',
+        'is_expired_display', 'can_confirm_display', 'r2_check'
+    ]
+    actions = ['verify_r2_files_action', 'cleanup_expired_action']
+    
+    fieldsets = (
+        ('Información Básica', {
+            'fields': ('id', 'user', 'created_at', 'updated_at')
+        }),
+        ('Archivo', {
+            'fields': ('file_name', 'file_size', 'file_type', 'file_key')
+        }),
+        ('Estado', {
+            'fields': ('status', 'status_message', 'expires_at', 'confirmed_at')
+        }),
+        ('Verificaciones', {
+            'fields': ('r2_check', 'is_expired_display', 'can_confirm_display'),
+            'classes': ('collapse',)
+        }),
+        ('Metadata', {
+            'fields': ('metadata_display',),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def id_short(self, obj):
+        """Muestra ID corto"""
+        return str(obj.id)[:8]
+    id_short.short_description = 'ID'
+
+    def file_size_mb(self, obj):
+        """Muestra tamaño en MB"""
+        if obj.file_size:
+            return f"{obj.file_size / (1024*1024):.1f} MB"
+        return "-"
+    file_size_mb.short_description = 'Tamaño'
+
+    def status_display(self, obj):
+        """Muestra estado con colores"""
+        status_colors = {
+            'pending': '🟡',
+            'uploaded': '🟠',
+            'confirmed': '🔵',
+            'processing': '🟣',
+            'ready': '🟢',
+            'failed': '🔴',
+            'cancelled': '⚫',
+            'expired': '⚪'
+        }
+        return f"{status_colors.get(obj.status, '❓')} {obj.status}"
+    status_display.short_description = 'Estado'
+
+    def expires_in(self, obj):
+        """Muestra tiempo hasta expiración"""
+        if obj.expires_at:
+            from django.utils import timezone
+            now = timezone.now()
+            if obj.expires_at > now:
+                delta = obj.expires_at - now
+                hours = delta.seconds // 3600
+                minutes = (delta.seconds % 3600) // 60
+                return f"{hours}h {minutes}m"
+            return "Expirado"
+        return "-"
+    expires_in.short_description = 'Expira en'
+
+    def metadata_display(self, obj):
+        """Muestra metadata formateada"""
+        if obj.metadata:
+            import json
+            try:
+                metadata = json.loads(obj.metadata) if isinstance(obj.metadata, str) else obj.metadata
+                formatted = json.dumps(metadata, indent=2, ensure_ascii=False)
+                return formatted
+            except:
+                return str(obj.metadata)
+        return "No metadata"
+    metadata_display.short_description = 'Metadata'
+
+    def is_expired_display(self, obj):
+        """Muestra si está expirado"""
+        return obj.is_expired if hasattr(obj, 'is_expired') else "No disponible"
+    is_expired_display.boolean = True
+    is_expired_display.short_description = 'Expirado'
+
+    def can_confirm_display(self, obj):
+        """Muestra si puede confirmarse"""
+        return obj.can_confirm if hasattr(obj, 'can_confirm') else "No disponible"
+    can_confirm_display.boolean = True
+    can_confirm_display.short_description = 'Puede confirmar'
+
+    def r2_check(self, obj):
+        """Verifica archivo en R2"""
+        if not obj.file_key:
+            return "❌ Sin file_key"
+        
+        try:
+            from .r2_utils import check_file_exists
+            exists = check_file_exists(obj.file_key)
+            if exists:
+                # Generar URL temporal
+                from .r2_utils import generate_presigned_url
+                url = generate_presigned_url(obj.file_key, expiration=300)  # 5 minutos
+                return f'✅ En R2 - <a href="{url}" target="_blank">🔗 Ver (5min)</a>'
+            else:
+                return "❌ No encontrado en R2"
+        except Exception as e:
+            return f"⚠️ Error: {str(e)}"
+    r2_check.allow_tags = True
+    r2_check.short_description = 'Verificación R2'
+
+    @admin.action(description="🔍 Verificar archivos en R2")
+    def verify_r2_files_action(self, request, queryset):
+        """Verifica archivos en R2 para sesiones seleccionadas"""
+        results = []
+        for upload in queryset:
+            if upload.file_key:
+                try:
+                    from .r2_utils import check_file_exists
+                    exists = check_file_exists(upload.file_key)
+                    results.append(f"{upload.file_name}: {'✅' if exists else '❌'}")
+                except Exception as e:
+                    results.append(f"{upload.file_name}: ⚠️ Error: {str(e)}")
+        
+        message = f"Verificación R2 completada:<br>" + "<br>".join(results)
+        self.message_user(request, message, messages.INFO)
+
+    @admin.action(description="🗑️ Limpiar sesiones expiradas")
+    def cleanup_expired_action(self, request, queryset):
+        """Marca sesiones expiradas como expired"""
+        from django.utils import timezone
+        
+        expired = queryset.filter(
+            expires_at__lt=timezone.now(),
+            status__in=['pending', 'uploaded']
+        )
+        
+        count = expired.count()
+        expired.update(status='expired')
+        
+        self.message_user(
+            request, 
+            f"✅ {count} sesiones marcadas como expiradas", 
+            messages.SUCCESS
+        )
+    
+    def has_add_permission(self, request):
+        """No permitir agregar manualmente"""
+        return False
+    
+    def has_change_permission(self, request, obj=None):
+        """Solo lectura"""
+        return False
+    
+# Crea un archivo api2/admin_dashboard.py o agrega al final de admin.py:
+
+from django.contrib.admin.views.decorators import staff_member_required
+from django.shortcuts import render
+from django.db.models import Count, Sum
+from .models import UploadSession, UploadQuota, Song
+
+@staff_member_required
+def upload_dashboard(request):
+    """Dashboard personalizado para uploads"""
+    
+    # Estadísticas generales
+    stats = {
+        'total_uploads': UploadSession.objects.count(),
+        'uploads_today': UploadSession.objects.filter(
+            created_at__date=timezone.now().date()
+        ).count(),
+        'active_uploads': UploadSession.objects.filter(
+            status__in=['pending', 'uploaded', 'processing']
+        ).count(),
+        'total_quota_used': UploadQuota.objects.aggregate(
+            total=Sum('used_quota')
+        )['total'] or 0,
+    }
+    
+    # Uploads por estado
+    status_stats = UploadSession.objects.values('status').annotate(
+        count=Count('id')
+    ).order_by('status')
+    
+    # Top uploaders
+    top_uploaders = UploadSession.objects.values(
+        'user__username'
+    ).annotate(
+        count=Count('id'),
+        total_size=Sum('file_size')
+    ).order_by('-count')[:10]
+    
+    # Archivos recientes
+    recent_uploads = UploadSession.objects.select_related(
+        'user', 'song'
+    ).order_by('-created_at')[:20]
+    
+    context = {
+        'stats': stats,
+        'status_stats': list(status_stats),
+        'top_uploaders': list(top_uploaders),
+        'recent_uploads': recent_uploads,
+        'title': 'Dashboard de Uploads'
+    }
+    
+    return render(request, 'admin/upload_dashboard.html', context)
+
+# Luego en tu urls.py del proyecto:
+# from api2.admin_dashboard import upload_dashboard
+# path('admin/upload-dashboard/', upload_dashboard, name='upload_dashboard')

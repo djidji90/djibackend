@@ -6,6 +6,7 @@ import uuid
 from django.utils import timezone
 
 class Song(models.Model):
+   
     # Información básica
     title = models.CharField(max_length=255)
     artist = models.CharField(max_length=255)
@@ -80,6 +81,7 @@ class Song(models.Model):
     @property
     def image_name(self):
         """Nombre de la imagen sin la ruta"""
+    
         return os.path.basename(self.image_key) if self.image_key else None
 
 
