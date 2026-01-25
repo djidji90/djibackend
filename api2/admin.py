@@ -17,8 +17,8 @@ from .models import (
     Song, MusicEvent, UserProfile, Like, Download, 
     Comment, PlayHistory, CommentReaction, UploadSession, UploadQuota
 )
-from .r2_utils import upload_file_to_r2, delete_file_from_r2, check_file_exists, generate_presigned_url
-from .r2_direct import generate_presigned_post, verify_file_uploaded, validate_upload_integrity
+from .utils.r2_utils import upload_file_to_r2, delete_file_from_r2, check_file_exists, generate_presigned_url
+from .utils.r2_direct import generate_presigned_post, verify_file_uploaded, validate_upload_integrity
 
 import uuid
 import os
