@@ -1,0 +1,168 @@
+admin/	django.contrib.admin.sites.AdminSite.index	index
+admin/login/	django.contrib.admin.sites.AdminSite.login	login
+admin/logout/	django.contrib.admin.sites.AdminSite.logout	logout
+admin/password_change/	django.contrib.admin.sites.AdminSite.password_change	password_change
+admin/password_change/done/	django.contrib.admin.sites.AdminSite.password_change_done	password_change_done
+admin/autocomplete/	django.contrib.admin.sites.AdminSite.autocomplete_view	autocomplete
+admin/jsi18n/	django.contrib.admin.sites.AdminSite.i18n_javascript	jsi18n
+admin/r/<path:content_type_id>/<path:object_id>/	django.contrib.contenttypes.views.shortcut	view_on_site
+admin/auth/group/	django.contrib.admin.options.ModelAdmin.changelist_view	auth_group_changelist
+admin/auth/group/add/	django.contrib.admin.options.ModelAdmin.add_view	auth_group_add
+admin/auth/group/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	auth_group_history
+admin/auth/group/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	auth_group_delete
+admin/auth/group/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	auth_group_change
+admin/auth/group/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/musica/customuser/	django.contrib.admin.options.ModelAdmin.changelist_view	musica_customuser_changelist
+admin/musica/customuser/add/	django.contrib.admin.options.ModelAdmin.add_view	musica_customuser_add
+admin/musica/customuser/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	musica_customuser_history
+admin/musica/customuser/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	musica_customuser_delete
+admin/musica/customuser/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	musica_customuser_change
+admin/musica/customuser/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/musica/uservisit/	django.contrib.admin.options.ModelAdmin.changelist_view	musica_uservisit_changelist
+admin/musica/uservisit/add/	django.contrib.admin.options.ModelAdmin.add_view	musica_uservisit_add
+admin/musica/uservisit/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	musica_uservisit_history
+admin/musica/uservisit/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	musica_uservisit_delete
+admin/musica/uservisit/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	musica_uservisit_change
+admin/musica/uservisit/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/song/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_song_changelist
+admin/api2/song/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_song_add
+admin/api2/song/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_song_history
+admin/api2/song/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_song_delete
+admin/api2/song/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_song_change
+admin/api2/song/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/musicevent/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_musicevent_changelist
+admin/api2/musicevent/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_musicevent_add
+admin/api2/musicevent/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_musicevent_history
+admin/api2/musicevent/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_musicevent_delete
+admin/api2/musicevent/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_musicevent_change
+admin/api2/musicevent/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/userprofile/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_userprofile_changelist
+admin/api2/userprofile/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_userprofile_add
+admin/api2/userprofile/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_userprofile_history
+admin/api2/userprofile/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_userprofile_delete
+admin/api2/userprofile/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_userprofile_change
+admin/api2/userprofile/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/like/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_like_changelist
+admin/api2/like/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_like_add
+admin/api2/like/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_like_history
+admin/api2/like/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_like_delete
+admin/api2/like/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_like_change
+admin/api2/like/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/download/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_download_changelist
+admin/api2/download/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_download_add
+admin/api2/download/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_download_history
+admin/api2/download/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_download_delete
+admin/api2/download/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_download_change
+admin/api2/download/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/comment/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_comment_changelist
+admin/api2/comment/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_comment_add
+admin/api2/comment/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_comment_history
+admin/api2/comment/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_comment_delete
+admin/api2/comment/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_comment_change
+admin/api2/comment/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/commentreaction/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_commentreaction_changelist
+admin/api2/commentreaction/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_commentreaction_add
+admin/api2/commentreaction/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_commentreaction_history
+admin/api2/commentreaction/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_commentreaction_delete
+admin/api2/commentreaction/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_commentreaction_change
+admin/api2/commentreaction/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/playhistory/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_playhistory_changelist
+admin/api2/playhistory/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_playhistory_add
+admin/api2/playhistory/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_playhistory_history
+admin/api2/playhistory/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_playhistory_delete
+admin/api2/playhistory/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_playhistory_change
+admin/api2/playhistory/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/api2/uploadsession/	django.contrib.admin.options.ModelAdmin.changelist_view	api2_uploadsession_changelist
+admin/api2/uploadsession/add/	django.contrib.admin.options.ModelAdmin.add_view	api2_uploadsession_add
+admin/api2/uploadsession/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	api2_uploadsession_history
+admin/api2/uploadsession/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	api2_uploadsession_delete
+admin/api2/uploadsession/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	api2_uploadsession_change
+admin/api2/uploadsession/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/django_celery_beat/periodictask/	django_celery_beat.admin.PeriodicTaskAdmin.changelist_view	django_celery_beat_periodictask_changelist
+admin/django_celery_beat/periodictask/add/	django.contrib.admin.options.ModelAdmin.add_view	django_celery_beat_periodictask_add
+admin/django_celery_beat/periodictask/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	django_celery_beat_periodictask_history
+admin/django_celery_beat/periodictask/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	django_celery_beat_periodictask_delete
+admin/django_celery_beat/periodictask/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	django_celery_beat_periodictask_change
+admin/django_celery_beat/periodictask/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/django_celery_beat/clockedschedule/	django.contrib.admin.options.ModelAdmin.changelist_view	django_celery_beat_clockedschedule_changelist
+admin/django_celery_beat/clockedschedule/add/	django.contrib.admin.options.ModelAdmin.add_view	django_celery_beat_clockedschedule_add
+admin/django_celery_beat/clockedschedule/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	django_celery_beat_clockedschedule_history
+admin/django_celery_beat/clockedschedule/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	django_celery_beat_clockedschedule_delete
+admin/django_celery_beat/clockedschedule/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	django_celery_beat_clockedschedule_change
+admin/django_celery_beat/clockedschedule/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/django_celery_beat/crontabschedule/	django.contrib.admin.options.ModelAdmin.changelist_view	django_celery_beat_crontabschedule_changelist
+admin/django_celery_beat/crontabschedule/add/	django.contrib.admin.options.ModelAdmin.add_view	django_celery_beat_crontabschedule_add
+admin/django_celery_beat/crontabschedule/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	django_celery_beat_crontabschedule_history
+admin/django_celery_beat/crontabschedule/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	django_celery_beat_crontabschedule_delete
+admin/django_celery_beat/crontabschedule/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	django_celery_beat_crontabschedule_change
+admin/django_celery_beat/crontabschedule/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/django_celery_beat/solarschedule/	django.contrib.admin.options.ModelAdmin.changelist_view	django_celery_beat_solarschedule_changelist
+admin/django_celery_beat/solarschedule/add/	django.contrib.admin.options.ModelAdmin.add_view	django_celery_beat_solarschedule_add
+admin/django_celery_beat/solarschedule/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	django_celery_beat_solarschedule_history
+admin/django_celery_beat/solarschedule/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	django_celery_beat_solarschedule_delete
+admin/django_celery_beat/solarschedule/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	django_celery_beat_solarschedule_change
+admin/django_celery_beat/solarschedule/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/django_celery_beat/intervalschedule/	django.contrib.admin.options.ModelAdmin.changelist_view	django_celery_beat_intervalschedule_changelist
+admin/django_celery_beat/intervalschedule/add/	django.contrib.admin.options.ModelAdmin.add_view	django_celery_beat_intervalschedule_add
+admin/django_celery_beat/intervalschedule/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	django_celery_beat_intervalschedule_history
+admin/django_celery_beat/intervalschedule/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	django_celery_beat_intervalschedule_delete
+admin/django_celery_beat/intervalschedule/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	django_celery_beat_intervalschedule_change
+admin/django_celery_beat/intervalschedule/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/token_blacklist/outstandingtoken/	django.contrib.admin.options.ModelAdmin.changelist_view	token_blacklist_outstandingtoken_changelist
+admin/token_blacklist/outstandingtoken/add/	django.contrib.admin.options.ModelAdmin.add_view	token_blacklist_outstandingtoken_add
+admin/token_blacklist/outstandingtoken/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	token_blacklist_outstandingtoken_history
+admin/token_blacklist/outstandingtoken/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	token_blacklist_outstandingtoken_delete
+admin/token_blacklist/outstandingtoken/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	token_blacklist_outstandingtoken_change
+admin/token_blacklist/outstandingtoken/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/token_blacklist/blacklistedtoken/	django.contrib.admin.options.ModelAdmin.changelist_view	token_blacklist_blacklistedtoken_changelist
+admin/token_blacklist/blacklistedtoken/add/	django.contrib.admin.options.ModelAdmin.add_view	token_blacklist_blacklistedtoken_add
+admin/token_blacklist/blacklistedtoken/<path:object_id>/history/	django.contrib.admin.options.ModelAdmin.history_view	token_blacklist_blacklistedtoken_history
+admin/token_blacklist/blacklistedtoken/<path:object_id>/delete/	django.contrib.admin.options.ModelAdmin.delete_view	token_blacklist_blacklistedtoken_delete
+admin/token_blacklist/blacklistedtoken/<path:object_id>/change/	django.contrib.admin.options.ModelAdmin.change_view	token_blacklist_blacklistedtoken_change
+admin/token_blacklist/blacklistedtoken/<path:object_id>/	django.views.generic.base.RedirectView	
+admin/^(?P<app_label>auth|musica|api2|django_celery_beat|token_blacklist)/$	django.contrib.admin.sites.AdminSite.app_index	app_list
+admin/(?P<url>.*)$	django.contrib.admin.sites.AdminSite.catch_all_view	
+musica/register/	musica.views.RegisterView	register
+musica/protected/	musica.views.ProtectedView	protected
+musica/register-visit/	musica.views.RegisterUserVisit	register_visit
+musica/api/token/	rest_framework_simplejwt.views.TokenObtainPairView	token_obtain_pair
+musica/api/token/refresh/	rest_framework_simplejwt.views.TokenRefreshView	token_refresh
+musica/api/token/verify/	rest_framework_simplejwt.views.TokenVerifyView	token_verify
+api2/api/schema/	drf_spectacular.views.SpectacularAPIView	schema
+api2/api/docs/	drf_spectacular.views.SpectacularSwaggerView	swagger-ui
+api2/songs/	api2.views.SongListView	song-list
+api2/songs/upload/	api2.views.SongUploadView	song-upload
+api2/songs/random/	api2.views.RandomSongsView	random-songs
+api2/songs/<int:song_id>/delete/	api2.views.SongDeleteView	song-delete
+api2/search/complete/	api2.views.WrappedAPIView	complete_search
+api2/songs/<int:song_id>/like/	api2.views.LikeSongView	song-like
+api2/songs/<int:song_id>/download/	api2.views.WrappedAPIView	song-download
+api2/songs/<int:song_id>/stream/	api2.views.StreamSongView	song-stream
+api2/songs/<int:song_id>/likes/	api2.views.SongLikesView	song-likes
+api2/songs/<int:song_id>/check-files/	api2.views.WrappedAPIView	check-song-files
+api2/songs/<int:song_id>/comments/	api2.views.CommentListCreateView	song-comments
+api2/songs/comments/<int:pk>/	api2.views.SongCommentsDetailView	comment-detail
+api2/songs/search/suggestions/	api2.views.SongSearchSuggestionsView	song-search-suggestions
+api2/suggestions/	api2.views.WrappedAPIView	song-suggestions
+api2/search/suggestions/	api2.views.WrappedAPIView	search-suggestions
+api2/artists/	api2.views.ArtistListView	artist-list
+api2/debug/suggestions/	api2.views.WrappedAPIView	debug-suggestions
+api2/events/	api2.views.MusicEventListView	event-list
+api2/events/<int:pk>/	api2.views.MusicEventDetailView	event-detail
+api2/metrics/admin/	api2.views.WrappedAPIView	admin-metrics
+api2/metrics/personal/	api2.views.WrappedAPIView	personal-metrics
+api2/health/	api2.views.WrappedAPIView	health_check
+api2/upload/direct/request/	api2.views.DirectUploadRequestView	direct-upload-request
+api2/upload/direct/confirm/<uuid:upload_id>/	api2.views.UploadConfirmationView	direct-upload-confirm
+api2/upload/direct/status/<uuid:upload_id>/	api2.views.DirectUploadStatusView	direct-upload-status
+api2/upload/direct/cancel/<uuid:upload_id>/	api2.views.UploadCancellationView	direct-upload-cancel
+api2/upload/quota/	api2.views.UserUploadQuotaView	user-upload-quota
+api2/admin/uploads/	api2.views.UploadAdminDashboardView	upload-admin-dashboard
+api2/stats/uploads/	api2.views.UploadStatsView	upload-stats
+api2/maintenance/cleanup-expired/	api2.views.CleanupExpiredUploadsView	cleanup-expired-uploads
+api2/maintenance/check-orphaned/	api2.views.CheckOrphanedFilesView	check-orphaned-files
+api2/upload/	api2.views.SongUploadView	song-upload
+api2/^media/(?P<path>.*)$	django.views.static.serve	
+api2/^static/(?P<path>.*)$	django.views.static.serve	
+api2/health/debug/	api2.views.WrappedAPIView	health-debug
+	api2.endpoint_inspector.api_home	api-home
