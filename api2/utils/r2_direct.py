@@ -1,18 +1,18 @@
 """
 R2 Direct Upload Utility - Production Ready Version
-
-Maneja uploads directos a Cloudflare R2 usando URLs firmadas generadas por boto3.
-Este módulo NO implementa firma manual - usa las utilidades probadas de AWS SDK.
+Corregido y optimizado para Django + Cloudflare R2
 """
 
 import os
 import uuid
 import logging
 from datetime import datetime
+from typing import Tuple, Dict, List, Optional, Any
 import boto3
 from botocore.client import Config
 from django.conf import settings
 
+# Configurar logger correctamente
 logger = logging.getLogger(__name__)
 
 
@@ -28,10 +28,22 @@ class R2DirectUpload:
     
     Nota: R2 no tiene webhooks nativos, por lo que usamos verificación manual.
     """
-
+    
     def __init__(self):
         """Inicializa cliente S3 compatible con Cloudflare R2."""
         self.bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+        
+        # Validar configuración
+        required_settings = [
+            'AWS_STORAGE_BUCKET_NAME',
+            'AWS_S3_ENDPOINT_URL',
+            'AWS_ACCESS_KEY_ID',
+            'AWS_SECRET_ACCESS_KEY',
+        ]
+        
+        for setting in required_settings:
+            if not hasattr(settings, setting):
+                raise ValueError(f"Falta configuración: {setting}")
         
         # Configuración optimizada para R2
         self.s3_client = boto3.client(
@@ -47,12 +59,16 @@ class R2DirectUpload:
                 },
             ),
         )
+        
+        # Tamaño máximo configurable (100MB por defecto)
+        self.max_file_size = getattr(settings, 'R2_MAX_FILE_SIZE', 100 * 1024 * 1024)
+        
         logger.info(f"R2DirectUpload inicializado para bucket: {self.bucket_name}")
-
+    
     # ==========================================================
     # GENERACIÓN DE URLS PARA UPLOAD
     # ==========================================================
-
+    
     def generate_presigned_post(
         self,
         *,
@@ -60,8 +76,9 @@ class R2DirectUpload:
         file_name: str,
         file_size: int,
         file_type: str = "",
+        prefix: str = "uploads/direct/",
         expires_in: int = 3600,
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """
         Genera URL firmada para upload directo a R2.
         
@@ -70,6 +87,7 @@ class R2DirectUpload:
             file_name: Nombre original del archivo
             file_size: Tamaño en bytes (validado previamente)
             file_type: Tipo MIME (ej: 'audio/mpeg')
+            prefix: Prefijo para la key en R2
             expires_in: Segundos hasta que expira la URL (default: 1 hora)
         
         Returns:
@@ -82,11 +100,11 @@ class R2DirectUpload:
         # Validaciones básicas
         if file_size <= 0:
             raise ValueError("file_size debe ser mayor a 0")
-        if file_size > settings.R2_MAX_FILE_SIZE:
-            raise ValueError(f"file_size excede el límite de {settings.R2_MAX_FILE_SIZE} bytes")
+        if file_size > self.max_file_size:
+            raise ValueError(f"file_size excede el límite de {self.max_file_size} bytes")
         
         # Generar key única y segura
-        key = self._generate_secure_key(user_id, file_name)
+        key = self._generate_secure_key(user_id, file_name, prefix)
         logger.debug(f"Generando URL para key: {key}, tamaño: {file_size}, usuario: {user_id}")
         
         # Configurar condiciones de la política
@@ -94,23 +112,23 @@ class R2DirectUpload:
             ["content-length-range", 1, file_size],  # Validación estricta de tamaño
             {"bucket": self.bucket_name},
             {"key": key},
-            {"x-amz-meta-uploader-id": str(user_id)},
-            {"x-amz-meta-original-name": self._safe_filename(file_name)},
+            {"x-amz-meta-uploader_id": str(user_id)},  # ✅ Corregido: guión bajo
+            {"x-amz-meta-original_name": self._safe_filename(file_name)},  # ✅ Corregido
         ]
         
         # Incluir content-type si se especifica
         if file_type:
             conditions.append(["starts-with", "$Content-Type", file_type])
         
-        # Generar URL firmada usando boto3 (no firmamos manualmente)
+        # Generar URL firmada usando boto3
         try:
             response = self.s3_client.generate_presigned_post(
                 Bucket=self.bucket_name,
                 Key=key,
                 Fields={
-                    "x-amz-meta-uploader-id": str(user_id),
-                    "x-amz-meta-original-name": self._safe_filename(file_name),
-                    "x-amz-meta-upload-timestamp": datetime.utcnow().isoformat(),
+                    "x-amz-meta-uploader_id": str(user_id),
+                    "x-amz-meta-original_name": self._safe_filename(file_name),
+                    "x-amz-meta-upload_timestamp": datetime.utcnow().isoformat(),
                 },
                 Conditions=conditions,
                 ExpiresIn=expires_in,
@@ -135,12 +153,12 @@ class R2DirectUpload:
         except Exception as e:
             logger.error(f"Error generando URL firmada: {str(e)}", exc_info=True)
             raise
-
+    
     # ==========================================================
     # VERIFICACIÓN Y VALIDACIÓN
     # ==========================================================
-
-    def verify_file_uploaded(self, key: str) -> tuple[bool, dict]:
+    
+    def verify_file_uploaded(self, key: str) -> Tuple[bool, Dict[str, Any]]:
         """
         Verifica que un archivo exista en R2 y devuelve sus metadatos.
         
@@ -185,13 +203,13 @@ class R2DirectUpload:
         except Exception as e:
             logger.error(f"Error verificando archivo {key}: {str(e)}", exc_info=True)
             return False, {"exists": False, "error": str(e), "code": "Unknown"}
-
+    
     def validate_upload_integrity(
-        self, 
-        key: str, 
-        expected_size: int = None, 
-        expected_uploader_id: int = None
-    ) -> dict:
+        self,
+        key: str,
+        expected_size: Optional[int] = None,
+        expected_uploader_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Valida integridad de un archivo subido.
         
@@ -223,14 +241,14 @@ class R2DirectUpload:
         
         # Validar metadata del uploader
         if expected_uploader_id:
-            actual_uploader_id = metadata.get("metadata", {}).get("uploader-id")
+            actual_uploader_id = metadata.get("metadata", {}).get("uploader_id")  # ✅ Corregido
             if actual_uploader_id != str(expected_uploader_id):
                 issues.append(
                     f"Uploader mismatch: expected {expected_uploader_id}, got {actual_uploader_id}"
                 )
         
         # Validar que tenga metadata básica
-        required_metadata = ["uploader-id", "original-name"]
+        required_metadata = ["uploader_id", "original_name"]  # ✅ Corregido
         for meta_key in required_metadata:
             if meta_key not in metadata.get("metadata", {}):
                 issues.append(f"Missing required metadata: {meta_key}")
@@ -243,14 +261,14 @@ class R2DirectUpload:
             "key": key,
             "size": metadata.get("size"),
             "content_type": metadata.get("content_type"),
-            "uploader_id": metadata.get("metadata", {}).get("uploader-id"),
+            "uploader_id": metadata.get("metadata", {}).get("uploader_id"),  # ✅ Corregido
         }
-
+    
     # ==========================================================
     # DESCARGA Y ACCESO TEMPORAL
     # ==========================================================
-
-    def generate_download_url(self, key: str, expires_in: int = 300) -> str | None:
+    
+    def generate_download_url(self, key: str, expires_in: int = 300) -> Optional[str]:
         """
         Genera URL temporal para descargar/validar archivo.
         
@@ -276,8 +294,8 @@ class R2DirectUpload:
         except Exception as e:
             logger.error(f"Error generando URL de descarga para {key}: {str(e)}")
             return None
-
-    def generate_upload_status_url(self, key: str) -> str | None:
+    
+    def generate_upload_status_url(self, key: str) -> Optional[str]:
         """
         Genera URL para verificar estado de upload (HEAD request).
         
@@ -301,11 +319,11 @@ class R2DirectUpload:
         except Exception as e:
             logger.error(f"Error generando URL de status para {key}: {str(e)}")
             return None
-
+    
     # ==========================================================
     # GESTIÓN DE ARCHIVOS
     # ==========================================================
-
+    
     def delete_file(self, key: str) -> bool:
         """
         Elimina un archivo de R2.
@@ -327,19 +345,19 @@ class R2DirectUpload:
                 logger.info(f"Archivo eliminado de R2: {key}")
             else:
                 logger.warning(f"Archivo no se pudo eliminar de R2: {key}")
-                
+            
             return bool(deleted)
             
         except Exception as e:
             logger.error(f"Error eliminando archivo {key}: {str(e)}")
             return False
-
+    
     def list_user_files(
-        self, 
-        user_id: int, 
+        self,
+        user_id: int,
         prefix: str = "uploads/direct/",
         max_keys: int = 1000
-    ) -> list:
+    ) -> List[Dict[str, Any]]:
         """
         Lista archivos de un usuario específico en R2.
         
@@ -389,8 +407,8 @@ class R2DirectUpload:
         except Exception as e:
             logger.error(f"Error listando archivos para usuario {user_id}: {str(e)}")
             return []
-
-    def get_user_storage_usage(self, user_id: int) -> dict:
+    
+    def get_user_storage_usage(self, user_id: int) -> Dict[str, Any]:
         """
         Calcula uso de almacenamiento de un usuario.
         
@@ -413,20 +431,26 @@ class R2DirectUpload:
             "total_size_gb": round(total_size / (1024 * 1024 * 1024), 3),
             "files": files[:10],  # Primeros 10 archivos
         }
-
+    
     # ==========================================================
     # MÉTODOS PRIVADOS - SEGURIDAD Y KEY GENERATION
     # ==========================================================
-
-    def _generate_secure_key(self, user_id: int, file_name: str) -> str:
+    
+    def _generate_secure_key(
+        self, 
+        user_id: int, 
+        file_name: str,
+        prefix: str = "uploads/direct/"
+    ) -> str:
         """
         Genera una key única y segura para R2.
         
-        Estructura: uploads/direct/{user_id}/{timestamp}_{uuid}{ext}
+        Estructura: {prefix}{user_id}/{timestamp}_{uuid}{ext}
         
         Args:
             user_id: ID del usuario
             file_name: Nombre original del archivo
+            prefix: Prefijo para la key
         
         Returns:
             Key segura para R2
@@ -441,11 +465,11 @@ class R2DirectUpload:
         ext = self._get_safe_extension(file_name)
         
         # Construir key
-        key = f"uploads/direct/{user_id}/{timestamp}_{unique_id}{ext}"
+        key = f"{prefix}{user_id}/{timestamp}_{unique_id}{ext}"
         
         logger.debug(f"Key generada: {key} para usuario {user_id}, archivo {file_name}")
         return key
-
+    
     @staticmethod
     def _get_safe_extension(file_name: str) -> str:
         """
@@ -464,11 +488,10 @@ class R2DirectUpload:
         if not ext:
             return ".bin"
         
-        # Normalizar a minúsculas y limitar longitud
+        # Normalizar a minúsculas
         ext = ext.lower()
         
         # Validar que sea una extensión razonable
-        # (protección contra nombres de archivo maliciosos)
         if len(ext) > 20:  # Extensiones razonables son cortas
             return ".bin"
         
@@ -477,7 +500,7 @@ class R2DirectUpload:
         safe_ext = re.sub(r'[^a-z0-9._-]', '', ext)
         
         return safe_ext if safe_ext.startswith('.') else f".{safe_ext}"
-
+    
     @staticmethod
     def _safe_filename(filename: str) -> str:
         """
@@ -516,7 +539,7 @@ class R2UploadValidator:
     """Utilidades para validación de uploads."""
     
     @staticmethod
-    def validate_file_key(key: str, user_id: int = None) -> tuple[bool, str]:
+    def validate_file_key(key: str, user_id: Optional[int] = None) -> Tuple[bool, str]:
         """
         Valida que una R2 key sea segura y pertenezca al usuario.
         
@@ -528,61 +551,4 @@ class R2UploadValidator:
             Tuple (es_válida: bool, mensaje: str)
         """
         if not key:
-            return False, "Key vacía"
-        
-        # Validar formato básico
-        if not key.startswith("uploads/direct/"):
-            return False, "Key no sigue el patrón esperado"
-        
-        # Validar que no tenga path traversal
-        if ".." in key or "//" in key:
-            return False, "Key contiene patrones peligrosos"
-        
-        # Validar ownership si se proporciona user_id
-        if user_id is not None:
-            expected_prefix = f"uploads/direct/{user_id}/"
-            if not key.startswith(expected_prefix):
-                return False, "Key no pertenece al usuario"
-        
-        return True, "Key válida"
-    
-    @staticmethod
-    def extract_user_id_from_key(key: str) -> int | None:
-        """
-        Extrae user_id de una R2 key.
-        
-        Args:
-            key: R2 key
-        
-        Returns:
-            user_id o None si no se puede extraer
-        """
-        try:
-            # Patrón: uploads/direct/{user_id}/...
-            parts = key.split("/")
-            if len(parts) >= 3 and parts[0] == "uploads" and parts[1] == "direct":
-                return int(parts[2])
-        except (ValueError, IndexError):
-            pass
-        return None
-
-
-# ==========================================================
-# EXCEPCIONES ESPECÍFICAS
-# ==========================================================
-
-class R2UploadError(Exception):
-    """Excepción base para errores de R2."""
-    pass
-
-class R2ConfigError(R2UploadError):
-    """Error de configuración de R2."""
-    pass
-
-class R2ValidationError(R2UploadError):
-    """Error de validación de archivo."""
-    pass
-
-class R2PermissionError(R2UploadError):
-    """Error de permisos en R2."""
-    pass
+            return False, "
