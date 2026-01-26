@@ -551,4 +551,4 @@ class R2UploadValidator:
             Tuple (es_válida: bool, mensaje: str)
         """
         if not key:
-            return False, "
+            return False
