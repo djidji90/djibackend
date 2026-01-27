@@ -3,7 +3,7 @@ from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
 from django.utils import timezone
 from django.conf import settings
-from django.db import transaction, Count, Q, F
+from django.db import transaction
 import logging
 import os
 import tempfile
