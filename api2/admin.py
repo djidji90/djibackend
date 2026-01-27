@@ -1497,14 +1497,3 @@ class UploadQuotaAdmin(admin.ModelAdmin):
 # 🚀 CONFIGURACIÓN DE URLS PERSONALIZADAS
 # ================================
 
-def get_urls(self):
-    """Agrega URLs personalizadas al admin"""
-    from django.urls import path
-    urls = super().get_urls()
-    custom_urls = [
-        path('upload-analytics/', self.admin_site.admin_view(upload_analytics_dashboard), name='upload_analytics'),
-    ]
-    return custom_urls + urls
-
-# Sobrescribir el método get_urls del admin site
-admin.site.get_urls = get_urls
