@@ -591,3 +591,190 @@ def is_transient_error(error):
     ]
     
     return any(keyword in error_str for keyword in transient_keywords)
+
+
+# ==================== NUEVAS TAREAS ====================
+
+@shared_task
+def reset_monthly_quotas():
+    """
+    Reset mensual de contadores de quotas
+    Se ejecuta el día 1 de cada mes
+    """
+    logger.info("🔄 Iniciando reset mensual de quotas...")
+    
+    try:
+        # Resetear contadores diarios si tienen más de 30 días
+        month_ago = timezone.now() - timedelta(days=30)
+        quotas_to_reset = UploadQuota.objects.filter(
+            daily_uploads_reset_at__lt=month_ago
+        )
+        
+        count = quotas_to_reset.count()
+        
+        for quota in quotas_to_reset:
+            quota.daily_uploads_count = 0
+            quota.daily_uploads_size = 0
+            quota.daily_uploads_reset_at = timezone.now()
+            quota.save(update_fields=[
+                'daily_uploads_count', 
+                'daily_uploads_size', 
+                'daily_uploads_reset_at'
+            ])
+        
+        logger.info(f"✅ Reset mensual completado: {count} quotas actualizadas")
+        
+        return {
+            "status": "success",
+            "quotas_reset": count,
+            "timestamp": timezone.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en reset mensual de quotas: {str(e)}", exc_info=True)
+        return {"error": str(e)}
+
+
+@shared_task
+def system_health_check():
+    """
+    Verificación de salud del sistema
+    Monitorea R2, DB, Redis, y métricas clave
+    """
+    logger.info("❤️  Iniciando health check del sistema...")
+    
+    health_report = {
+        "timestamp": timezone.now().isoformat(),
+        "status": "healthy",
+        "checks": {},
+        "metrics": {},
+        "alerts": []
+    }
+    
+    try:
+        # 1. CHECK: Base de datos
+        from django.db import connection
+        
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            health_report["checks"]["database"] = {
+                "status": "healthy",
+                "response_time_ms": 0
+            }
+    except Exception as e:
+        health_report["checks"]["database"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_report["status"] = "degraded"
+        health_report["alerts"].append(f"❌ Database error: {str(e)}")
+    
+    try:
+        # 2. CHECK: Cache Redis
+        from django.core.cache import cache
+        
+        cache.set("health_check_test", "ok", 10)
+        test_value = cache.get("health_check_test")
+        
+        health_report["checks"]["cache"] = {
+            "status": "healthy" if test_value == "ok" else "unhealthy",
+            "test_value": test_value
+        }
+        
+        if test_value != "ok":
+            health_report["status"] = "degraded"
+            health_report["alerts"].append("⚠️ Cache Redis test failed")
+            
+    except Exception as e:
+        health_report["checks"]["cache"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_report["status"] = "degraded"
+        health_report["alerts"].append(f"❌ Cache error: {str(e)}")
+    
+    try:
+        # 3. CHECK: R2 Connection
+        from .r2_utils import check_file_exists
+        
+        # Prueba simple con un path que no debería existir
+        test_key = "health_check_test_nonexistent_" + str(int(timezone.now().timestamp()))
+        exists = check_file_exists(test_key)
+        
+        health_report["checks"]["r2"] = {
+            "status": "healthy",
+            "connection_test": True,
+            "test_key_should_not_exist": not exists
+        }
+        
+    except Exception as e:
+        health_report["checks"]["r2"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_report["status"] = "degraded"
+        health_report["alerts"].append(f"❌ R2 error: {str(e)}")
+    
+    # 4. MÉTRICAS: Uploads pendientes
+    try:
+        pending_count = UploadSession.objects.filter(
+            status__in=['pending', 'uploaded']
+        ).count()
+        
+        expired_count = UploadSession.objects.filter(
+            status='expired'
+        ).count()
+        
+        failed_last_hour = UploadSession.objects.filter(
+            status='failed',
+            updated_at__gte=timezone.now() - timezone.timedelta(hours=1)
+        ).count()
+        
+        health_report["metrics"]["uploads"] = {
+            "pending": pending_count,
+            "expired": expired_count,
+            "failed_last_hour": failed_last_hour
+        }
+        
+        # ALERTAS basadas en métricas
+        if pending_count > 50:
+            health_report["alerts"].append(f"⚠️ Many pending uploads: {pending_count}")
+            health_report["status"] = "warning"
+        
+        if failed_last_hour > 10:
+            health_report["alerts"].append(f"🚨 High failure rate: {failed_last_hour} failed in last hour")
+            health_report["status"] = "warning"
+            
+    except Exception as e:
+        health_report["metrics"]["uploads"] = {"error": str(e)}
+        health_report["alerts"].append(f"⚠️ Error collecting upload metrics: {str(e)}")
+    
+    # 5. MÉTRICAS: Uso de quotas
+    try:
+        quota_stats = UploadQuota.objects.aggregate(
+            total_users=Count('id'),
+            high_usage=Count('id', filter=Q(daily_uploads_count__gte=F('max_daily_uploads') * 0.8)),
+            storage_near_limit=Count('id', filter=Q(total_uploads_size__gte=F('max_total_storage') * 0.9))
+        )
+        
+        health_report["metrics"]["quotas"] = {
+            "total_users": quota_stats["total_users"] or 0,
+            "users_near_daily_limit": quota_stats["high_usage"] or 0,
+            "users_near_storage_limit": quota_stats["storage_near_limit"] or 0
+        }
+        
+        if quota_stats["storage_near_limit"]:
+            health_report["alerts"].append(f"⚠️ {quota_stats['storage_near_limit']} users near storage limit")
+            
+    except Exception as e:
+        health_report["metrics"]["quotas"] = {"error": str(e)}
+    
+    # Log del reporte completo
+    logger.info(f"❤️  Health check completed: {health_report['status']}")
+    
+    # Si hay alertas, log them
+    if health_report["alerts"]:
+        for alert in health_report["alerts"]:
+            logger.warning(f"HEALTH ALERT: {alert}")
+    
+    return health_report
