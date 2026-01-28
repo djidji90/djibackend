@@ -1,4 +1,3 @@
-# admin.py - VERSIÓN FINAL CORREGIDA CON TUS MODELOS
 from django.contrib import admin
 from django import forms
 from django.contrib import messages
@@ -23,7 +22,7 @@ from .r2_utils import upload_file_to_r2, delete_file_from_r2, check_file_exists,
 logger = logging.getLogger(__name__)
 
 # ================================
-# 📝 FORMS PERSONALIZADOS (TUS ORIGINALES)
+# 📝 FORMS PERSONALIZADOS
 # ================================
 
 class SongAdminForm(forms.ModelForm):
@@ -32,20 +31,20 @@ class SongAdminForm(forms.ModelForm):
         label="Archivo de Audio",
         help_text="Sube el archivo que se guardará en R2. Formatos: MP3, WAV, OGG, M4A, FLAC, AAC, WEBM (max 100MB)"
     )
-    
+
     image_file = forms.ImageField(
         required=False,
         label="Imagen de Portada",
         help_text="Sube la imagen que se guardará en R2. Formatos: JPG, PNG, WEBP (max 10MB)"
     )
-    
+
     class Meta:
         model = Song
         fields = '__all__'
         widgets = {
             'duration': forms.TextInput(attrs={'placeholder': 'MM:SS (ej: 03:45)'}),
         }
-    
+
     def clean_audio_file(self):
         audio_file = self.cleaned_data.get('audio_file')
         if audio_file:
@@ -53,12 +52,12 @@ class SongAdminForm(forms.ModelForm):
             ext = os.path.splitext(audio_file.name)[1].lower()
             if ext not in valid_extensions:
                 raise forms.ValidationError(f"Formato no soportado. Use: {', '.join(valid_extensions)}")
-            
+
             if audio_file.size > 100 * 1024 * 1024:
                 raise forms.ValidationError("El archivo es demasiado grande. Máximo 100MB.")
-        
+
         return audio_file
-    
+
     def clean_image_file(self):
         image_file = self.cleaned_data.get('image_file')
         if image_file:
@@ -66,10 +65,10 @@ class SongAdminForm(forms.ModelForm):
             ext = os.path.splitext(image_file.name)[1].lower()
             if ext not in valid_extensions:
                 raise forms.ValidationError(f"Formato de imagen no soportado. Use: {', '.join(valid_extensions)}")
-            
+
             if image_file.size > 10 * 1024 * 1024:
                 raise forms.ValidationError("La imagen es demasiado grande. Máximo 10MB.")
-        
+
         return image_file
 
 class MusicEventAdminForm(forms.ModelForm):
@@ -78,7 +77,7 @@ class MusicEventAdminForm(forms.ModelForm):
         label="Imagen del Evento",
         help_text="Sube la imagen que se guardará en R2 (max 10MB)"
     )
-    
+
     class Meta:
         model = MusicEvent
         fields = '__all__'
@@ -89,13 +88,13 @@ class UserProfileAdminForm(forms.ModelForm):
         label="Avatar",
         help_text="Sube la imagen de perfil que se guardará en R2 (max 5MB)"
     )
-    
+
     class Meta:
         model = UserProfile
         fields = '__all__'
 
 # ================================
-# 🎵 SONG ADMIN - MEJORADO CON CACHE
+# 🎵 SONG ADMIN - CORREGIDO
 # ================================
 
 @admin.register(Song)
@@ -113,7 +112,7 @@ class SongAdmin(admin.ModelAdmin):
         'downloads_count', 'audio_url', 'image_url', 'created_at', 'updated_at'
     ]
     actions = ['verify_r2_files', 'generate_presigned_urls', 'export_to_csv']
-    
+
     fieldsets = (
         ('Información Básica', {
             'fields': ('title', 'artist', 'genre', 'duration', 'uploaded_by', 'is_public')
@@ -139,136 +138,99 @@ class SongAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-    
-    # ========== MÉTODOS CON CACHE ==========
-    
+
     def has_audio(self, obj):
-        """Verifica si el archivo de audio existe en R2 (con cache)"""
+        """Verifica si el archivo de audio existe en R2"""
         if not obj.file_key:
             return False
         try:
-            cache_key = f"r2_audio_exists_{obj.file_key}"
-            exists = cache.get(cache_key)
-            
-            if exists is None:
-                exists = check_file_exists(obj.file_key)
-                cache.set(cache_key, exists, timeout=300)  # 5 minutos
-            
-            return exists
+            return check_file_exists(obj.file_key)
         except Exception as e:
             logger.error(f"Error verificando audio para {obj.id}: {e}")
             return False
     has_audio.boolean = True
     has_audio.short_description = '🎵 Audio en R2'
-    
+
     def has_image(self, obj):
-        """Verifica si la imagen existe en R2 (con cache)"""
+        """Verifica si la imagen existe en R2"""
         if not obj.image_key:
             return False
         try:
-            cache_key = f"r2_image_exists_{obj.image_key}"
-            exists = cache.get(cache_key)
-            
-            if exists is None:
-                exists = check_file_exists(obj.image_key)
-                cache.set(cache_key, exists, timeout=300)
-            
-            return exists
+            return check_file_exists(obj.image_key)
         except Exception as e:
             logger.error(f"Error verificando imagen para {obj.id}: {e}")
             return False
     has_image.boolean = True
     has_image.short_description = '🖼️ Imagen en R2'
-    
+
     def audio_url(self, obj):
-        """Genera URL temporal para el audio (con cache)"""
+        """Genera URL temporal para el audio"""
         if obj.file_key:
             try:
-                cache_key = f"r2_audio_url_{obj.file_key}"
-                url = cache.get(cache_key)
-                
-                if url is None:
-                    if check_file_exists(obj.file_key):
-                        url = generate_presigned_url(obj.file_key, expiration=3600)
-                        if url:
-                            cache.set(cache_key, url, timeout=3500)  # Casi 1 hora
-                
-                if url:
-                    return format_html(f'<a href="{url}" target="_blank">🔗 Escuchar (1h)</a>')
+                if check_file_exists(obj.file_key):
+                    url = generate_presigned_url(obj.file_key, expiration=3600)
+                    if url:
+                        return format_html(f'<a href="{url}" target="_blank">🔗 Escuchar (1h)</a>')
             except Exception as e:
                 logger.error(f"Error generando URL audio para {obj.id}: {e}")
         return "Sin archivo"
     audio_url.allow_tags = True
     audio_url.short_description = 'URL Audio'
-    
+
     def image_url(self, obj):
-        """Genera URL temporal para la imagen (con cache)"""
+        """Genera URL temporal para la imagen"""
         if obj.image_key:
             try:
-                cache_key = f"r2_image_url_{obj.image_key}"
-                url = cache.get(cache_key)
-                
-                if url is None:
-                    if check_file_exists(obj.image_key):
-                        url = generate_presigned_url(obj.image_key, expiration=3600)
-                        if url:
-                            cache.set(cache_key, url, timeout=3500)
-                
-                if url:
-                    return format_html(f'<a href="{url}" target="_blank">🔗 Ver imagen (1h)</a>')
+                if check_file_exists(obj.image_key):
+                    url = generate_presigned_url(obj.image_key, expiration=3600)
+                    if url:
+                        return format_html(f'<a href="{url}" target="_blank">🔗 Ver imagen (1h)</a>')
             except Exception as e:
                 logger.error(f"Error generando URL imagen para {obj.id}: {e}")
         return "Sin imagen"
     image_url.allow_tags = True
     image_url.short_description = 'URL Imagen'
-    
+
     def quick_actions(self, obj):
-        """Botones de acción rápida"""
+        """Botones de acción rápida - CORREGIDO CON NOMBRES API2"""
         buttons = []
-        
-        # Botón para editar
-        edit_url = reverse('admin:musica_song_change', args=[obj.id])
+
+        # Botón para editar - CORREGIDO: usa 'api2' no 'musica'
+        edit_url = reverse('admin:api2_song_change', args=[obj.id])
         buttons.append(f'<a href="{edit_url}" class="button" title="Editar">✏️</a>')
-        
+
         # Botón para ver/escuchar si existe
-        if obj.file_key and self.has_audio(obj):
-            audio_url = self.audio_url(obj)
-            if "href=" in audio_url:
-                import re
-                match = re.search(r'href="([^"]+)"', audio_url)
-                if match:
-                    buttons.append(f'<a href="{match.group(1)}" target="_blank" class="button" title="Escuchar">🎵</a>')
-        
+        if obj.file_key:
+            try:
+                if check_file_exists(obj.file_key):
+                    url = generate_presigned_url(obj.file_key, expiration=300)  # 5 minutos
+                    buttons.append(f'<a href="{url}" target="_blank" class="button" title="Escuchar">🎵</a>')
+            except:
+                pass
+
         return format_html(' '.join(buttons))
     quick_actions.short_description = 'Acciones'
     quick_actions.allow_tags = True
-    
-    # ========== MÉTODOS ORIGINALES (NO MODIFICAR) ==========
-    
+
     def save_model(self, request, obj, form, change):
-        """Maneja la subida de archivos a R2 - VERSIÓN ORIGINAL"""
+        """Maneja la subida de archivos a R2"""
         logger.info(f"🔄 Guardando canción - ID: {obj.id if change else 'Nueva'}, Cambio: {change}")
-        
+
         audio_file = form.cleaned_data.get('audio_file')
         image_file = form.cleaned_data.get('image_file')
-        
+
         old_audio_key = obj.file_key if change else None
         old_image_key = obj.image_key if change else None
-        
+
         if audio_file and isinstance(audio_file, UploadedFile):
             file_extension = os.path.splitext(audio_file.name)[1].lower()
             if not file_extension:
                 file_extension = '.mp3'
             new_audio_key = f"songs/audio/{uuid.uuid4().hex[:16]}{file_extension}"
             obj.file_key = new_audio_key
-            
-            if hasattr(obj, 'file_size'):
-                obj.file_size = audio_file.size
-            if hasattr(obj, 'file_format'):
-                obj.file_format = file_extension.lstrip('.')
-            
+
             logger.info(f"📝 Nueva key de audio: {new_audio_key}")
-        
+
         if image_file and isinstance(image_file, UploadedFile):
             file_extension = os.path.splitext(image_file.name)[1].lower()
             if not file_extension:
@@ -276,7 +238,7 @@ class SongAdmin(admin.ModelAdmin):
             new_image_key = f"songs/images/{uuid.uuid4().hex[:16]}{file_extension}"
             obj.image_key = new_image_key
             logger.info(f"📝 Nueva key de imagen: {new_image_key}")
-        
+
         try:
             super().save_model(request, obj, form, change)
             logger.info(f"💾 Objeto guardado en DB - ID: {obj.id}")
@@ -284,110 +246,83 @@ class SongAdmin(admin.ModelAdmin):
             logger.error(f"💥 Error guardando en DB: {e}")
             messages.error(request, f"Error guardando en base de datos: {str(e)}")
             return
-        
-        upload_errors = []
-        
+
         # Subir audio
         if audio_file and isinstance(audio_file, UploadedFile):
             try:
                 if hasattr(audio_file, 'seek'):
                     audio_file.seek(0)
-                
+
                 audio_content_type = getattr(audio_file, 'content_type', 'audio/mpeg')
                 success = upload_file_to_r2(
                     file_obj=audio_file,
                     key=obj.file_key,
                     content_type=audio_content_type
                 )
-                
+
                 if success:
                     if check_file_exists(obj.file_key):
                         messages.success(request, f"✅ Audio subido: {obj.file_key}")
                         logger.info(f"✅ Audio subido exitosamente: {obj.file_key}")
-                        
-                        # Invalidar cache
-                        cache.delete(f"r2_audio_exists_{obj.file_key}")
-                        cache.delete(f"r2_audio_url_{obj.file_key}")
-                        
+
+                        # Eliminar archivo antiguo si existe y es diferente
                         if old_audio_key and old_audio_key != obj.file_key:
                             try:
                                 if check_file_exists(old_audio_key):
                                     delete_file_from_r2(old_audio_key)
-                                    cache.delete(f"r2_audio_exists_{old_audio_key}")
-                                    cache.delete(f"r2_audio_url_{old_audio_key}")
                                     logger.info(f"🗑️ Audio antiguo eliminado: {old_audio_key}")
                             except Exception as delete_error:
                                 logger.warning(f"No se pudo eliminar audio antiguo: {delete_error}")
                     else:
-                        error_msg = f"Audio subido pero no encontrado en R2: {obj.file_key}"
-                        upload_errors.append(error_msg)
-                        messages.warning(request, error_msg)
+                        messages.warning(request, f"Audio subido pero no encontrado en R2: {obj.file_key}")
                 else:
-                    error_msg = f"❌ Falló subida de audio: {obj.file_key}"
-                    upload_errors.append(error_msg)
-                    messages.error(request, error_msg)
-                    
+                    messages.error(request, f"❌ Falló subida de audio: {obj.file_key}")
+
             except Exception as e:
-                error_msg = f"Excepción subiendo audio: {str(e)}"
-                upload_errors.append(error_msg)
                 logger.error(f"💥 Error en subida de audio: {e}", exc_info=True)
-                messages.error(request, error_msg)
-        
+                messages.error(request, f"Error subiendo audio: {str(e)}")
+
         # Subir imagen
         if image_file and isinstance(image_file, UploadedFile):
             try:
                 if hasattr(image_file, 'seek'):
                     image_file.seek(0)
-                
+
                 image_content_type = getattr(image_file, 'content_type', 'image/jpeg')
                 success = upload_file_to_r2(
                     file_obj=image_file,
                     key=obj.image_key,
                     content_type=image_content_type
                 )
-                
+
                 if success:
                     if check_file_exists(obj.image_key):
                         messages.success(request, f"✅ Imagen subida: {obj.image_key}")
                         logger.info(f"✅ Imagen subida exitosamente: {obj.image_key}")
-                        
-                        # Invalidar cache
-                        cache.delete(f"r2_image_exists_{obj.image_key}")
-                        cache.delete(f"r2_image_url_{obj.image_key}")
-                        
+
+                        # Eliminar imagen antigua si existe y es diferente
                         if old_image_key and old_image_key != obj.image_key:
                             try:
                                 if check_file_exists(old_image_key):
                                     delete_file_from_r2(old_image_key)
-                                    cache.delete(f"r2_image_exists_{old_image_key}")
-                                    cache.delete(f"r2_image_url_{old_image_key}")
                                     logger.info(f"🗑️ Imagen antigua eliminada: {old_image_key}")
                             except Exception as delete_error:
                                 logger.warning(f"No se pudo eliminar imagen antigua: {delete_error}")
                     else:
-                        error_msg = f"Imagen subida pero no encontrada en R2: {obj.image_key}"
-                        upload_errors.append(error_msg)
-                        messages.warning(request, error_msg)
+                        messages.warning(request, f"Imagen subida pero no encontrada en R2: {obj.image_key}")
                 else:
-                    error_msg = f"❌ Falló subida de imagen: {obj.image_key}"
-                    upload_errors.append(error_msg)
-                    messages.error(request, error_msg)
-                    
+                    messages.error(request, f"❌ Falló subida de imagen: {obj.image_key}")
+
             except Exception as e:
-                error_msg = f"Excepción subiendo imagen: {str(e)}"
-                upload_errors.append(error_msg)
                 logger.error(f"💥 Error en subida de imagen: {e}", exc_info=True)
-                messages.error(request, error_msg)
-        
-        if upload_errors:
-            logger.warning(f"⚠️ Errores en upload para canción {obj.id}: {upload_errors}")
-        
+                messages.error(request, f"Error subiendo imagen: {str(e)}")
+
         logger.info(f"🎉 Proceso completado para canción ID: {obj.id}")
-    
+
     def delete_model(self, request, obj):
         """Eliminar archivos de R2 al borrar la canción"""
         delete_errors = []
-        
+
         if obj.file_key:
             try:
                 if check_file_exists(obj.file_key):
@@ -399,10 +334,7 @@ class SongAdmin(admin.ModelAdmin):
             except Exception as e:
                 delete_errors.append(f"Audio: {e}")
                 logger.error(f"Error eliminando audio {obj.file_key}: {e}")
-            
-            cache.delete(f"r2_audio_exists_{obj.file_key}")
-            cache.delete(f"r2_audio_url_{obj.file_key}")
-        
+
         if obj.image_key:
             try:
                 if check_file_exists(obj.image_key):
@@ -414,17 +346,14 @@ class SongAdmin(admin.ModelAdmin):
             except Exception as e:
                 delete_errors.append(f"Imagen: {e}")
                 logger.error(f"Error eliminando imagen {obj.image_key}: {e}")
-            
-            cache.delete(f"r2_image_exists_{obj.image_key}")
-            cache.delete(f"r2_image_url_{obj.image_key}")
-        
+
         super().delete_model(request, obj)
-        
+
         if delete_errors:
             messages.error(request, f"Errores al eliminar archivos: {'; '.join(delete_errors)}")
-    
+
     # ========== ACCIONES PERSONALIZADAS ==========
-    
+
     @admin.action(description="✅ Verificar archivos en R2")
     def verify_r2_files(self, request, queryset):
         """Acción para verificar archivos en R2"""
@@ -432,12 +361,12 @@ class SongAdmin(admin.ModelAdmin):
         for song in queryset:
             audio_exists = False
             image_exists = False
-            
+
             if song.file_key:
                 audio_exists = check_file_exists(song.file_key)
             if song.image_key:
                 image_exists = check_file_exists(song.image_key)
-            
+
             results.append({
                 'song': f"{song.title} - {song.artist}",
                 'audio_exists': audio_exists,
@@ -445,15 +374,15 @@ class SongAdmin(admin.ModelAdmin):
                 'audio_key': song.file_key,
                 'image_key': song.image_key,
             })
-        
+
         message = "Resultados de verificación R2:<br>"
         for result in results:
             audio_icon = "✅" if result['audio_exists'] else "❌"
             image_icon = "✅" if result['image_exists'] else "❌"
             message += f"{audio_icon} {image_icon} {result['song']}<br>"
-        
+
         self.message_user(request, message, messages.INFO)
-    
+
     @admin.action(description="🔗 Generar URLs temporales (1h)")
     def generate_presigned_urls(self, request, queryset):
         """Generar URLs presigned para las canciones seleccionadas"""
@@ -461,18 +390,18 @@ class SongAdmin(admin.ModelAdmin):
         for song in queryset:
             audio_url = None
             image_url = None
-            
+
             if song.file_key and check_file_exists(song.file_key):
                 audio_url = generate_presigned_url(song.file_key, expiration=3600)
             if song.image_key and check_file_exists(song.image_key):
                 image_url = generate_presigned_url(song.image_key, expiration=3600)
-            
+
             urls.append({
                 'song': f"{song.title} - {song.artist}",
                 'audio_url': audio_url,
                 'image_url': image_url,
             })
-        
+
         message = "URLs temporales (válidas por 1 hora):<br>"
         for item in urls:
             message += f"<strong>{item['song']}</strong><br>"
@@ -481,23 +410,23 @@ class SongAdmin(admin.ModelAdmin):
             if item['image_url']:
                 message += f"🖼️ <a href='{item['image_url']}' target='_blank'>Ver imagen</a><br>"
             message += "<br>"
-        
+
         self.message_user(request, message, messages.INFO)
-    
+
     @admin.action(description="📄 Exportar a CSV")
     def export_to_csv(self, request, queryset):
         """Exporta las canciones seleccionadas a CSV"""
         import csv
         from django.http import HttpResponse
-        
+
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="songs_export.csv"'
-        
+
         writer = csv.writer(response)
         writer.writerow(['Título', 'Artista', 'Género', 'Duración', 'Uploader', 
                         'Audio Key', 'Imagen Key', 'Likes', 'Plays', 'Downloads', 
                         'Creado', 'Público'])
-        
+
         for song in queryset:
             writer.writerow([
                 song.title,
@@ -513,11 +442,11 @@ class SongAdmin(admin.ModelAdmin):
                 song.created_at.strftime('%Y-%m-%d %H:%M') if song.created_at else '',
                 'Sí' if song.is_public else 'No'
             ])
-        
+
         return response
 
 # ================================
-# 📅 MUSICEVENT ADMIN
+# 📅 MUSICEVENT ADMIN - COMPLETO Y CORREGIDO
 # ================================
 
 @admin.register(MusicEvent)
@@ -527,51 +456,93 @@ class MusicEventAdmin(admin.ModelAdmin):
     list_filter = ['event_type', 'event_date', 'is_active', 'is_featured']
     search_fields = ['title', 'location', 'venue']
     readonly_fields = ['image_key', 'image_url']
-    
+
     def has_image(self, obj):
         if not obj.image_key:
             return False
         try:
-            cache_key = f"r2_event_image_exists_{obj.image_key}"
-            exists = cache.get(cache_key)
-            
-            if exists is None:
-                exists = check_file_exists(obj.image_key)
-                cache.set(cache_key, exists, timeout=300)
-            
-            return exists
+            return check_file_exists(obj.image_key)
         except Exception:
             return False
     has_image.boolean = True
     has_image.short_description = '🖼️ Imagen en R2'
-    
+
     def image_url(self, obj):
         if obj.image_key:
             try:
-                cache_key = f"r2_event_image_url_{obj.image_key}"
-                url = cache.get(cache_key)
-                
-                if url is None:
-                    if check_file_exists(obj.image_key):
-                        url = generate_presigned_url(obj.image_key, expiration=3600)
-                        if url:
-                            cache.set(cache_key, url, timeout=3500)
-                
-                if url:
-                    return format_html(f'<a href="{url}" target="_blank">🔗 Ver imagen (1h)</a>')
+                if check_file_exists(obj.image_key):
+                    url = generate_presigned_url(obj.image_key, expiration=3600)
+                    if url:
+                        return format_html(f'<a href="{url}" target="_blank">🔗 Ver imagen (1h)</a>')
             except Exception:
                 pass
         return "Sin imagen"
     image_url.allow_tags = True
     image_url.short_description = 'URL Imagen'
-    
-    # MANTENER TU save_model ORIGINAL COMPLETO AQUÍ
+
     def save_model(self, request, obj, form, change):
-        """TU LÓGICA ORIGINAL - PEGAR COMPLETA"""
-        pass
+        """Maneja la subida de imágenes de eventos a R2 - COMPLETO"""
+        logger.info(f"🔄 Guardando evento - ID: {obj.id if change else 'Nueva'}, Cambio: {change}")
+        
+        event_image = form.cleaned_data.get('event_image')
+        old_image_key = obj.image_key if change else None
+        
+        # Generar nueva key si hay imagen
+        if event_image and isinstance(event_image, UploadedFile):
+            file_extension = os.path.splitext(event_image.name)[1].lower()
+            if not file_extension:
+                file_extension = '.jpg'
+            new_image_key = f"events/images/{uuid.uuid4().hex[:16]}{file_extension}"
+            obj.image_key = new_image_key
+            logger.info(f"📝 Nueva key de imagen de evento: {new_image_key}")
+        
+        try:
+            super().save_model(request, obj, form, change)
+            logger.info(f"💾 Evento guardado en DB - ID: {obj.id}")
+        except Exception as e:
+            logger.error(f"💥 Error guardando evento en DB: {e}")
+            messages.error(request, f"Error guardando en base de datos: {str(e)}")
+            return
+        
+        # Subir imagen si existe
+        if event_image and isinstance(event_image, UploadedFile):
+            try:
+                if hasattr(event_image, 'seek'):
+                    event_image.seek(0)
+                
+                image_content_type = getattr(event_image, 'content_type', 'image/jpeg')
+                success = upload_file_to_r2(
+                    file_obj=event_image,
+                    key=obj.image_key,
+                    content_type=image_content_type
+                )
+                
+                if success:
+                    if check_file_exists(obj.image_key):
+                        messages.success(request, f"✅ Imagen de evento subida: {obj.image_key}")
+                        logger.info(f"✅ Imagen de evento subida exitosamente: {obj.image_key}")
+                        
+                        # Eliminar imagen antigua si existe y es diferente
+                        if old_image_key and old_image_key != obj.image_key:
+                            try:
+                                if check_file_exists(old_image_key):
+                                    delete_file_from_r2(old_image_key)
+                                    logger.info(f"🗑️ Imagen antigua de evento eliminada: {old_image_key}")
+                            except Exception as delete_error:
+                                logger.warning(f"No se pudo eliminar imagen antigua: {delete_error}")
+                    else:
+                        messages.warning(request, f"Imagen subida pero no encontrada en R2: {obj.image_key}")
+                else:
+                    messages.error(request, f"❌ Falló subida de imagen: {obj.image_key}")
+                
+            except Exception as e:
+                logger.error(f"💥 Error en subida de imagen de evento: {e}", exc_info=True)
+                messages.error(request, f"Error subiendo imagen: {str(e)}")
+        
+        logger.info(f"🎉 Proceso completado para evento ID: {obj.id}")
 
 # ================================
-# 👤 USERPROFILE ADMIN
+# 👤 USERPROFILE ADMIN - COMPLETO Y CORREGIDO
 # ================================
 
 @admin.register(UserProfile)
@@ -580,48 +551,95 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_display = ['user', 'location', 'has_avatar', 'songs_uploaded', 'created_at']
     search_fields = ['user__username', 'location']
     readonly_fields = ['avatar_key', 'avatar_url']
-    
+
     def has_avatar(self, obj):
         if not obj.avatar_key:
             return False
         try:
-            cache_key = f"r2_avatar_exists_{obj.avatar_key}"
-            exists = cache.get(cache_key)
-            
-            if exists is None:
-                exists = check_file_exists(obj.avatar_key)
-                cache.set(cache_key, exists, timeout=300)
-            
-            return exists
+            return check_file_exists(obj.avatar_key)
         except Exception:
             return False
     has_avatar.boolean = True
     has_avatar.short_description = '👤 Avatar en R2'
-    
+
     def avatar_url(self, obj):
         if obj.avatar_key:
             try:
-                cache_key = f"r2_avatar_url_{obj.avatar_key}"
-                url = cache.get(cache_key)
-                
-                if url is None:
-                    if check_file_exists(obj.avatar_key):
-                        url = generate_presigned_url(obj.avatar_key, expiration=3600)
-                        if url:
-                            cache.set(cache_key, url, timeout=3500)
-                
-                if url:
-                    return format_html(f'<a href="{url}" target="_blank">🔗 Ver avatar (1h)</a>')
+                if check_file_exists(obj.avatar_key):
+                    url = generate_presigned_url(obj.avatar_key, expiration=3600)
+                    if url:
+                        return format_html(f'<a href="{url}" target="_blank">🔗 Ver avatar (1h)</a>')
             except Exception:
                 pass
         return "Sin avatar"
     avatar_url.allow_tags = True
     avatar_url.short_description = 'URL Avatar'
-    
-    # MANTENER TU save_model ORIGINAL COMPLETO AQUÍ
+
     def save_model(self, request, obj, form, change):
-        """TU LÓGICA ORIGINAL - PEGAR COMPLETA"""
-        pass
+        """Maneja la subida de avatares a R2 - COMPLETO"""
+        logger.info(f"🔄 Guardando perfil - User: {obj.user.username}, Cambio: {change}")
+        
+        avatar_upload = form.cleaned_data.get('avatar_upload')
+        old_avatar_key = obj.avatar_key if change else None
+        
+        # Generar key antes de guardar
+        if avatar_upload and isinstance(avatar_upload, UploadedFile):
+            # Validar tamaño máximo
+            if avatar_upload.size > 5 * 1024 * 1024:
+                messages.error(request, "La imagen es demasiado grande. Máximo 5MB.")
+                return
+            
+            file_extension = os.path.splitext(avatar_upload.name)[1].lower()
+            if not file_extension:
+                file_extension = '.jpg'
+            new_avatar_key = f"avatars/{uuid.uuid4().hex[:16]}{file_extension}"
+            obj.avatar_key = new_avatar_key
+            logger.info(f"📝 Nueva key de avatar: {new_avatar_key}")
+        
+        try:
+            super().save_model(request, obj, form, change)
+            logger.info(f"💾 Perfil guardado en DB - User: {obj.user.username}")
+        except Exception as e:
+            logger.error(f"💥 Error guardando perfil en DB: {e}")
+            messages.error(request, f"Error guardando en base de datos: {str(e)}")
+            return
+        
+        # Subir avatar si existe
+        if avatar_upload and isinstance(avatar_upload, UploadedFile):
+            try:
+                if hasattr(avatar_upload, 'seek'):
+                    avatar_upload.seek(0)
+                
+                avatar_content_type = getattr(avatar_upload, 'content_type', 'image/jpeg')
+                success = upload_file_to_r2(
+                    file_obj=avatar_upload,
+                    key=obj.avatar_key,
+                    content_type=avatar_content_type
+                )
+                
+                if success:
+                    if check_file_exists(obj.avatar_key):
+                        messages.success(request, f"✅ Avatar subido: {obj.avatar_key}")
+                        logger.info(f"✅ Avatar subido exitosamente: {obj.avatar_key}")
+                        
+                        # Eliminar avatar antiguo si existe y es diferente
+                        if old_avatar_key and old_avatar_key != obj.avatar_key:
+                            try:
+                                if check_file_exists(old_avatar_key):
+                                    delete_file_from_r2(old_avatar_key)
+                                    logger.info(f"🗑️ Avatar antiguo eliminado: {old_avatar_key}")
+                            except Exception as delete_error:
+                                logger.warning(f"No se pudo eliminar avatar antiguo: {delete_error}")
+                    else:
+                        messages.warning(request, f"Avatar subido pero no encontrado en R2: {obj.avatar_key}")
+                else:
+                    messages.error(request, f"❌ Falló subida de avatar: {obj.avatar_key}")
+                
+            except Exception as e:
+                logger.error(f"💥 Error en subida de avatar: {e}", exc_info=True)
+                messages.error(request, f"Error subiendo avatar: {str(e)}")
+        
+        logger.info(f"🎉 Proceso completado para perfil: {obj.user.username}")
 
 # ================================
 # 🔄 UPLOADSESSION ADMIN - CORREGIDO
@@ -642,7 +660,7 @@ class UploadSessionAdmin(admin.ModelAdmin):
         'updated_at', 'completed_at', 'song', 'metadata'
     ]
     actions = ['verify_r2_files_action', 'cleanup_expired_action', 'export_to_csv']
-    
+
     fieldsets = (
         ('Información Básica', {
             'fields': ('id', 'user', 'created_at', 'updated_at')
@@ -662,22 +680,22 @@ class UploadSessionAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-    
+
     def get_queryset(self, request):
         """Optimizar queries"""
         qs = super().get_queryset(request)
         return qs.select_related('user', 'song')
-    
+
     def id_short(self, obj):
         return str(obj.id)[:8]
     id_short.short_description = 'ID'
-    
+
     def file_size_mb(self, obj):
         if obj.file_size:
             return f"{obj.file_size / (1024*1024):.1f} MB"
         return "-"
     file_size_mb.short_description = 'Tamaño'
-    
+
     def status_display(self, obj):
         status_colors = {
             'pending': '🟡',
@@ -691,7 +709,7 @@ class UploadSessionAdmin(admin.ModelAdmin):
         }
         return f"{status_colors.get(obj.status, '❓')} {obj.status}"
     status_display.short_description = 'Estado'
-    
+
     def expires_in(self, obj):
         if obj.expires_at:
             now = timezone.now()
@@ -703,14 +721,15 @@ class UploadSessionAdmin(admin.ModelAdmin):
             return "Expirado"
         return "-"
     expires_in.short_description = 'Expira en'
-    
+
     def quick_actions(self, obj):
+        """Botones de acción rápida - CORREGIDO CON NOMBRES API2"""
         buttons = []
-        
-        # Botón para editar
-        edit_url = reverse('admin:musica_uploadsession_change', args=[obj.id])
+
+        # Botón para editar - CORREGIDO: usa 'api2' no 'musica'
+        edit_url = reverse('admin:api2_uploadsession_change', args=[obj.id])
         buttons.append(f'<a href="{edit_url}" class="button" title="Editar">✏️</a>')
-        
+
         # Botón para verificar R2 si tiene file_key
         if obj.file_key:
             try:
@@ -719,16 +738,16 @@ class UploadSessionAdmin(admin.ModelAdmin):
                     buttons.append(f'<a href="{url}" target="_blank" class="button" title="Ver archivo">🔍</a>')
             except:
                 pass
-        
-        # Botón para ver canción si existe
+
+        # Botón para ver canción si existe - CORREGIDO: usa 'api2' no 'musica'
         if obj.song:
-            song_url = reverse('admin:musica_song_change', args=[obj.song.id])
+            song_url = reverse('admin:api2_song_change', args=[obj.song.id])
             buttons.append(f'<a href="{song_url}" class="button" title="Ver canción">🎵</a>')
-        
+
         return format_html(' '.join(buttons))
     quick_actions.short_description = 'Acciones'
     quick_actions.allow_tags = True
-    
+
     @admin.action(description="🔍 Verificar archivos en R2")
     def verify_r2_files_action(self, request, queryset):
         results = []
@@ -739,10 +758,10 @@ class UploadSessionAdmin(admin.ModelAdmin):
                     results.append(f"{upload.file_name}: {'✅' if exists else '❌'}")
                 except Exception as e:
                     results.append(f"{upload.file_name}: ⚠️ Error: {str(e)}")
-        
+
         message = f"Verificación R2 completada:<br>" + "<br>".join(results)
         self.message_user(request, message, messages.INFO)
-    
+
     @admin.action(description="🗑️ Limpiar sesiones expiradas")
     def cleanup_expired_action(self, request, queryset):
         from django.utils import timezone
@@ -753,22 +772,22 @@ class UploadSessionAdmin(admin.ModelAdmin):
         count = expired.count()
         expired.update(status='expired')
         self.message_user(request, f"✅ {count} sesiones marcadas como expiradas", messages.SUCCESS)
-    
+
     @admin.action(description="📄 Exportar a CSV")
     def export_to_csv(self, request, queryset):
         import csv
         from django.http import HttpResponse
-        
+
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="uploads_export.csv"'
-        
+
         writer = csv.writer(response)
         writer.writerow([
             'ID', 'Usuario', 'Nombre Archivo', 'Tamaño (MB)',
             'Estado', 'Confirmado', 'Creado', 'Expira', 'Completado',
             'Canción ID', 'Mensaje Estado'
         ])
-        
+
         for upload in queryset:
             writer.writerow([
                 upload.id,
@@ -783,11 +802,11 @@ class UploadSessionAdmin(admin.ModelAdmin):
                 upload.song.id if upload.song else '',
                 upload.status_message or '',
             ])
-        
+
         return response
 
 # ================================
-# 📊 UPLOADQUOTA ADMIN - CORREGIDO CON TUS CAMPOS REALES
+# 📊 UPLOADQUOTA ADMIN - CORREGIDO
 # ================================
 
 @admin.register(UploadQuota)
@@ -817,7 +836,7 @@ class UploadQuotaAdmin(admin.ModelAdmin):
         'updated_at',
         'quota_info_display'
     ]
-    
+
     fieldsets = (
         ('Usuario', {
             'fields': ('user', 'updated_at')
@@ -846,108 +865,103 @@ class UploadQuotaAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-    
+
     def daily_uploads_used(self, obj):
         return f"{obj.daily_uploads_count}/{obj.max_daily_uploads}"
     daily_uploads_used.short_description = 'Uploads Hoy'
-    
+
     def daily_size_used_mb(self, obj):
         used_mb = obj.daily_uploads_size / (1024 * 1024)
         max_mb = obj.max_daily_size / (1024 * 1024)
         return f"{used_mb:.1f}/{max_mb:.0f} MB"
     daily_size_used_mb.short_description = 'Tamaño Hoy'
-    
+
     def pending_uploads(self, obj):
         return f"{obj.pending_uploads_count} ({obj.pending_uploads_size/(1024*1024):.1f} MB)"
     pending_uploads.short_description = 'Pendientes'
-    
+
     def total_size_gb(self, obj):
         total_gb = obj.total_uploads_size / (1024 * 1024 * 1024)
         max_gb = obj.max_total_storage / (1024 * 1024 * 1024)
         return f"{total_gb:.1f}/{max_gb:.0f} GB"
     total_size_gb.short_description = 'Almacenamiento Total'
-    
+
     def quota_info_display(self, obj):
         """Muestra información de cuota formateada"""
         try:
-            quota_info = obj.get_quota_info()
-            
-            html = """
-            <style>
-                .quota-info { margin: 10px 0; }
-                .quota-section { margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; }
-                .quota-title { font-weight: bold; margin-bottom: 5px; }
-                .quota-item { margin: 3px 0; }
-                .progress-bar { 
-                    height: 10px; 
-                    background: #e9ecef; 
-                    border-radius: 5px; 
-                    margin: 5px 0;
-                    overflow: hidden;
-                }
-                .progress-fill {
-                    height: 100%;
-                    background: #28a745;
-                    transition: width 0.3s;
-                }
-                .warning { color: #ffc107; }
-                .danger { color: #dc3545; }
-            </style>
-            """
-            
-            # Diario - Uploads
-            daily_uploads = quota_info['daily']['uploads']
-            uploads_percentage = (daily_uploads['used'] / daily_uploads['max']) * 100 if daily_uploads['max'] > 0 else 0
-            uploads_color = "danger" if uploads_percentage >= 90 else "warning" if uploads_percentage >= 70 else ""
-            
-            # Diario - Tamaño
-            daily_size = quota_info['daily']['size']
-            size_percentage = (daily_size['used_bytes'] / daily_size['max_bytes']) * 100 if daily_size['max_bytes'] > 0 else 0
-            size_color = "danger" if size_percentage >= 90 else "warning" if size_percentage >= 70 else ""
-            
-            html += f"""
-            <div class="quota-info">
-                <div class="quota-section">
-                    <div class="quota-title">📅 Límites Diarios</div>
-                    
-                    <div class="quota-item">
-                        <strong>Uploads:</strong> {daily_uploads['used']}/{daily_uploads['max']} 
-                        <span class="{uploads_color}">({uploads_percentage:.1f}%)</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: {min(uploads_percentage, 100)}%"></div>
-                    </div>
-                    
-                    <div class="quota-item">
-                        <strong>Tamaño:</strong> {daily_size['used_mb']:.1f}/{daily_size['max_mb']} MB
-                        <span class="{size_color}">({size_percentage:.1f}%)</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: {min(size_percentage, 100)}%"></div>
-                    </div>
-                    
-                    <div class="quota-item">
-                        <small>Resetea: {timezone.localtime(obj.daily_uploads_reset_at + timezone.timedelta(days=1)).strftime('%Y-%m-%d %H:%M')}</small>
-                    </div>
-                </div>
+            if hasattr(obj, 'get_quota_info'):
+                quota_info = obj.get_quota_info()
                 
-                <div class="quota-section">
-                    <div class="quota-title">⏳ Uploads Pendientes</div>
-                    <div class="quota-item">Cantidad: {quota_info['pending']['count']}</div>
-                    <div class="quota-item">Tamaño: {quota_info['pending']['size_mb']:.1f} MB</div>
-                </div>
+                html = """
+                <style>
+                    .quota-info { margin: 10px 0; }
+                    .quota-section { margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; }
+                    .quota-title { font-weight: bold; margin-bottom: 5px; }
+                    .quota-item { margin: 3px 0; }
+                    .progress-bar { 
+                        height: 10px; 
+                        background: #e9ecef; 
+                        border-radius: 5px; 
+                        margin: 5px 0;
+                        overflow: hidden;
+                    }
+                    .progress-fill {
+                        height: 100%;
+                        background: #28a745;
+                        transition: width 0.3s;
+                    }
+                    .warning { color: #ffc107; }
+                    .danger { color: #dc3545; }
+                </style>
+                """
                 
-                <div class="quota-section">
-                    <div class="quota-title">💾 Totales</div>
-                    <div class="quota-item">Uploads totales: {quota_info['totals']['count']}</div>
-                    <div class="quota-item">Almacenamiento usado: {quota_info['totals']['size_gb']:.1f} GB</div>
-                    <div class="quota-item">Límite por archivo: {quota_info['limits']['file_size_mb']} MB</div>
-                    <div class="quota-item">Almacenamiento total: {quota_info['limits']['total_storage_gb']} GB</div>
-                </div>
-            </div>
-            """
-            
-            return format_html(html)
+                html += '<div class="quota-info">'
+                
+                # Límites Diarios
+                html += '<div class="quota-section">'
+                html += '<div class="quota-title">📅 Límites Diarios</div>'
+                
+                # Uploads diarios
+                daily_uploads_percentage = (obj.daily_uploads_count / obj.max_daily_uploads * 100) if obj.max_daily_uploads > 0 else 0
+                uploads_color = "danger" if daily_uploads_percentage >= 90 else "warning" if daily_uploads_percentage >= 70 else ""
+                html += f'<div class="quota-item"><strong>Uploads:</strong> {obj.daily_uploads_count}/{obj.max_daily_uploads} <span class="{uploads_color}">({daily_uploads_percentage:.1f}%)</span></div>'
+                html += f'<div class="progress-bar"><div class="progress-fill" style="width: {min(daily_uploads_percentage, 100)}%"></div></div>'
+                
+                # Tamaño diario
+                daily_size_percentage = (obj.daily_uploads_size / obj.max_daily_size * 100) if obj.max_daily_size > 0 else 0
+                size_color = "danger" if daily_size_percentage >= 90 else "warning" if daily_size_percentage >= 70 else ""
+                daily_size_mb = obj.daily_uploads_size / (1024 * 1024)
+                max_daily_mb = obj.max_daily_size / (1024 * 1024)
+                html += f'<div class="quota-item"><strong>Tamaño:</strong> {daily_size_mb:.1f}/{max_daily_mb:.0f} MB <span class="{size_color}">({daily_size_percentage:.1f}%)</span></div>'
+                html += f'<div class="progress-bar"><div class="progress-fill" style="width: {min(daily_size_percentage, 100)}%"></div></div>'
+                
+                if obj.daily_uploads_reset_at:
+                    reset_time = timezone.localtime(obj.daily_uploads_reset_at + timezone.timedelta(days=1))
+                    html += f'<div class="quota-item"><small>Resetea: {reset_time.strftime("%Y-%m-%d %H:%M")}</small></div>'
+                
+                html += '</div>'
+                
+                # Uploads Pendientes
+                html += '<div class="quota-section">'
+                html += '<div class="quota-title">⏳ Uploads Pendientes</div>'
+                html += f'<div class="quota-item">Cantidad: {obj.pending_uploads_count}</div>'
+                html += f'<div class="quota-item">Tamaño: {obj.pending_uploads_size/(1024*1024):.1f} MB</div>'
+                html += '</div>'
+                
+                # Totales
+                html += '<div class="quota-section">'
+                html += '<div class="quota-title">💾 Totales</div>'
+                html += f'<div class="quota-item">Uploads totales: {obj.total_uploads_count}</div>'
+                html += f'<div class="quota-item">Almacenamiento usado: {obj.total_uploads_size/(1024*1024*1024):.1f} GB</div>'
+                html += f'<div class="quota-item">Límite por archivo: {obj.max_file_size/(1024*1024):.0f} MB</div>'
+                html += f'<div class="quota-item">Almacenamiento total: {obj.max_total_storage/(1024*1024*1024):.0f} GB</div>'
+                html += '</div>'
+                
+                html += '</div>'
+                
+                return format_html(html)
+            else:
+                return "Método get_quota_info no disponible"
         except Exception as e:
             return f"Error generando información: {str(e)}"
     quota_info_display.short_description = 'Información de Cuota'
@@ -990,5 +1004,14 @@ class PlayHistoryAdmin(admin.ModelAdmin):
     readonly_fields = ['played_at']
 
 # ================================
-# 🚀 NO AGREGAR NADA MÁS - ¡LISTO PARA PRODUCCIÓN!
+# 🔧 CONFIGURACIÓN ADICIONAL
+# ================================
+
+# Personalizar el título del admin
+admin.site.site_header = 'Djidi Music - Administración'
+admin.site.site_title = 'Djidi Music Admin'
+admin.site.index_title = 'Panel de Administración'
+
+# ================================
+# 🚀 ¡LISTO PARA PRODUCCIÓN!
 # ================================
