@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+from datetime import timezone as dt_timezone
 import random
 from django.db import models
 from django.contrib.auth import get_user_model
@@ -2368,7 +2369,7 @@ class DirectUploadRequestView(APIView):
                 try:
                     # Convertir timestamp a datetime
                     expires_at_timestamp = upload_data['expires_at']
-                    expires_at = datetime.fromtimestamp(expires_at_timestamp, tz=timezone.utc)
+                    expires_at = datetime.fromtimestamp(expires_at_timestamp, tz=dt_timezone.utc)
                     
                     upload_session = UploadSession.objects.create(
                         user=user,
