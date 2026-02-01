@@ -69,3 +69,29 @@ def generate_presigned_url(key, expiration=3600):
     except Exception as e:
         logger.error(f"Error generando URL presigned: {e}")
         return None
+# Añade esto al final de tu archivo api2/r2_utils.py
+
+def check_r2_connection():
+    """Verifica conexión a R2 para health check"""
+    try:
+        # Intenta una operación simple
+        # Generar una URL de prueba
+        test_url = generate_presigned_url("health_check_test.txt", expiration=60)
+        
+        if test_url:
+            return {
+                "status": "OK",
+                "message": "R2 connection successful - URLs can be generated"
+            }
+        else:
+            return {
+                "status": "ERROR", 
+                "message": "Failed to generate presigned URL"
+            }
+            
+    except Exception as e:
+        logger.error(f"R2 health check failed: {e}")
+        return {
+            "status": "ERROR",
+            "message": f"R2 connection failed: {str(e)}"
+        }

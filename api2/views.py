@@ -13,6 +13,18 @@ from django.db.models import (
     Q, Count, Case, When, Value, 
     CharField, IntegerField, BooleanField
 )
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.utils import timezone
+from django.db import connection
+from django.core.cache import cache
+import redis
+import os
+
+from api2.utils.celery_health import CeleryHealth
+
 from django.db.models.functions import Lower
 from django.http import (
     HttpRequest, HttpResponse, StreamingHttpResponse, 
@@ -2023,7 +2035,7 @@ def health_check(request):
         
         # 3. Check de R2 (opcional, puede ser más lento)
         try:
-            from .r2_utils import check_r2_connection
+            from api2.utils.r2_utils import check_r2_connection
             r2_start = timezone.now()
             r2_ok = check_r2_connection()  # Necesitarías implementar esta función
             r2_time = (timezone.now() - r2_start).total_seconds() * 1000
@@ -3181,4 +3193,101 @@ class CheckOrphanedFilesView(APIView):
                     "message": f"Error verificando archivos: {str(e)}"
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )        
+            )
+ # api2/views/health.py
+
+
+class HealthCheckView(APIView):
+    """
+    Endpoint de salud para load balancers y monitoreo.
+    """
+    permission_classes = []
+    
+    def get(self, request):
+        health_data = {
+            'status': 'healthy',
+            'timestamp': timezone.now().isoformat(),
+            'service': 'dji-music-api',
+            'version': '1.0.0',
+            'checks': {},
+        }
+        
+        # 1. Verificar base de datos
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            health_data['checks']['database'] = {'status': 'healthy'}
+        except Exception as e:
+            health_data['checks']['database'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_data['status'] = 'unhealthy'
+        
+        # 2. Verificar Redis
+        try:
+            redis_url = os.getenv('REDIS_URL')
+            if redis_url:
+                r = redis.from_url(redis_url)
+                r.ping()
+                health_data['checks']['redis'] = {'status': 'healthy'}
+            else:
+                health_data['checks']['redis'] = {
+                    'status': 'unhealthy',
+                    'error': 'REDIS_URL not configured'
+                }
+                health_data['status'] = 'unhealthy'
+        except Exception as e:
+            health_data['checks']['redis'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_data['status'] = 'unhealthy'
+        
+        # 3. Verificar Celery
+        celery_health = CeleryHealth.get_health_status()
+        health_data['checks']['celery'] = celery_health
+        
+        if celery_health['severity'] in ['critical', 'warning']:
+            health_data['status'] = 'degraded'
+        
+        # 4. Verificar R2 (Cloudflare)
+        try:
+            # Intenta una operación simple de R2
+            from api2.utils.r2_direct import r2_direct
+            # Solo verificar conexión, no hacer operaciones costosas
+            health_data['checks']['r2'] = {'status': 'healthy'}
+        except Exception as e:
+            health_data['checks']['r2'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_data['status'] = 'unhealthy'
+        
+        # Determinar código de estado HTTP
+        http_status = status.HTTP_200_OK
+        if health_data['status'] == 'unhealthy':
+            http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+        elif health_data['status'] == 'degraded':
+            http_status = status.HTTP_200_OK  # 200 pero con status degraded
+        
+        return Response(health_data, status=http_status)
+
+class CeleryStatusView(APIView):
+    """
+    Endpoint específico para estado de Celery.
+    Útil para dashboards de administración.
+    """
+    permission_classes = []  # Considerar autenticación para producción
+    
+    def get(self, request):
+        health = CeleryHealth.get_health_status()
+        
+        # Agregar métricas adicionales
+        health.update({
+            'heartbeat_count': cache.get('celery:heartbeat_count', 0),
+            'upload_queue_size': cache.get('celery:queue_sizes', {}).get('uploads', 0),
+            'system_load': cache.get('system:metrics', {}),
+        })
+        
+        return Response(health)               

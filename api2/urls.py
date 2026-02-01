@@ -47,294 +47,8 @@ logger = logging.getLogger(__name__)
 # 🎯 VISTAS AUXILIARES (definidas localmente para evitar imports circulares)
 # =========================================================================
 
-# 1. Definir stubs para views que pueden no existir todavía
-class DirectUploadRequestView(APIView):
-    permission_classes = [IsAuthenticated]
-    def post(self, request): 
-        return Response({"error": "not_implemented"}, status=501)
-
-class UploadConfirmationView(APIView):
-    permission_classes = [IsAuthenticated]
-    def post(self, request, upload_id):
-        return Response({"error": "not_implemented"}, status=501)
-
-class DirectUploadStatusView(APIView):
-    permission_classes = [IsAuthenticated]
-    def get(self, request, upload_id):
-        return Response({"error": "not_implemented"}, status=501)
-
-class UserUploadQuotaView(APIView):
-    permission_classes = [IsAuthenticated]
-    def get(self, request):
-        return Response({"error": "not_implemented"}, status=501)
-
-class UploadCancellationView(APIView):
-    permission_classes = [IsAuthenticated]
-    def post(self, request, upload_id):
-        return Response({"error": "not_implemented"}, status=501)
-
-# 2. Intentar importar las views reales si existen
-try:
-
-# Cambia de:
-# A:
-    from .views import (
-        DirectUploadRequestView,
-        UploadConfirmationView,
-        DirectUploadStatusView,
-        UserUploadQuotaView,
-        UploadCancellationView,
-        # Agrega las nuevas vistas aquí también
-        UploadAdminDashboardView,
-        UploadStatsView,
-        CleanupExpiredUploadsView,
-        CheckOrphanedFilesView
-)
-
-    # Si existen, reemplazar los stubs
-    logger.info("✅ Vistas de upload_direct importadas correctamente")
-except ImportError:
-    logger.warning("⚠️  Vistas de upload_direct no encontradas, usando stubs")
-
-# =========================================================================
-# 📋 URL PATTERNS - SISTEMA TRADICIONAL (EXISTENTE)
-# =========================================================================
-traditional_urlpatterns = [
-    # 📚 DOCUMENTACIÓN API
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
-    
-    # 🎵 GESTIÓN DE CANCIONES
-    path('songs/', views.SongListView.as_view(), name='song-list'),
-    path('songs/upload/', views.SongUploadView.as_view(), name='song-upload'),
-    path('songs/random/', views.RandomSongsView.as_view(), name='random-songs'),
-    path('songs/<int:song_id>/delete/', views.SongDeleteView.as_view(), name='song-delete'),
-    path('search/complete/', views.complete_search, name='complete_search'),
-    
-    # 🔄 INTERACCIONES CON CANCIONES
-    path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
-    path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
-    path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
-    path('songs/<int:song_id>/likes/', views.SongLikesView.as_view(), name='song-likes'),
-    
-    # 🔍 VERIFICACIÓN Y DIAGNÓSTICO
-    path('songs/<int:song_id>/check-files/', views.check_song_files, name='check-song-files'),
-    
-    # 💬 COMENTARIOS
-    path('songs/<int:song_id>/comments/', views.CommentListCreateView.as_view(), name='song-comments'),
-    path('songs/comments/<int:pk>/', views.SongCommentsDetailView.as_view(), name='comment-detail'),
-    
-    # 🔍 BÚSQUEDA Y DESCUBRIMIENTO
-    path('songs/search/suggestions/', views.SongSearchSuggestionsView.as_view(), name='song-search-suggestions'),
-    path('suggestions/', views.song_suggestions, name='song-suggestions'),
-    path('search/suggestions/', views.song_suggestions, name='search-suggestions'),
-    path('artists/', views.ArtistListView.as_view(), name='artist-list'),
-    path('debug/suggestions/', views.debug_suggestions, name='debug-suggestions'),
-    
-    # 📅 EVENTOS MUSICALES
-    path('events/', views.MusicEventListView.as_view(), name='event-list'),
-    path('events/<int:pk>/', views.MusicEventDetailView.as_view(), name='event-detail'),
-    
-    # 📊 MÉTRICAS Y ANALYTICS
-    path('metrics/admin/', views.admin_metrics, name='admin-metrics'),
-    path('metrics/personal/', views.user_personal_metrics, name='personal-metrics'),
-    
-    # 🩺 HEALTH CHECKS
-    path('health/', views.health_check, name='health_check'),
-]
-
-# =========================================================================
-# 🆕 URL PATTERNS - SISTEMA DE UPLOAD DIRECTO (NUEVO)
-# =========================================================================
-direct_upload_urlpatterns = [
-    # 📤 UPLOAD DIRECTO A R2
-    path('upload/direct/request/', DirectUploadRequestView.as_view(), name='direct-upload-request'),
-    path('upload/direct/confirm/<uuid:upload_id>/', UploadConfirmationView.as_view(), name='direct-upload-confirm'),
-    path('upload/direct/status/<uuid:upload_id>/', DirectUploadStatusView.as_view(), name='direct-upload-status'),
-    path('upload/direct/cancel/<uuid:upload_id>/', UploadCancellationView.as_view(), name='direct-upload-cancel'),
-    
-    # 📊 CUOTA Y HISTORIAL
-    path('upload/quota/', UserUploadQuotaView.as_view(), name='user-upload-quota'),
-]
-
-# =========================================================================
-# 📊 URL PATTERNS - MONITORING Y ADMINISTRACIÓN
-# =========================================================================
-admin_urlpatterns = [
-    # Dashboard de uploads para admin
-    path('admin/uploads/', UploadAdminDashboardView.as_view(), name='upload-admin-dashboard'),
-    
-    # Estadísticas de uploads
-    path('stats/uploads/', UploadStatsView.as_view(), name='upload-stats'),
-    
-    # 🧹 UTILIDADES DE MANTENIMIENTO
-    path('maintenance/cleanup-expired/', CleanupExpiredUploadsView.as_view(), name='cleanup-expired-uploads'),
-    path('maintenance/check-orphaned/', CheckOrphanedFilesView.as_view(), name='check-orphaned-files'),
-]
-
-# =========================================================================
-# ⚠️ URLS PARA COMPATIBILIDAD (SISTEMA TRADICIONAL)
-# =========================================================================
-compatibility_urlpatterns = [
-    # Upload tradicional (deprecated pero mantenido para compatibilidad)
-    path('upload/', views.SongUploadView.as_view(), name='song-upload'),
-]
-
-# =========================================================================
-# 🔗 COMBINAR TODAS LAS URL PATTERNS
-# =========================================================================
-urlpatterns = (
-    traditional_urlpatterns + 
-    direct_upload_urlpatterns + 
-    admin_urlpatterns + 
-    compatibility_urlpatterns
-)
-
-# =========================================================================
-# 🛠️ URLS PARA DESARROLLO
-# =========================================================================
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-    
-    # Health check adicional para desarrollo
-    urlpatterns += [
-        path('health/debug/', views.health_check, name='health-debug'),
-    ]
-
-# =========================================================================
-# 📦 DEFINICIONES DE VISTAS AUXILIARES (al final para evitar imports circulares)
-# =========================================================================
-
-class UserUploadHistoryView(APIView):
-    """
-    Lista el historial de uploads del usuario
-    GET /api/upload/history/
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def get(self, request):
-        # Parámetros de paginación
-        page = request.query_params.get('page', 1)
-        page_size = min(int(request.query_params.get('page_size', 20)), 100)
-        
-        # Filtros
-        status_filter = request.query_params.get('status')
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        # Construir queryset
-        uploads = UploadSession.objects.filter(user=request.user)
-        
-        if status_filter:
-            uploads = uploads.filter(status=status_filter)
-        
-        if date_from:
-            try:
-                from_date = timezone.datetime.fromisoformat(date_from.replace('Z', '+00:00'))
-                uploads = uploads.filter(created_at__gte=from_date)
-            except (ValueError, TypeError):
-                pass
-        
-        if date_to:
-            try:
-                to_date = timezone.datetime.fromisoformat(date_to.replace('Z', '+00:00'))
-                uploads = uploads.filter(created_at__lte=to_date)
-            except (ValueError, TypeError):
-                pass
-        
-        # Ordenar y paginar
-        uploads = uploads.order_by('-created_at')
-        paginator = Paginator(uploads, page_size)
-        
-        try:
-            page_obj = paginator.page(page)
-        except:
-            return Response(
-                {"error": "invalid_page", "message": f"Página {page} no válida"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Serializar resultados (simplificado - necesitarías el serializer real)
-        items = [
-            {
-                'id': str(u.id),
-                'file_name': u.file_name,
-                'status': u.status,
-                'created_at': u.created_at.isoformat(),
-                'file_size': u.file_size,
-            }
-            for u in page_obj.object_list
-        ]
-        
-        return Response({
-            "success": True,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": paginator.num_pages,
-            "total_items": paginator.count,
-            "items": items,
-            "filters": {
-                "status": status_filter,
-                "date_from": date_from,
-                "date_to": date_to
-            }
-        })
-
-
-class UploadReprocessView(APIView):
-    """
-    Reprocesa un upload fallido
-    POST /api/upload/reprocess/<upload_id>/
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def post(self, request, upload_id):
-        try:
-            upload_session = UploadSession.objects.get(id=upload_id)
-            
-            # Verificar permisos
-            if not (request.user.is_staff or request.user == upload_session.user):
-                return Response(
-                    {"error": "permission_denied", "message": "No tienes permisos para reprocesar este upload"},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            # Verificar que esté en estado failed
-            if upload_session.status != 'failed':
-                return Response(
-                    {
-                        "error": "invalid_status",
-                        "message": f"No se puede reprocesar un upload en estado '{upload_session.status}'",
-                        "current_status": upload_session.status
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Encolar reprocesamiento
-            task_result = reprocess_failed_upload.delay(str(upload_session.id))
-            
-            return Response({
-                "success": True,
-                "message": "Upload encolado para reprocesamiento",
-                "upload_id": str(upload_session.id),
-                "task_id": task_result.id,
-                "status": "queued",
-                "estimated_time": "1-2 minutos"
-            })
-            
-        except UploadSession.DoesNotExist:
-            return Response(
-                {"error": "not_found", "message": "Upload session no encontrada"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            logger.error(f"Error en reprocess view: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "reprocess_error", "message": "Error iniciando reprocesamiento"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
+# PRIMERO definimos las clases que usaremos en las URLs
+# (esto evita el error de "cannot import name before definition")
 
 class UploadAdminDashboardView(APIView):
     """
@@ -520,6 +234,326 @@ class CheckOrphanedFilesView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
+# Ahora intentamos importar las views de upload directo desde views.py
+# 1. Definir stubs para views que pueden no existir todavía
+class DirectUploadRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request): 
+        return Response({"error": "not_implemented"}, status=501)
+
+class UploadConfirmationView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, upload_id):
+        return Response({"error": "not_implemented"}, status=501)
+
+class DirectUploadStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request, upload_id):
+        return Response({"error": "not_implemented"}, status=501)
+
+class UserUploadQuotaView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        return Response({"error": "not_implemented"}, status=501)
+
+class UploadCancellationView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, upload_id):
+        return Response({"error": "not_implemented"}, status=501)
+
+# 2. Intentar importar las views reales si existen
+try:
+    from .views import (
+        DirectUploadRequestView as RealDirectUploadRequestView,
+        UploadConfirmationView as RealUploadConfirmationView,
+        DirectUploadStatusView as RealDirectUploadStatusView,
+        UserUploadQuotaView as RealUserUploadQuotaView,
+        UploadCancellationView as RealUploadCancellationView,
+    )
+    
+    # Si existen, reemplazar los stubs con las reales
+    DirectUploadRequestView = RealDirectUploadRequestView
+    UploadConfirmationView = RealUploadConfirmationView
+    DirectUploadStatusView = RealDirectUploadStatusView
+    UserUploadQuotaView = RealUserUploadQuotaView
+    UploadCancellationView = RealUploadCancellationView
+    
+    logger.info("✅ Vistas de upload_direct importadas correctamente desde views.py")
+    
+    # También intentar importar las views de health
+    try:
+        from .views import HealthCheckView, CeleryStatusView
+        # Agregar a traditional_urlpatterns más abajo
+        has_health_views = True
+    except ImportError:
+        has_health_views = False
+        logger.warning("⚠️  Vistas de health no encontradas")
+        
+except ImportError:
+    logger.warning("⚠️  Vistas de upload_direct no encontradas en views.py, usando stubs")
+    has_health_views = False
+
+# =========================================================================
+# 📋 URL PATTERNS - SISTEMA TRADICIONAL (EXISTENTE)
+# =========================================================================
+traditional_urlpatterns = [
+    # 📚 DOCUMENTACIÓN API
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    
+    # 🎵 GESTIÓN DE CANCIONES
+    path('songs/', views.SongListView.as_view(), name='song-list'),
+    path('songs/upload/', views.SongUploadView.as_view(), name='song-upload'),
+    path('songs/random/', views.RandomSongsView.as_view(), name='random-songs'),
+    path('songs/<int:song_id>/delete/', views.SongDeleteView.as_view(), name='song-delete'),
+    path('search/complete/', views.complete_search, name='complete_search'),
+    
+    # 🔄 INTERACCIONES CON CANCIONES
+    path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
+    path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
+    path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
+    path('songs/<int:song_id>/likes/', views.SongLikesView.as_view(), name='song-likes'),
+    
+    # 🔍 VERIFICACIÓN Y DIAGNÓSTICO
+    path('songs/<int:song_id>/check-files/', views.check_song_files, name='check-song-files'),
+    
+    # 💬 COMENTARIOS
+    path('songs/<int:song_id>/comments/', views.CommentListCreateView.as_view(), name='song-comments'),
+    path('songs/comments/<int:pk>/', views.SongCommentsDetailView.as_view(), name='comment-detail'),
+    
+    # 🔍 BÚSQUEDA Y DESCUBRIMIENTO
+    path('songs/search/suggestions/', views.SongSearchSuggestionsView.as_view(), name='song-search-suggestions'),
+    path('suggestions/', views.song_suggestions, name='song-suggestions'),
+    path('search/suggestions/', views.song_suggestions, name='search-suggestions'),
+    path('artists/', views.ArtistListView.as_view(), name='artist-list'),
+    path('debug/suggestions/', views.debug_suggestions, name='debug-suggestions'),
+    
+    # 📅 EVENTOS MUSICALES
+    path('events/', views.MusicEventListView.as_view(), name='event-list'),
+    path('events/<int:pk>/', views.MusicEventDetailView.as_view(), name='event-detail'),
+    
+    # 📊 MÉTRICAS Y ANALYTICS
+    path('metrics/admin/', views.admin_metrics, name='admin-metrics'),
+    path('metrics/personal/', views.user_personal_metrics, name='personal-metrics'),
+    
+    # 🩺 HEALTH CHECKS
+    path('health/', views.health_check, name='health_check'),
+]
+
+# Agregar rutas de health si existen las views
+if has_health_views:
+    traditional_urlpatterns.extend([
+        path('health/celery/', CeleryStatusView.as_view(), name='celery-status'),
+        path('api/health/', HealthCheckView.as_view(), name='api-health'),
+    ])
+else:
+    # Si no existen, agregar placeholder
+    class HealthPlaceholderView(APIView):
+        def get(self, request):
+            return Response({
+                "status": "healthy",
+                "timestamp": timezone.now().isoformat(),
+                "service": "dji-music-api",
+                "note": "Health views not fully implemented"
+            })
+    
+    traditional_urlpatterns.extend([
+        path('health/celery/', HealthPlaceholderView.as_view(), name='celery-status'),
+        path('api/health/', HealthPlaceholderView.as_view(), name='api-health'),
+    ])
+
+# =========================================================================
+# 🆕 URL PATTERNS - SISTEMA DE UPLOAD DIRECTO (NUEVO)
+# =========================================================================
+direct_upload_urlpatterns = [
+    # 📤 UPLOAD DIRECTO A R2
+    path('upload/direct/request/', DirectUploadRequestView.as_view(), name='direct-upload-request'),
+    path('upload/direct/confirm/<uuid:upload_id>/', UploadConfirmationView.as_view(), name='direct-upload-confirm'),
+    path('upload/direct/status/<uuid:upload_id>/', DirectUploadStatusView.as_view(), name='direct-upload-status'),
+    path('upload/direct/cancel/<uuid:upload_id>/', UploadCancellationView.as_view(), name='direct-upload-cancel'),
+    
+    # 📊 CUOTA Y HISTORIAL
+    path('upload/quota/', UserUploadQuotaView.as_view(), name='user-upload-quota'),
+]
+
+# =========================================================================
+# 📊 URL PATTERNS - MONITORING Y ADMINISTRACIÓN
+# =========================================================================
+admin_urlpatterns = [
+    # Dashboard de uploads para admin
+    path('admin/uploads/', UploadAdminDashboardView.as_view(), name='upload-admin-dashboard'),
+    
+    # Estadísticas de uploads
+    path('stats/uploads/', UploadStatsView.as_view(), name='upload-stats'),
+    
+    # 🧹 UTILIDADES DE MANTENIMIENTO
+    path('maintenance/cleanup-expired/', CleanupExpiredUploadsView.as_view(), name='cleanup-expired-uploads'),
+    path('maintenance/check-orphaned/', CheckOrphanedFilesView.as_view(), name='check-orphaned-files'),
+]
+
+# =========================================================================
+# ⚠️ URLS PARA COMPATIBILIDAD (SISTEMA TRADICIONAL)
+# =========================================================================
+compatibility_urlpatterns = [
+    # Upload tradicional (deprecated pero mantenido para compatibilidad)
+    path('upload/', views.SongUploadView.as_view(), name='song-upload'),
+]
+
+# =========================================================================
+# 🔗 COMBINAR TODAS LAS URL PATTERNS
+# =========================================================================
+urlpatterns = (
+    traditional_urlpatterns + 
+    direct_upload_urlpatterns + 
+    admin_urlpatterns + 
+    compatibility_urlpatterns
+)
+
+# =========================================================================
+# 🛠️ URLS PARA DESARROLLO
+# =========================================================================
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+    
+    # Health check adicional para desarrollo
+    urlpatterns += [
+        path('health/debug/', views.health_check, name='health-debug'),
+    ]
+
+# =========================================================================
+# 📦 DEFINICIONES DE VISTAS AUXILIARES ADICIONALES
+# =========================================================================
+
+class UserUploadHistoryView(APIView):
+    """
+    Lista el historial de uploads del usuario
+    GET /api/upload/history/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Parámetros de paginación
+        page = request.query_params.get('page', 1)
+        page_size = min(int(request.query_params.get('page_size', 20)), 100)
+        
+        # Filtros
+        status_filter = request.query_params.get('status')
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        
+        # Construir queryset
+        uploads = UploadSession.objects.filter(user=request.user)
+        
+        if status_filter:
+            uploads = uploads.filter(status=status_filter)
+        
+        if date_from:
+            try:
+                from_date = timezone.datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+                uploads = uploads.filter(created_at__gte=from_date)
+            except (ValueError, TypeError):
+                pass
+        
+        if date_to:
+            try:
+                to_date = timezone.datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+                uploads = uploads.filter(created_at__lte=to_date)
+            except (ValueError, TypeError):
+                pass
+        
+        # Ordenar y paginar
+        uploads = uploads.order_by('-created_at')
+        paginator = Paginator(uploads, page_size)
+        
+        try:
+            page_obj = paginator.page(page)
+        except:
+            return Response(
+                {"error": "invalid_page", "message": f"Página {page} no válida"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Serializar resultados (simplificado - necesitarías el serializer real)
+        items = [
+            {
+                'id': str(u.id),
+                'file_name': u.file_name,
+                'status': u.status,
+                'created_at': u.created_at.isoformat(),
+                'file_size': u.file_size,
+            }
+            for u in page_obj.object_list
+        ]
+        
+        return Response({
+            "success": True,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": paginator.num_pages,
+            "total_items": paginator.count,
+            "items": items,
+            "filters": {
+                "status": status_filter,
+                "date_from": date_from,
+                "date_to": date_to
+            }
+        })
+
+
+class UploadReprocessView(APIView):
+    """
+    Reprocesa un upload fallido
+    POST /api/upload/reprocess/<upload_id>/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, upload_id):
+        try:
+            upload_session = UploadSession.objects.get(id=upload_id)
+            
+            # Verificar permisos
+            if not (request.user.is_staff or request.user == upload_session.user):
+                return Response(
+                    {"error": "permission_denied", "message": "No tienes permisos para reprocesar este upload"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Verificar que esté en estado failed
+            if upload_session.status != 'failed':
+                return Response(
+                    {
+                        "error": "invalid_status",
+                        "message": f"No se puede reprocesar un upload en estado '{upload_session.status}'",
+                        "current_status": upload_session.status
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Encolar reprocesamiento
+            task_result = reprocess_failed_upload.delay(str(upload_session.id))
+            
+            return Response({
+                "success": True,
+                "message": "Upload encolado para reprocesamiento",
+                "upload_id": str(upload_session.id),
+                "task_id": task_result.id,
+                "status": "queued",
+                "estimated_time": "1-2 minutos"
+            })
+            
+        except UploadSession.DoesNotExist:
+            return Response(
+                {"error": "not_found", "message": "Upload session no encontrada"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error en reprocess view: {str(e)}", exc_info=True)
+            return Response(
+                {"error": "reprocess_error", "message": "Error iniciando reprocesamiento"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 # =========================================================================
 # 📝 NOTA FINAL

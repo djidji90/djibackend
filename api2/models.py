@@ -4,6 +4,10 @@ from django.conf import settings
 import os
 import uuid
 from django.utils import timezone
+import uuid
+from django.db import models
+from django.conf import settings
+from django.utils import timezone
 
 class Song(models.Model):
    
@@ -319,10 +323,7 @@ class UserProfile(models.Model):
 
 
 # musica/models.py - AGREGAR AL FINAL
-import uuid
-from django.db import models
-from django.conf import settings
-from django.utils import timezone
+
 
 class UploadSession(models.Model):
     """Sesión de upload directo a R2 con confirmación manual"""
