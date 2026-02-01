@@ -478,111 +478,52 @@ SESSION_SAVE_EVERY_REQUEST = True
 # ================================
 
 # Broker y Backend
-CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = 'django-db'  # Más confiable que Redis para resultados
+# ================================
+# 🔄 CELERY CONFIGURACIÓN PRODUCCIÓN - FIXED
+# ================================
 
+import os
+
+# 1. Obtener REDIS_URL explícitamente
+REDIS_URL = os.getenv('REDIS_URL')
+
+# 2. DEBUG check
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
+
+# 3. Configuración Celery EXPLÍCITA
 if DEBUG:
+    # Desarrollo local
     CELERY_BROKER_URL = 'redis://localhost:6379/0'
-    CACHES["default"]["LOCATION"] = 'redis://localhost:6379/1'
+    CELERY_RESULT_BACKEND = 'redis://localhost:6379/1'
+    print("🔧 Celery configurado para desarrollo local")
 else:
-    CELERY_BROKER_URL = os.getenv('REDIS_URL')
-# Serialización
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-
-# Zona horaria
-CELERY_TIMEZONE = TIME_ZONE  # 'UTC'
-CELERY_ENABLE_UTC = True
-
-# ================================
-# 🎯 CONFIGURACIÓN DE TAREAS PARA PRODUCCIÓN
-# ================================
-
-# Robustez
-CELERY_TASK_ACKS_LATE = True  # Confirmar después de ejecutar
-CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # No acumular tareas
-CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Reencolar si worker muere
-CELERY_TASK_TRACK_STARTED = True  # Para monitoreo
-
-# Límites
-CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutos máximo
-CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 25 minutos para finalizar ordenadamente
-CELERY_TASK_DEFAULT_RETRY_DELAY = 60  # 1 minuto
-CELERY_TASK_MAX_RETRIES = 3
-
-# ================================
-# 🏗️ CONFIGURACIÓN DE COLAS (CRÍTICO)
-# ================================
-from kombu import Exchange, Queue
-
-CELERY_TASK_DEFAULT_QUEUE = 'default'
-CELERY_TASK_DEFAULT_EXCHANGE = 'tasks'
-CELERY_TASK_DEFAULT_ROUTING_KEY = 'task.default'
-
-# Definir colas para producción
-CELERY_TASK_QUEUES = (
-    Queue('default', Exchange('default'), routing_key='task.default'),
-    Queue('uploads', Exchange('uploads'), routing_key='task.uploads'),
-    Queue('maintenance', Exchange('maintenance'), routing_key='task.maintenance'),
-    Queue('monitoring', Exchange('monitoring'), routing_key='task.monitoring'),
-)
-
-# Routing de tareas
-CELERY_TASK_ROUTES = {
-    # Uploads
-    'api2.tasks.upload_tasks.process_direct_upload': {'queue': 'uploads'},
-    'api2.tasks.upload_tasks.reprocess_failed_upload': {'queue': 'uploads'},
+    # PRODUCCIÓN (Railway)
+    # Opción A: URL directa desde variable
+    if REDIS_URL:
+        CELERY_BROKER_URL = REDIS_URL if REDIS_URL.endswith('/0') else f"{REDIS_URL}/0"
+        CELERY_RESULT_BACKEND = 'django-db'  # Más confiable en producción
+        
+        # Log seguro
+        safe_url = CELERY_BROKER_URL
+        if '@' in CELERY_BROKER_URL:
+            parts = CELERY_BROKER_URL.split('@')
+            safe_url = f"redis://***@{parts[1]}"
+        print(f"✅ Celery configurado con Redis: {safe_url}")
     
-    # Mantenimiento
-    'api2.tasks.upload_tasks.cleanup_expired_uploads': {'queue': 'maintenance'},
-    'api2.tasks.upload_tasks.cleanup_orphaned_r2_files': {'queue': 'maintenance'},
-    'api2.tasks.upload_tasks.reset_monthly_quotas': {'queue': 'maintenance'},
-    
-    # Monitoreo
-    'api2.tasks.upload_tasks.system_health_check': {'queue': 'monitoring'},
+    # Opción B: Fallback si no hay REDIS_URL
+    else:
+        CELERY_BROKER_URL = 'redis://localhost:6379/0'
+        CELERY_RESULT_BACKEND = 'django-db'
+        print("⚠️  ADVERTENCIA: REDIS_URL no configurada, usando localhost")
+
+# 4. FORZAR Redis como broker (importante!)
+CELERY_BROKER_TRANSPORT = 'redis'
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': 3600,
+    'fanout_prefix': True,
+    'fanout_patterns': True,
 }
 
-# ================================
-# ⏰ CELERY BEAT PARA PRODUCCIÓN
-# ================================
-
-# Usar base de datos para schedules (más confiable)
-CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
-
-# Schedule inicial (se puede modificar via admin después)
-CELERY_BEAT_SCHEDULE = {
-    'cleanup-expired-uploads-every-hour': {
-        'task': 'api2.tasks.upload_tasks.cleanup_expired_uploads',
-        'schedule': 3600.0,  # Cada hora
-        'options': {'queue': 'maintenance'}
-    },
-    'celery-heartbeat-every-5-minutes': {
-        'task': 'api2.tasks.monitoring_tasks.celery_heartbeat',
-        'schedule': 300.0,  # Cada 5 minutos
-        'options': {'queue': 'monitoring'}
-    },
-    'system-health-check-daily': {
-        'task': 'api2.tasks.upload_tasks.system_health_check',
-        'schedule': 86400.0,  # Diario
-        'options': {'queue': 'monitoring'}
-    },
-}
-
-# ================================
-# 🔧 CONFIGURACIÓN ESPECÍFICA PARA RAILWAY
-# ================================
-if os.getenv('RAILWAY_ENVIRONMENT'):
-    # Optimizaciones para Railway
-    CELERY_BROKER_POOL_LIMIT = 10  # Menos conexiones simultáneas
-    CELERY_BROKER_HEARTBEAT = 30  # Heartbeat más frecuente
-    CELERY_BROKER_CONNECTION_TIMEOUT = 30
-    CELERY_WORKER_CONCURRENCY = 2  # Railway tiene menos recursos
-    CELERY_WORKER_MAX_TASKS_PER_CHILD = 50  # Reciclar workers periódicamente
-    
-    # Para evitar problemas de conexión en Railway
-    CELERY_BROKER_TRANSPORT_OPTIONS = {
-        'visibility_timeout': 1800,  # 30 minutos
-        'socket_keepalive': True,
-        'socket_timeout': 30,
-    }
+# 5. Cache también necesita Redis
+if not DEBUG and REDIS_URL:
+    CACHES["default"]["LOCATION"] = f"{REDIS_URL}/1"
