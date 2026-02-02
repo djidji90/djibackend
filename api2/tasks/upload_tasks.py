@@ -10,6 +10,8 @@ import tempfile
 import hashlib
 from datetime import datetime, timedelta
 import requests
+from django.db.models import Count, Q, F
+
 
 from api2.models import UploadSession, Song, UserProfile, UploadQuota
 from api2.utils.r2_direct import r2_direct, R2UploadValidator
@@ -695,7 +697,7 @@ def system_health_check():
     
     try:
         # 3. CHECK: R2 Connection
-        from .r2_utils import check_file_exists
+        from api2.utils.r2_utils import check_file_exists
         
         # Prueba simple con un path que no debería existir
         test_key = "health_check_test_nonexistent_" + str(int(timezone.now().timestamp()))
