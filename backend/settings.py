@@ -134,29 +134,7 @@ CORS_ALLOW_HEADERS = [
 # ================================
 # CONFIGURACIÓN DE COOKIES - CONSOLIDADO
 # ================================
-if DEBUG:
-    # Configuración para desarrollo
-    SESSION_COOKIE_SAMESITE = 'Lax'
-    CSRF_COOKIE_SAMESITE = 'Lax'
-    SESSION_COOKIE_SECURE = False
-    CSRF_COOKIE_SECURE = False
-    # IMPORTANTE para desarrollo cross-origin
-    SESSION_COOKIE_DOMAIN = None
-    CSRF_COOKIE_DOMAIN = None
-else:
-    # Configuración para producción
-    SESSION_COOKIE_SAMESITE = 'None'
-    CSRF_COOKIE_SAMESITE = 'None'
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-    # DOMINIO para cookies en producción (opcional)
-    # SESSION_COOKIE_DOMAIN = '.djidjimusic.com'
-    # CSRF_COOKIE_DOMAIN = '.djidjimusic.com'
 
-# Configuración adicional importante para CORS
-CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
-CORS_ALLOW_ALL_ORIGINS = False  # Asegúrate que sea False
-# ================================
 # USUARIO PERSONALIZADO
 # ================================
 AUTH_USER_MODEL = 'musica.CustomUser'
