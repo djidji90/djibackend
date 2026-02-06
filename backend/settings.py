@@ -67,6 +67,9 @@ MAX_IMAGE_SIZE = 20 * 1024 * 1024   # 20MB para imágenes
 # ================================
 # CSRF + CORS CONFIGURACIÓN OPTIMIZADA
 # ================================
+# ================================
+# CSRF + CORS CONFIGURACIÓN OPTIMIZADA
+# ================================
 CSRF_TRUSTED_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
@@ -90,22 +93,19 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 
 # Permitir localhost en desarrollo
 if DEBUG:
-    CORS_ALLOWED_ORIGINS.extend([
+    development_origins = [
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5176",
-    ])
-    CSRF_TRUSTED_ORIGINS.extend([
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:5173" ,
-        "http://localhost:5174" ,
-        "http://localhost:5176 ",
-
-
-    ])
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5176",
+    ]
+    
+    CORS_ALLOWED_ORIGINS.extend(development_origins)
+    CSRF_TRUSTED_ORIGINS.extend(development_origins)
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
@@ -131,6 +131,31 @@ CORS_ALLOW_HEADERS = [
     'x-upload-id',
 ]
 
+# ================================
+# CONFIGURACIÓN DE COOKIES - CONSOLIDADO
+# ================================
+if DEBUG:
+    # Configuración para desarrollo
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    CSRF_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+    # IMPORTANTE para desarrollo cross-origin
+    SESSION_COOKIE_DOMAIN = None
+    CSRF_COOKIE_DOMAIN = None
+else:
+    # Configuración para producción
+    SESSION_COOKIE_SAMESITE = 'None'
+    CSRF_COOKIE_SAMESITE = 'None'
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    # DOMINIO para cookies en producción (opcional)
+    # SESSION_COOKIE_DOMAIN = '.djidjimusic.com'
+    # CSRF_COOKIE_DOMAIN = '.djidjimusic.com'
+
+# Configuración adicional importante para CORS
+CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
+CORS_ALLOW_ALL_ORIGINS = False  # Asegúrate que sea False
 # ================================
 # USUARIO PERSONALIZADO
 # ================================
@@ -167,18 +192,21 @@ INSTALLED_APPS = [
 # ================================
 # MIDDLEWARE OPTIMIZADO
 # ================================
+# ================================
+# MIDDLEWARE OPTIMIZADO - CORREGIDO
+# ================================
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.gzip.GZipMiddleware',  # Compresión GZIP para mejor performance
+    'corsheaders.middleware.CorsMiddleware',  # MUY IMPORTANTE: debe estar ALTO
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
+    'django.middleware.common.CommonMiddleware',  # Este DEBE estar después de CorsMiddleware
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'api2.middleware.TimeoutMiddleware',
+    'django.middleware.gzip.GZipMiddleware',  # Puede estar al final
 ]
 
 ROOT_URLCONF = 'backend.urls'
