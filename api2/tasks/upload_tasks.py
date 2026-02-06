@@ -64,14 +64,14 @@ def process_direct_upload(self, upload_session_id, file_key=None, file_size=None
             metadata = upload_session.metadata
         
         # 2. Validar que el archivo existe en R2
-        file_exists, file_metadata = r2_direct.verify_file_uploaded(file_key)
+        file_exists, file_metadata = r2_direct.verify_upload_complete(file_key)
         if not file_exists:
             error_msg = f"Archivo no encontrado en R2: {file_key}"
             upload_session.mark_as_failed(error_msg)
             raise ValueError(error_msg)
         
         # 3. Validar integridad del archivo
-        validation_result = r2_direct.validate_upload_integrity(
+        validation_result = r2_direct.verify_upload_complete(
             key=file_key,
             expected_size=file_size,
             expected_uploader_id=user.id

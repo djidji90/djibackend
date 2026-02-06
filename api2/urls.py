@@ -238,6 +238,7 @@ class CheckOrphanedFilesView(APIView):
 # Ahora intentamos importar las views de upload directo desde views.py
 # 1. Definir stubs para views que pueden no existir todavía
 class DirectUploadRequestView(APIView):
+
     permission_classes = [IsAuthenticated]
     def post(self, request): 
         return Response({"error": "not_implemented"}, status=501)
@@ -279,7 +280,7 @@ try:
     UserUploadQuotaView = RealUserUploadQuotaView
     UploadCancellationView = RealUploadCancellationView
     
-    logger.info("✅ Vistas de upload_direct importadas correctamente desde views.py")
+    logger.info(" Vistas de upload_direct importadas correctamente desde views.py")
     
     # También intentar importar las views de health
     try:
@@ -291,7 +292,7 @@ try:
         logger.warning("⚠️  Vistas de health no encontradas")
         
 except ImportError:
-    logger.warning("⚠️  Vistas de upload_direct no encontradas en views.py, usando stubs")
+    logger.warning("  Vistas de upload_direct no encontradas en views.py, usando stubs")
     has_health_views = False
 
 # =========================================================================

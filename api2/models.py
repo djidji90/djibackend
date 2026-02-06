@@ -14,6 +14,10 @@ class Song(models.Model):
     # Información básica
     title = models.CharField(max_length=255)
     artist = models.CharField(max_length=255)
+    file_size = models.IntegerField(blank=True, null=True) 
+    file_format = models.CharField(max_length=10, blank=True, null=True)
+    audio_file = models.FileField(upload_to='songs/audio/', blank=True,null=True)
+    cover_image = models.ImageField(upload_to='songs/covers/', blank=True, null=True)
     genre = models.CharField(max_length=100)
     duration = models.CharField(max_length=20, blank=True, null=True)
     
@@ -409,11 +413,13 @@ class UploadSession(models.Model):
     
     @property
     def can_confirm(self):
-        """Puede confirmar si está subido y no expirado"""
-        return (self.status == 'uploaded' and 
-                not self.is_expired and 
-                not self.confirmed)
-    
+        """Puede confirmar si está pendiente o subido y no expirado"""
+        return (
+            self.status in ['pending', 'uploaded'] and  # ← ACEPTA AMBOS
+            not self.is_expired and 
+            not self.confirmed and
+            not self.completed_at  # ← Asegurar que no está ya completado
+        )   
     def mark_as_uploaded(self):
         """Marcar como subido (frontend notifica)"""
         self.status = 'uploaded'

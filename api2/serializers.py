@@ -173,60 +173,98 @@ class CommentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Comment
         fields = [
-            'id', 'song', 'user', 'content', 
+            'id', 'song', 'user', 'content',
             'is_user_comment', 'reactions_count', 'user_reaction',
             'is_edited', 'created_at', 'updated_at'
         ]
         read_only_fields = ['is_edited', 'created_at', 'updated_at']
 
+    def _get_current_user(self):
+        """Helper para obtener usuario actual de forma segura"""
+        request = self.context.get('request')
+        if not request:
+            return None
+       
+        user = getattr(request, 'user', None)
+        if not user or not hasattr(user, 'is_authenticated'):
+            return None
+       
+        return user if user.is_authenticated else None
+
     def get_is_user_comment(self, obj) -> bool:
         """Verificar si el comentario es del usuario actual"""
-        request = self.context.get('request')
-        if request and hasattr(request, 'user'):
-            return obj.user == request.user
-        return False
+        user = self._get_current_user()
+        return user is not None and obj.user == user
 
     def get_reactions_count(self, obj) -> Dict[str, int]:
         """Contar reacciones por tipo"""
         from django.db.models import Count
-        reactions = obj.reactions.values('reaction_type').annotate(count=Count('id'))
-        return {r['reaction_type']: r['count'] for r in reactions}
+        try:
+            reactions = obj.reactions.values('reaction_type').annotate(count=Count('id'))
+            return {r['reaction_type']: r['count'] for r in reactions}
+        except Exception:
+            # En caso de error, retornar diccionario vacío
+            return {}
 
     def get_user_reaction(self, obj) -> Optional[str]:
         """Obtener la reacción del usuario actual"""
-        request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            try:
-                reaction = obj.reactions.get(user=request.user)
-                return reaction.reaction_type
-            except CommentReaction.DoesNotExist:
-                return None
-        return None
+        user = self._get_current_user()
+        if not user:
+            return None
+       
+        try:
+            reaction = obj.reactions.get(user=user)
+            return reaction.reaction_type
+        except CommentReaction.DoesNotExist:
+            return None
+        except Exception:
+            # Loggear error si es necesario
+            # import logging
+            # logger.error(f"Error obteniendo reacción: {e}", exc_info=True)
+            return None
 
     def validate_content(self, value):
         """Validar contenido del comentario"""
-        if len(value.strip()) == 0:
+        value = value.strip()
+       
+        if not value:
             raise serializers.ValidationError("El comentario no puede estar vacío.")
+       
         if len(value) > 1000:
             raise serializers.ValidationError("El comentario no puede tener más de 1000 caracteres.")
+       
+        # Opcional: Validar contenido inapropiado
+        # banned_words = ['spam', 'offensive']
+        # for word in banned_words:
+        #     if word in value.lower():
+        #         raise serializers.ValidationError(f"El comentario contiene contenido no permitido.")
+       
         return value
 
-
-class CommentReactionSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    comment = serializers.StringRelatedField(read_only=True)
-
-    class Meta:
-        model = CommentReaction
-        fields = ['id', 'comment', 'user', 'reaction_type', 'created_at']
-        read_only_fields = ['created_at']
-
-    def validate_reaction_type(self, value):
-        """Validar tipo de reacción"""
-        valid_reactions = ['like', 'love', 'laugh', 'sad', 'angry']
-        if value not in valid_reactions:
-            raise serializers.ValidationError(f"Tipo de reacción inválido. Válidos: {valid_reactions}")
-        return value
+    def create(self, validated_data):
+        """Sobrescribir create para añadir validaciones adicionales"""
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request else None
+       
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Usuario no autenticado.")
+       
+        # Verificar límite de comentarios por usuario por día
+        from django.utils import timezone
+        from django.db.models import Count
+       
+        today = timezone.now().date()
+        daily_comments = Comment.objects.filter(
+            user=user,
+            created_at__date=today
+        ).count()
+       
+        if daily_comments >= 50:  # Límite de 50 comentarios por día
+            raise serializers.ValidationError(
+                "Has alcanzado el límite de comentarios por día (50)."
+            )
+       
+        return super().create(validated_data)
 
 
 class MusicEventSerializer(serializers.ModelSerializer):

@@ -15,7 +15,7 @@ class CeleryHealthMiddleware(MiddlewareMixin):
     
     # Endpoints que dependen de Celery
     CELERY_DEPENDENT_PATHS = [
-        '/api/upload/direct/confirm/',
+        '/api2/upload/direct/confirm/',
         '/api/upload/admin/cleanup/',
     ]
     
