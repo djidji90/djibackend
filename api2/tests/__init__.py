@@ -1,24 +1,20 @@
 """
-Tests para el sistema de upload R2
+Patch para tests - Evita problemas de Redis/Celery en tests
 """
+import sys
+import uuid
+import os
 
-# Importar todos los tests
-from .test_r2_upload_final import (
-    R2UploadFinalTest,
-    R2UploadEdgeCasesTest,
-    run_comprehensive_test_suite
-)
+if os.environ.get('RUNNING_TESTS', '0') == '1' or 'test' in sys.argv:
+    from celery import Celery
+    from django.conf import settings
+    from unittest.mock import MagicMock
 
-# Tests de sistema
-from .test_system_ready import SystemReadyTests
+    class MockCeleryApp(Celery):
+        def send_task(self, name, args=None, kwargs=None, **options):
+            mock = MagicMock()
+            mock.id = f"mock-task-{uuid.uuid4().hex[:8]}"
+            return mock
 
-# Tests específicos
-from .test_upload_final_fixed import TestDirectUploadFinalFixed
-
-__all__ = [
-    'R2UploadFinalTest',
-    'R2UploadEdgeCasesTest',
-    'SystemReadyTests',
-    'TestDirectUploadFinalFixed',
-    'run_comprehensive_test_suite',
-]
+    settings.CELERY_BROKER_URL = 'memory://'
+    settings.CELERY_RESULT_BACKEND = 'cache+memory://'

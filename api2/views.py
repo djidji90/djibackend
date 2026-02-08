@@ -2323,6 +2323,7 @@ class DirectUploadRequestView(APIView):
     """
     Endpoint para solicitar URL de upload directo a R2
     POST /api2/upload/direct/request/
+    VERSIÓN CORREGIDA - Compatible con Windows y nuevo r2_direct
     """
     permission_classes = [IsAuthenticated]
     throttle_classes = [UploadRateThrottle]
@@ -2380,7 +2381,7 @@ class DirectUploadRequestView(APIView):
                         status=status.HTTP_429_TOO_MANY_REQUESTS
                     )
                 
-                # 3. Generar URL de upload
+                # 3. Generar URL de upload (nuevo formato)
                 try:
                     upload_data = r2_upload.generate_presigned_put(
                         user_id=user.id,
@@ -2419,6 +2420,8 @@ class DirectUploadRequestView(APIView):
                             'user_agent': request.META.get('HTTP_USER_AGENT', ''),
                             'upload_timestamp': timezone.now().isoformat(),
                             'upload_method': 'PUT',
+                            'key_structure': upload_data.get('key_structure', {}),  # ✅ Nuevo campo
+                            'suggested_content_type': upload_data.get('suggested_content_type', file_type)
                         }
                     )
                 except Exception as e:
@@ -2447,7 +2450,7 @@ class DirectUploadRequestView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
-        # 7. Respuesta exitosa
+        # 7. Respuesta exitosa (actualizada)
         logger.info(f"Upload PUT URL generated for user {user.id}: {upload_session.id}")
         
         response_data = {
@@ -2456,14 +2459,17 @@ class DirectUploadRequestView(APIView):
             "upload_url": upload_data['upload_url'],
             "method": upload_data['method'],
             "file_key": upload_data['file_key'],
+            "file_name": upload_data.get('file_name', file_name),
             "expires_at": upload_session.expires_at.isoformat(),
-            "expires_in": 3600,
+            "expires_in": upload_data.get('expires_in', 3600),
             "max_size": file_size,
             "confirmation_url": self._get_confirmation_url(upload_session.id),
+            "key_structure": upload_data.get('key_structure', {}),  # ✅ Nuevo campo
+            "suggested_content_type": upload_data.get('suggested_content_type', file_type)
         }
         
-        # Añadir instrucciones si existen
-        if 'instructions' in upload_data:
+        # ✅ CORREGIDO: 'instructions' puede no existir, usar get
+        if upload_data.get('instructions'):
             response_data['instructions'] = upload_data['instructions']
         
         return Response(response_data, status=status.HTTP_200_OK)
@@ -2488,31 +2494,35 @@ class UploadConfirmationView(APIView):
     """
     Endpoint para confirmar que un archivo fue subido exitosamente
     POST /api2/upload/direct/confirm/<upload_id>/
+    VERSIÓN CORREGIDA - Windows compatible y alineada con nuevo r2_direct
     """
     permission_classes = [IsAuthenticated]
-    
+
     def post(self, request, upload_id):
-        """Confirmar que un archivo fue subido a R2"""
+        """Confirmar que un archivo fue subido a R2 - VERSIÓN CORREGIDA"""
         try:
             # 1. Obtener y validar sesión
             upload_session = UploadSession.objects.get(
                 id=upload_id,
                 user=request.user
             )
-            
+
             # 2. Validar que puede confirmarse
             if not upload_session.can_confirm:
                 return Response(
                     {
                         "error": "cannot_confirm",
                         "message": "Esta sesión no puede ser confirmada",
-                        "status": upload_session.status,
-                        "is_expired": upload_session.is_expired,
-                        "confirmed": upload_session.confirmed
+                        "details": {
+                            "status": upload_session.status,
+                            "is_expired": upload_session.is_expired,
+                            "confirmed": upload_session.confirmed,
+                            "can_confirm_reason": upload_session.get_can_confirm_reason()
+                        }
                     },
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             # 3. Validar datos de confirmación
             serializer = UploadConfirmationSerializer(data=request.data)
             if not serializer.is_valid():
@@ -2520,135 +2530,240 @@ class UploadConfirmationView(APIView):
                     {"error": "validation_error", "errors": serializer.errors},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             # 4. Verificar que el archivo existe en R2
-            # CORRECCIÓN: verify_upload_complete retorna (bool, dict), no dict['valid']
-            file_exists, file_info = r2_direct.verify_upload_complete(
+            file_valid, file_info = r2_direct.verify_upload_complete(
                 upload_session.file_key,
                 expected_size=upload_session.file_size,
                 expected_user_id=request.user.id
             )
-            
-            if not file_exists:
-                upload_session.mark_as_failed("Archivo no encontrado en R2")
-                
-                # Liberar cuota pendiente
-                quota = UploadQuota.objects.get(user=request.user)
-                quota.release_pending_quota(upload_session.file_size)
-                
-                return Response(
-                    {
-                        "error": "file_not_found",
-                        "message": "El archivo no fue subido exitosamente",
-                        "metadata": file_info
-                    },
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            
-            # 5. Validar integridad del archivo - VERSIÓN CORREGIDA
-            # file_info ya contiene la validación del paso anterior
+
+            # 5. Manejar resultados según el nuevo formato
             validation_data = file_info.get('validation', {})
-            if not validation_data.get('size_match', True) or not validation_data.get('user_match', True):
-                issues = validation_data.get('issues', [])
-                error_msg = f"Archivo inválido: {', '.join(issues)}" if issues else "Archivo inválido"
-                
-                upload_session.mark_as_failed(error_msg)
-                
-                # Liberar cuota
-                quota = UploadQuota.objects.get(user=request.user)
-                quota.release_pending_quota(upload_session.file_size)
-                
-                # Opcional: eliminar archivo inválido de R2
-                if serializer.validated_data.get('delete_invalid', False):
-                    r2_direct.delete_file(upload_session.file_key)
-                
-                return Response(
-                    {
-                        "error": "file_invalid",
-                        "message": error_msg,
-                        "validation": file_info
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
             
-            # 6. Confirmar upload (transaccional)
+            # ✅ CORREGIDO: user_match → owner_match Y manejo de key_pattern_valid
+            has_validation_issues = (
+                not validation_data.get('size_match', True) or 
+                not validation_data.get('owner_match', True) or
+                not validation_data.get('key_pattern_valid', True)
+            )
+
+            if not file_valid or has_validation_issues:
+                return self._handle_verification_failure(
+                    upload_session=upload_session,
+                    file_info=file_info,
+                    user=request.user,
+                    delete_invalid=serializer.validated_data.get('delete_invalid', False)
+                )
+
+            # 6. Confirmar upload exitoso (transaccional)
             try:
                 with transaction.atomic():
                     # Marcar sesión como confirmada
                     upload_session.mark_as_confirmed()
-                    
+
                     # Actualizar cuota
                     quota = UploadQuota.objects.select_for_update().get(
                         user=request.user
                     )
                     quota.confirm_upload(upload_session.file_size)
-                    
+
+                    # Preparar metadata para procesamiento
+                    # ✅ CORREGIDO: Usar key_analysis en lugar de security_info
+                    processing_metadata = {
+                        **upload_session.metadata,
+                        'verification_info': {
+                            'validated_at': timezone.now().isoformat(),
+                            'validation_summary': validation_data,
+                            'key_analysis': file_info.get('key_analysis', {}),
+                            'r2_metadata': file_info.get('metadata', {})
+                        }
+                    }
+
                     # Encolar procesamiento
                     process_direct_upload.delay(
                         upload_session_id=str(upload_session.id),
                         file_key=upload_session.file_key,
                         file_size=upload_session.file_size,
                         content_type=upload_session.file_type,
-                        metadata={
-                            **upload_session.metadata,
-                            **file_info.get('metadata', {})
-                        }
+                        metadata=processing_metadata
                     )
-                    
+
+                    # ✅ CORREGIDO: SIN EMOJIS PARA WINDOWS
                     logger.info(
-                        f"Upload confirmed: {upload_id}, "
-                        f"user: {request.user.id}, "
-                        f"key: {upload_session.file_key}"
+                        f"[SUCCESS] Upload confirmed | "
+                        f"ID: {upload_id} | "
+                        f"User: {request.user.id} | "
+                        f"Key: {upload_session.file_key} | "
+                        f"Size: {upload_session.file_size:,}B"
                     )
-                    
+
             except Exception as e:
+                # ✅ CORREGIDO: SIN EMOJIS PARA WINDOWS
                 logger.error(
-                    f"Error confirming upload {upload_id}: {str(e)}",
+                    f"[ERROR] Error confirming upload {upload_id}: {str(e)}",
                     exc_info=True
                 )
                 return Response(
                     {
                         "error": "confirmation_failed",
-                        "message": "Error confirmando upload"
+                        "message": "Error confirmando upload",
+                        "details": {"exception": str(e)}
                     },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-            
-            # 7. Respuesta exitosa
+
+            # 7. Respuesta exitosa mejorada
             return Response({
                 "success": True,
                 "upload_id": str(upload_session.id),
                 "status": upload_session.status,
                 "confirmed_at": upload_session.confirmed_at.isoformat(),
-                "processing_started": True,
-                "estimated_time": "30-60 segundos",
-                "check_status_url": f"/api2/upload/direct/status/{upload_id}/"
+                "file_info": {
+                    "key": upload_session.file_key,
+                    "size": upload_session.file_size,
+                    "content_type": upload_session.file_type,
+                    "ownership_verified": validation_data.get('owner_match', True),
+                    "key_structure_valid": validation_data.get('key_pattern_valid', True),
+                    "etag": file_info.get('etag', '')
+                },
+                "validation": {
+                    "passed": True,
+                    "method": "key_structure_ownership",
+                    "summary": {
+                        "size_match": validation_data.get('size_match', True),
+                        "owner_match": validation_data.get('owner_match', True),
+                        "key_pattern_valid": validation_data.get('key_pattern_valid', True),
+                        "issues_count": len(validation_data.get('issues', []))
+                    }
+                },
+                "processing": {
+                    "started": True,
+                    "task_enqueued": True,
+                    "estimated_time": "30-60 segundos"
+                },
+                "urls": {
+                    "status": f"/api2/upload/direct/status/{upload_id}/",
+                    "download": None,
+                    "thumbnail": None
+                }
             })
-            
+
         except UploadSession.DoesNotExist:
+            logger.warning(f"Upload session not found: {upload_id} for user {request.user.id}")
             return Response(
                 {
-                    "error": "not_found",
-                    "message": "Sesión de upload no encontrada o no autorizada"
+                    "error": "upload_session_not_found",
+                    "message": "Sesión de upload no encontrada o no autorizada",
+                    "details": {
+                        "upload_id": upload_id,
+                        "user_id": request.user.id,
+                        "suggested_actions": [
+                            "Verificar el ID de upload",
+                            "Asegurarse de que el upload no haya expirado",
+                            "Contactar soporte si el problema persiste"
+                        ]
+                    }
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
+            # ✅ CORREGIDO: SIN EMOJIS PARA WINDOWS
             logger.error(
-                f"Unexpected error in confirmation for upload {upload_id}: {str(e)}",
+                f"[ERROR] Unexpected error in confirmation for upload {upload_id}: {str(e)}",
                 exc_info=True
             )
-            # En UploadConfirmationView, añade después de la verificación:
-            print(f"🔥 DEBUG: file_exists: {file_exists}")
-            print(f"🔥 DEBUG: file_info: {file_info}")
-            print(f"🔥 DEBUG: validation_data: {validation_data}")
             return Response(
                 {
                     "error": "internal_error",
-                    "message": "Error interno confirmando upload"
+                    "message": "Error interno confirmando upload",
+                    "details": {
+                        "upload_id": upload_id,
+                        "exception_type": type(e).__name__,
+                        "timestamp": timezone.now().isoformat()
+                    }
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    def _handle_verification_failure(self, upload_session, file_info, user, delete_invalid=False):
+        """
+        Maneja fallos de verificación de manera estructurada
+        VERSIÓN WINDOWS COMPATIBLE
+        """
+        validation_data = file_info.get('validation', {})
+        issues = validation_data.get('issues', [])
+        
+        # Determinar tipo de error
+        if not file_info.get('exists', False):
+            error_type = "file_not_found"
+            error_message = "El archivo no existe en R2"
+            status_code = status.HTTP_404_NOT_FOUND
+            log_level = logging.WARNING
+            log_prefix = "[WARNING]"
+        else:
+            error_type = "validation_failed"
+            error_message = "El archivo no cumple los requisitos de seguridad"
+            status_code = status.HTTP_400_BAD_REQUEST
+            log_level = logging.ERROR
+            log_prefix = "[ERROR]"
+            
+            # Mensaje más específico si hay issues
+            if issues:
+                error_message = f"Validación fallida: {', '.join(issues[:3])}"
+                if len(issues) > 3:
+                    error_message += f" y {len(issues) - 3} más"
+
+        # Marcar como fallado
+        upload_session.mark_as_failed(error_message)
+        
+        # Liberar cuota pendiente
+        try:
+            quota = UploadQuota.objects.get(user=user)
+            quota.release_pending_quota(upload_session.file_size)
+        except Exception as e:
+            logger.error(f"[ERROR] Error liberando cuota para upload fallido {upload_session.id}: {e}")
+
+        # Opcional: eliminar archivo inválido de R2
+        if delete_invalid:
+            try:
+                deleted, delete_message = r2_direct.delete_file(upload_session.file_key)
+                if deleted:
+                    logger.info(f"[INFO] Archivo inválido eliminado: {upload_session.file_key}")
+            except Exception as e:
+                logger.warning(f"[WARNING] No se pudo eliminar archivo inválido: {e}")
+
+        # ✅ CORREGIDO: LOG WINDOWS COMPATIBLE (SIN EMOJIS)
+        logger.log(log_level,
+                  f"{log_prefix} Verification failed | "
+                  f"Upload: {upload_session.id} | "
+                  f"Type: {error_type} | "
+                  f"Key: {upload_session.file_key} | "
+                  f"Issues: {len(issues)}")
+
+        # Respuesta estructurada
+        response_data = {
+            "error": error_type,
+            "message": error_message,
+            "details": {
+                "file_exists": file_info.get('exists', False),
+                "upload_session": {
+                    "id": str(upload_session.id),
+                    "status": upload_session.status,
+                    "file_key": upload_session.file_key,
+                    "expected_size": upload_session.file_size
+                },
+                "validation": validation_data,
+                "key_analysis": file_info.get('key_analysis', {}),
+                "quota_freed": True
+            }
+        }
+
+        # Añadir issues completos si no son muchos
+        if issues and len(issues) <= 10:
+            response_data["details"]["all_issues"] = issues
+
+        return Response(response_data, status=status_code)
 
 
 class DirectUploadStatusView(APIView):

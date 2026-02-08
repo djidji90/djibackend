@@ -1,16 +1,15 @@
-# api2/utils/r2_direct.py - VERSIÓN COMPLETA CORREGIDA PARA WINDOWS
+# api2/utils/r2_direct.py - VERSIÓN COMPATIBLE CON WINDOWS
 
-""" 
-R2 Direct Upload Utility - VERSIÓN CORREGIDA
-SOLUCIÓN DEFINITIVA PARA ERROR 403
-Presigned PUT mínimo y robusto
-Sin headers extraños, sin firma frágil
+"""
+R2 Direct Upload - Versión Windows compatible
+Sin emojis, con compatibilidad total
 """
 
 import os
 import uuid
 import time
 import logging
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import boto3
@@ -18,22 +17,19 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 from django.conf import settings
 
-# Configurar logger
 logger = logging.getLogger(__name__)
 
 
 class R2DirectUpload:
     """
-    VERSIÓN CORREGIDA: Presigned PUT mínimo para R2
-    Sigue el patrón correcto: URL con firma en query params, sin headers extra
+    Versión Windows compatible - SIN EMOJIS
     """
 
     def __init__(self):
-        """Inicializa cliente S3 para R2 con configuración corregida"""
+        """Inicialización para R2 - Windows compatible"""
         try:
             self.bucket_name = settings.AWS_STORAGE_BUCKET_NAME
-            
-            # Configuración robusta para R2
+
             self.s3_client = boto3.client(
                 "s3",
                 endpoint_url=settings.AWS_S3_ENDPOINT_URL,
@@ -41,21 +37,16 @@ class R2DirectUpload:
                 aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                 config=Config(
                     signature_version="s3v4",
-                    s3={
-                        'addressing_style': 'virtual'
-                    }
+                    s3={'addressing_style': 'virtual'}
                 ),
             )
+            
             # ✅ SIN EMOJIS PARA WINDOWS
             logger.info(f"[OK] R2DirectUpload inicializado. Bucket: {self.bucket_name}")
-            logger.info(f"     Endpoint: {settings.AWS_S3_ENDPOINT_URL}")
+            
         except Exception as e:
             logger.error(f"[ERROR] Error inicializando R2DirectUpload: {e}")
             raise
-
-    # ==========================================================
-    # MÉTODO PRINCIPAL CORREGIDO - VERSIÓN SIMPLE Y ROBUSTA
-    # ==========================================================
 
     def generate_presigned_put(
         self,
@@ -67,37 +58,26 @@ class R2DirectUpload:
         custom_metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        GENERA URL PUT PRE-FIRMADA - VERSIÓN CORRECTA
-        Parámetros MÍNIMOS en la firma:
-        - Solo Bucket y Key
-        - NO ContentType (el cliente lo envía si quiere)
-        - NO Metadata (se añade después)
-        - NO Content-Length (no debe firmarse)
+        PUT mínimo y robusto - Windows compatible
         """
         try:
-            # ✅ SIN EMOJIS
             logger.info(f"[PROCESANDO] Generando URL PUT para user {user_id}, archivo: {file_name}")
-            
-            # 1. SANITIZAR Y GENERAR KEY ÚNICA
+
+            # Generar key con estructura de ownership
             safe_name = self._safe_filename(file_name)
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             unique_id = uuid.uuid4().hex[:8]
             
-            # Estructura: uploads/user_123/20250205_143022_abc123ef_mi_audio.mp3
             key = f"uploads/user_{user_id}/{timestamp}_{unique_id}_{safe_name}"
 
-            # 2. PARÁMETROS MÍNIMOS PARA LA FIRMA
-            # ¡IMPORTANTE! Solo Bucket y Key, nada más
+            # Parámetros mínimos (robustos)
             params = {
                 'Bucket': self.bucket_name,
                 'Key': key,
-                # ❌ NO INCLUIR ContentType aquí
-                # ❌ NO INCLUIR Metadata aquí
-                # ❌ NO INCLUIR ContentLength aquí
+                # ❌ NO 'ContentType': file_type (evita 403 por mismatch)
             }
 
-            # 3. GENERAR URL PRE-FIRMADA (FIRMA EN QUERY PARAMS)
-            logger.debug(f"Generando URL para key: {key}")
+            # Generar URL pre-firmada
             presigned_url = self.s3_client.generate_presigned_url(
                 ClientMethod='put_object',
                 Params=params,
@@ -105,68 +85,37 @@ class R2DirectUpload:
                 HttpMethod='PUT'
             )
 
-            # 4. VALIDAR URL GENERADA
-            if not presigned_url:
-                raise ValueError("No se pudo generar URL pre-firmada")
-                
-            if '?' not in presigned_url or 'X-Amz-Signature=' not in presigned_url:
-                logger.warning(f"URL generada parece no tener firma: {presigned_url[:100]}...")
+            # Validación básica
+            if not presigned_url or '?' not in presigned_url:
+                raise ValueError("URL pre-firmada inválida")
 
-            # 5. METADATA PARA GUARDAR EN BASE DE DATOS (NO SE ENVÍA AL CLIENTE)
-            metadata_to_store = {
-                'user_id': str(user_id),
-                'original_name': safe_name,
-                'expected_size': file_size,
-                'expected_type': file_type,
-                'upload_timestamp': datetime.utcnow().isoformat(),
-                'custom_metadata': custom_metadata or {},
-            }
-
-            # 6. RESPUESTA MÍNIMA Y CORRECTA
+            # Respuesta coherente
             result = {
-                "success": True,
-                "upload_url": presigned_url,  # URL completa con firma en query
-                "method": "PUT",               # Siempre PUT
-                "file_key": key,               # Para verificación posterior
+                "upload_url": presigned_url,
+                "method": "PUT",
+                "file_key": key,
                 "file_name": safe_name,
                 "file_size": file_size,
-                "file_type": file_type,
+                "suggested_content_type": file_type,  # ✅ Solo sugerencia
                 "expires_at": int(time.time() + expires_in),
                 "expires_in": expires_in,
                 "user_id": user_id,
-                "metadata": metadata_to_store,  # Solo para backend
-                "instructions": {
-                    "method": "PUT",
-                    "body": "binary_file_data",
-                    "content_type_suggested": file_type,
-                    "important_notes": [
-                        "1. Usa PUT (no POST) a la URL proporcionada",
-                        "2. Envía el archivo binario como cuerpo de la petición",
-                        "3. Content-Type es opcional (sugerido: usar el proporcionado)",
-                        "4. NO añadas headers X-Amz-* (ya están en la URL)",
-                        "5. Después del upload, confirma en el endpoint de confirmación"
-                    ]
+                "key_structure": {
+                    "format": "uploads/user_{id}/timestamp_uuid_filename",
+                    "ownership_proof": "path_based"
                 }
             }
 
-            # ✅ SIN EMOJIS
             logger.info(f"[OK] URL PUT generada exitosamente para key: {key}")
-            logger.debug(f"URL: {presigned_url[:80]}...")
             return result
 
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_msg = e.response.get('Error', {}).get('Message', str(e))
-            # ✅ SIN EMOJIS
-            logger.error(f"[ERROR] Error de S3 generando URL PUT: {error_code} - {error_msg}")
+            logger.error(f"[ERROR] Error S3 ({error_code}) generando URL: {e}")
             raise
         except Exception as e:
-            logger.error(f"[ERROR] Error inesperado generando URL PUT: {e}", exc_info=True)
+            logger.error(f"[ERROR] Error inesperado: {e}", exc_info=True)
             raise
-
-    # ==========================================================
-    # MÉTODOS POST-UPLOAD (PARA METADATA E INTEGRIDAD)
-    # ==========================================================
 
     def verify_upload_complete(
         self,
@@ -175,124 +124,215 @@ class R2DirectUpload:
         expected_user_id: Optional[int] = None
     ) -> Tuple[bool, Dict[str, Any]]:
         """
-        Verifica que un upload se completó correctamente.
+        Verificación robusta - Windows compatible
         """
         try:
-            # 1. VERIFICAR QUE EL ARCHIVO EXISTE
+            # Verificar existencia física
             response = self.s3_client.head_object(
                 Bucket=self.bucket_name,
                 Key=key
             )
 
-            # 2. INFORMACIÓN DEL ARCHIVO REAL
+            # Extraer información básica
             actual_size = response.get('ContentLength', 0)
-            actual_content_type = response.get('ContentType', '')
-            actual_metadata = response.get('Metadata', {})
-            etag = response.get('ETag', '').strip('"')
-            last_modified = response.get('LastModified')
 
+            # Validación coherente
+            validation = {
+                "size_match": True,
+                "owner_match": True,
+                "key_pattern_valid": True,
+                "issues": []
+            }
+
+            # Validar tamaño si se espera
+            if expected_size and actual_size != expected_size:
+                validation["size_match"] = False
+                validation["issues"].append(
+                    f"Tamaño: esperado {expected_size:,}B, actual {actual_size:,}B"
+                )
+
+            # Validar ownership por estructura de key
+            if expected_user_id:
+                extracted_user_id = self._extract_user_id_from_key(key)
+                
+                if extracted_user_id is None:
+                    validation["owner_match"] = False
+                    validation["issues"].append("Key no tiene formato de ownership válido")
+                elif extracted_user_id != expected_user_id:
+                    validation["owner_match"] = False
+                    validation["issues"].append(
+                        f"Ownership: esperado user_{expected_user_id}, key es user_{extracted_user_id}"
+                    )
+
+            # Validar patrón de key
+            key_validation = self._validate_key_pattern(key)
+            if not key_validation["is_valid"]:
+                validation["key_pattern_valid"] = False
+                validation["issues"].append(f"Key inválida: {key_validation.get('error')}")
+
+            # Construir respuesta
             info = {
                 "exists": True,
                 "size": actual_size,
-                "content_type": actual_content_type,
-                "etag": etag,
-                "last_modified": last_modified,
-                "metadata": actual_metadata,
-                "validation": {
-                    "size_match": True,
-                    "user_match": True,
-                    "issues": []
-                }
+                "content_type": response.get('ContentType', ''),
+                "etag": response.get('ETag', '').strip('"'),
+                "last_modified": response.get('LastModified'),
+                "metadata": response.get('Metadata', {}),
+                "validation": validation,
+                "key_analysis": key_validation
             }
 
-            # 3. VALIDACIONES
-            if expected_size and actual_size != expected_size:
-                info["validation"]["size_match"] = False
-                info["validation"]["issues"].append(
-                    f"Tamaño incorrecto: esperado {expected_size}, actual {actual_size}"
-                )
+            # Determinar validez
+            is_valid = all([
+                info["exists"],
+                validation["size_match"],
+                validation["owner_match"],
+                validation["key_pattern_valid"]
+            ])
 
-            if expected_user_id:
-                actual_user_id = actual_metadata.get('user_id')
-                if not actual_user_id:
-                    info["validation"]["user_match"] = False
-                    info["validation"]["issues"].append("No hay metadata user_id")
-                elif str(actual_user_id) != str(expected_user_id):
-                    info["validation"]["user_match"] = False
-                    info["validation"]["issues"].append(
-                        f"User ID mismatch: esperado {expected_user_id}, actual {actual_user_id}"
-                    )
-
-            # 4. CALCULAR INTEGRIDAD
-            all_valid = (
-                info["validation"]["size_match"] and
-                info["validation"]["user_match"]
-            )
-
-            # ✅ SIN EMOJIS
-            logger.info(f"[OK] Verificación completada para {key}. Válido: {all_valid}")
-            return all_valid, info
+            logger.info(f"[VERIFICACION] Key: {key} | Valido: {is_valid} | Issues: {len(validation['issues'])}")
+            
+            return is_valid, info
 
         except ClientError as e:
             if e.response['Error']['Code'] == '404':
-                # ✅ SIN EMOJIS
                 logger.warning(f"[WARNING] Archivo no encontrado: {key}")
-                return False, {"exists": False, "error": "File not found"}
+                return False, {
+                    "exists": False,
+                    "error": "File not found in R2",
+                    "validation": {
+                        "size_match": False,
+                        "owner_match": False,
+                        "key_pattern_valid": False,
+                        "issues": ["Archivo no existe en R2"]
+                    }
+                }
             else:
                 logger.error(f"[ERROR] Error verificando archivo {key}: {e}")
-                return False, {"exists": False, "error": str(e)}
+                return False, {
+                    "exists": False,
+                    "error": f"S3 Error: {e}",
+                    "validation": {
+                        "size_match": False,
+                        "owner_match": False,
+                        "key_pattern_valid": False,
+                        "issues": [f"Error de conexión: {e}"]
+                    }
+                }
         except Exception as e:
             logger.error(f"[ERROR] Error inesperado verificando {key}: {e}")
-            return False, {"exists": False, "error": str(e)}
-
-    def add_metadata_to_file(
-        self,
-        key: str,
-        metadata: Dict[str, str],
-        user_id: Optional[int] = None
-    ) -> bool:
-        """
-        Añade metadata a un archivo ya subido usando copy_object.
-        """
-        try:
-            # 1. VALIDAR QUE EL ARCHIVO EXISTE
-            exists, info = self.verify_upload_complete(key, expected_user_id=user_id)
-            if not exists:
-                logger.error(f"[ERROR] No se puede añadir metadata, archivo no existe: {key}")
-                return False
-
-            # 2. PREPARAR METADATA (todos los campos como strings)
-            safe_metadata = {}
-            for k, v in metadata.items():
-                if v is not None:
-                    safe_metadata[str(k)] = str(v)
-
-            # 3. COPIAR OBJETO CONSIGO MISMO PARA AÑADIR/REEMPLAZAR METADATA
-            copy_source = {
-                'Bucket': self.bucket_name,
-                'Key': key
+            return False, {
+                "exists": False,
+                "error": str(e),
+                "validation": {
+                    "size_match": False,
+                    "owner_match": False,
+                    "key_pattern_valid": False,
+                    "issues": [f"Error interno: {e}"]
+                }
             }
 
+    # ==========================================================
+    # MÉTODOS AUXILIARES
+    # ==========================================================
+
+    def _extract_user_id_from_key(self, key: str) -> Optional[int]:
+        """Extrae user_id de la estructura de key"""
+        try:
+            pattern = r'^uploads/user_(\d+)/'
+            match = re.match(pattern, key)
+            
+            if match:
+                return int(match.group(1))
+            return None
+        except (ValueError, TypeError):
+            return None
+
+    def _validate_key_pattern(self, key: str) -> Dict[str, Any]:
+        """Valida patrón de key"""
+        pattern = r'^uploads/user_(\d+)/(\d{8}_\d{6})_([a-f0-9]{8})_([\w\s\-\.]+)$'
+        match = re.match(pattern, key)
+        
+        if not match:
+            return {
+                "is_valid": False,
+                "error": "Patrón de key inválido",
+                "expected_pattern": "uploads/user_{id}/YYYYMMDD_HHMMSS_{uuid8}_{filename}"
+            }
+        
+        try:
+            return {
+                "is_valid": True,
+                "components": {
+                    "user_id": int(match.group(1)),
+                    "timestamp": match.group(2),
+                    "uuid": match.group(3),
+                    "filename": match.group(4)
+                }
+            }
+        except (ValueError, TypeError):
+            return {
+                "is_valid": False,
+                "error": "Componente inválido en key"
+            }
+
+    @staticmethod
+    def _safe_filename(filename: str) -> str:
+        """Sanitiza nombre de archivo"""
+        import unicodedata
+        
+        # Normalizar unicode
+        filename = unicodedata.normalize('NFKD', filename)
+        filename = filename.encode('ASCII', 'ignore').decode('ASCII')
+        
+        # Solo nombre base
+        filename = os.path.basename(filename)
+        
+        # Reemplazar caracteres no seguros
+        filename = re.sub(r'[^\w\s\-\.]', '_', filename)
+        filename = re.sub(r'\s+', '_', filename)
+        filename = re.sub(r'_+', '_', filename)
+        
+        # Limitar longitud
+        if len(filename) > 180:
+            name, ext = os.path.splitext(filename)
+            filename = name[:180 - len(ext)] + ext
+        
+        return filename.strip('_.')
+
+    # Métodos existentes (simplificados)
+    def add_metadata_to_file(self, key: str, metadata: Dict[str, str], user_id: Optional[int] = None) -> bool:
+        """Añade metadata opcional"""
+        try:
+            # Validar ownership
+            if user_id:
+                extracted_id = self._extract_user_id_from_key(key)
+                if extracted_id != user_id:
+                    return False
+
+            # Verificar que existe
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            except ClientError:
+                return False
+
+            # Preparar metadata
+            safe_metadata = {str(k): str(v) for k, v in metadata.items() if v is not None}
+            
+            # Copiar con nueva metadata
             self.s3_client.copy_object(
                 Bucket=self.bucket_name,
-                CopySource=copy_source,
+                CopySource={'Bucket': self.bucket_name, 'Key': key},
                 Key=key,
                 Metadata=safe_metadata,
-                MetadataDirective='REPLACE',
-                ContentType=info.get('content_type', 'application/octet-stream'),
-                CacheControl='max-age=31536000',
-                ContentDisposition=f'attachment; filename="{info.get("metadata", {}).get("original_name", key.split("/")[-1])}"'
+                MetadataDirective='REPLACE'
             )
-
-            # ✅ SIN EMOJIS
-            logger.info(f"[OK] Metadata añadida a {key}: {list(safe_metadata.keys())}")
+            
+            logger.info(f"[INFO] Metadata añadida a {key}")
             return True
-
-        except ClientError as e:
-            logger.error(f"[ERROR] Error S3 añadiendo metadata a {key}: {e}")
-            return False
+            
         except Exception as e:
-            logger.error(f"[ERROR] Error inesperado añadiendo metadata a {key}: {e}")
+            logger.error(f"[ERROR] Error añadiendo metadata: {e}")
             return False
 
     def delete_file(self, key: str) -> Tuple[bool, str]:
@@ -302,8 +342,7 @@ class R2DirectUpload:
                 Bucket=self.bucket_name,
                 Key=key
             )
-            # ✅ SIN EMOJIS
-            logger.info(f"[OK] Archivo eliminado: {key}")
+            logger.info(f"[INFO] Archivo eliminado: {key}")
             return True, "File deleted"
         except ClientError as e:
             error_msg = f"S3 Error: {e.response['Error'].get('Message', str(e))}"
@@ -319,12 +358,9 @@ class R2DirectUpload:
         filename: Optional[str] = None,
         expires_in: int = 300
     ) -> Optional[str]:
-        """Genera URL temporal para descargar archivo"""
+        """Genera URL de descarga"""
         try:
-            params = {
-                'Bucket': self.bucket_name,
-                'Key': key
-            }
+            params = {'Bucket': self.bucket_name, 'Key': key}
             if filename:
                 params['ResponseContentDisposition'] = f'attachment; filename="{filename}"'
 
@@ -333,135 +369,75 @@ class R2DirectUpload:
                 Params=params,
                 ExpiresIn=expires_in
             )
-            logger.debug(f"[DEBUG] URL de descarga generada para {key}")
             return url
         except Exception as e:
             logger.error(f"[ERROR] Error generando URL de descarga: {e}")
             return None
 
-    # ==========================================================
-    # MÉTODOS AUXILIARES
-    # ==========================================================
-
-    @staticmethod
-    def _safe_filename(filename: str) -> str:
-        """Sanitiza nombre de archivo para uso seguro en S3"""
-        import re
-        import unicodedata
+    def extract_key_info(self, key: str) -> Dict[str, Any]:
+        """Extrae información de una key"""
+        validation = self._validate_key_pattern(key)
         
-        # Normalizar unicode
-        filename = unicodedata.normalize('NFKD', filename).encode('ASCII', 'ignore').decode('ASCII')
-        
-        # Tomar solo el nombre base (sin path)
-        filename = os.path.basename(filename)
-        
-        # Reemplazar caracteres peligrosos
-        filename = re.sub(r'[^\w\s.-]', '_', filename)
-        
-        # Reemplazar espacios
-        filename = re.sub(r'\s+', '_', filename)
-        
-        # Limitar longitud
-        if len(filename) > 200:
-            name, ext = os.path.splitext(filename)
-            filename = name[:200 - len(ext)] + ext
-            
-        return filename
-
-    @staticmethod
-    def _get_safe_extension(filename: str) -> str:
-        """Extrae extensión segura del nombre de archivo"""
-        import re
-        _, ext = os.path.splitext(filename.lower())
-        
-        if not ext:
-            return ""
-        
-        # Limpiar extensión
-        ext = re.sub(r'[^a-z0-9]', '', ext)
-        if not ext:
-            return ""
-        
-        # Limitar longitud de extensión
-        if len(ext) > 10:
-            ext = ext[:10]
-            
-        return f".{ext}"
-
-    @staticmethod
-    def extract_key_info(key: str) -> Dict[str, Any]:
-        """Extrae información de una R2 key"""
-        import re
-        
-        info = {
-            "key": key,
-            "is_valid": False,
-            "user_id": None,
-            "timestamp": None,
-            "filename": None
-        }
-        
-        try:
-            pattern = r'^uploads/user_(\d+)/(\d{8}_\d{6})_([a-f0-9]{8})_(.+)$'
-            match = re.match(pattern, key)
-            
-            if match:
-                info.update({
-                    "is_valid": True,
-                    "user_id": int(match.group(1)),
-                    "timestamp": match.group(2),
-                    "unique_id": match.group(3),
-                    "filename": match.group(4)
-                })
-                
-            return info
-        except Exception:
-            return info
+        if validation["is_valid"]:
+            return {
+                "key": key,
+                "is_valid": True,
+                "user_id": validation["components"]["user_id"],
+                "timestamp": validation["components"]["timestamp"],
+                "filename": validation["components"]["filename"]
+            }
+        else:
+            return {
+                "key": key,
+                "is_valid": False,
+                "user_id": self._extract_user_id_from_key(key),
+                "error": validation.get("error", "Key inválida")
+            }
 
 
 # ==========================================================
-# ✅ CLASE R2UploadValidator PARA COMPATIBILIDAD
+# ✅ CLASES DE COMPATIBILIDAD (para imports existentes)
 # ==========================================================
 
 class R2UploadValidator:
-    """Utilidades para validación de uploads."""
+    """
+    Clase de compatibilidad para código existente
+    Mantiene la misma interfaz que antes
+    """
     
     @staticmethod
     def validate_file_key(key: str, user_id: Optional[int] = None) -> Tuple[bool, str]:
-        """
-        Valida que una R2 key sea segura y pertenezca al usuario.
-        """
+        """Valida que una key sea segura"""
         if not key:
             return False, "Key vacía"
         
-        # Validar formato básico
-        if '..' in key or key.startswith('/') or '//' in key:
+        if '..' in key or key.startswith('/'):
             return False, "Key con formato inválido"
         
-        # Validar longitud
         if len(key) > 500:
             return False, "Key demasiado larga"
         
-        # Validar caracteres peligrosos
-        import re
-        dangerous_patterns = [r'\.\.', r'/', r'\\', r'%00', r'<', r'>']
-        for pattern in dangerous_patterns:
-            if re.search(pattern, key):
-                return False, f"Key contiene caracteres peligrosos: {pattern}"
-        
         # Validar ownership si se proporciona user_id
         if user_id is not None:
-            expected_prefix = f"uploads/user_{user_id}/"
-            if not key.startswith(expected_prefix):
+            pattern = r'^uploads/user_(\d+)/'
+            match = re.match(pattern, key)
+            if not match:
                 return False, f"Key no pertenece al usuario {user_id}"
+            
+            try:
+                key_user_id = int(match.group(1))
+                if key_user_id != user_id:
+                    return False, f"Key pertenece a otro usuario"
+            except (ValueError, TypeError):
+                return False, "User ID inválido en key"
         
         return True, "Key válida"
     
     @staticmethod
     def extract_user_id_from_key(key: str) -> Optional[int]:
-        """Extrae el user_id de una R2 key"""
-        import re
-        match = re.search(r'uploads/user_(\d+)/', key)
+        """Extrae user_id de una key"""
+        pattern = r'uploads/user_(\d+)/'
+        match = re.search(pattern, key)
         if match:
             try:
                 return int(match.group(1))
@@ -471,53 +447,27 @@ class R2UploadValidator:
     
     @staticmethod
     def sanitize_key(key: str) -> str:
-        """Sanitiza una R2 key para uso seguro"""
+        """Sanitiza una key"""
         import re
-        # Remover doble slashes
         key = re.sub(r'//+', '/', key)
-        # Remover puntos peligrosos
         key = re.sub(r'\.\.+', '.', key)
-        # Remover espacios
-        key = key.strip()
-        # Asegurar que no empiece con /
-        key = key.lstrip('/')
-        
+        key = key.strip().lstrip('/')
         return key
 
 
 # ==========================================================
-# 🔌 INSTANCIA GLOBAL Y FUNCIONES HELPER
+# INSTANCIAS GLOBALES
 # ==========================================================
 
-# Instancia global para usar en toda la app
 r2_upload = R2DirectUpload()
-
-# ✅ ALIAS PARA COMPATIBILIDAD
-r2_direct = r2_upload  # Para código existente que usa r2_direct
+r2_direct = r2_upload  # ✅ Compatibilidad total
 
 
-def generate_presigned_put_url(
-    user_id: int,
-    file_name: str,
-    file_size: int,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Función helper para compatibilidad con código existente.
-    """
-    return r2_upload.generate_presigned_put(
-        user_id=user_id,
-        file_name=file_name,
-        file_size=file_size,
-        **kwargs
-    )
+def generate_presigned_put_url(user_id: int, file_name: str, file_size: int, **kwargs) -> Dict[str, Any]:
+    """Helper para compatibilidad"""
+    return r2_upload.generate_presigned_put(user_id, file_name, file_size, **kwargs)
 
 
-def verify_r2_upload(
-    key: str,
-    **kwargs
-) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Función helper para verificar uploads.
-    """
+def verify_r2_upload(key: str, **kwargs) -> Tuple[bool, Dict[str, Any]]:
+    """Helper para compatibilidad"""
     return r2_upload.verify_upload_complete(key, **kwargs)

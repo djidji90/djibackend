@@ -28,7 +28,7 @@ SITE_URL = os.getenv('SITE_URL', 'https://djidjimusic.com')
 API_URL = os.getenv('API_URL', 'https://api.djidjimusic.com')
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://djidjimusic.com')
 
-# ================================
+# ================================ 
 # TAMAÑOS DE ARCHIVO
 # ================================
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB límite absoluto
@@ -67,9 +67,6 @@ MAX_IMAGE_SIZE = 20 * 1024 * 1024   # 20MB para imágenes
 # ================================
 # CSRF + CORS CONFIGURACIÓN OPTIMIZADA
 # ================================
-# ================================
-# CSRF + CORS CONFIGURACIÓN OPTIMIZADA
-# ================================
 CSRF_TRUSTED_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
@@ -93,19 +90,17 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 
 # Permitir localhost en desarrollo
 if DEBUG:
-    development_origins = [
+    CORS_ALLOWED_ORIGINS.extend([
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5176",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:5176",
-    ]
-    
-    CORS_ALLOWED_ORIGINS.extend(development_origins)
-    CSRF_TRUSTED_ORIGINS.extend(development_origins)
+    ])
+    CSRF_TRUSTED_ORIGINS.extend([
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ])
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
@@ -132,9 +127,6 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # ================================
-# CONFIGURACIÓN DE COOKIES - CONSOLIDADO
-# ================================
-
 # USUARIO PERSONALIZADO
 # ================================
 AUTH_USER_MODEL = 'musica.CustomUser'
@@ -170,21 +162,18 @@ INSTALLED_APPS = [
 # ================================
 # MIDDLEWARE OPTIMIZADO
 # ================================
-# ================================
-# MIDDLEWARE OPTIMIZADO - CORREGIDO
-# ================================
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',  # MUY IMPORTANTE: debe estar ALTO
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.gzip.GZipMiddleware',  # Compresión GZIP para mejor performance
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',  # Este DEBE estar después de CorsMiddleware
+    'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'api2.middleware.TimeoutMiddleware',
-    'django.middleware.gzip.GZipMiddleware',  # Puede estar al final
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -681,4 +670,3 @@ print(f"CACHE: {CACHES['default']['BACKEND'].split('.')[-1]}")
 print(f"CELERY: {CELERY_BROKER_URL.split('://')[0]}")
 print(f"ALLOWED_HOSTS: {len(ALLOWED_HOSTS)} hosts")
 print(f"{'='*60}\n")
-print("R2 Configurado con addressing_style='path'")
