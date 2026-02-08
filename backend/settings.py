@@ -73,6 +73,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://api.djidjimusic.com",
     "https://www.api.djidjimusic.com",
     "https://djibackend-production.up.railway.app",
+    "http://localhost:5173"
 ]
 
 CORS_ALLOWED_ORIGINS = [
@@ -81,6 +82,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://api.djidjimusic.com",
     "https://www.api.djidjimusic.com",
     "https://djibackend-production.up.railway.app",
+    "http://localhost:5173"
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
