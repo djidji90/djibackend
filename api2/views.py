@@ -1,74 +1,105 @@
-from datetime import datetime, timedelta
+# api2/views.py - ARCHIVO COMPLETO CON TODAS LAS IMPORTACIONES UNIFICADAS Y LA VISTA STREAMSONGVIEW
+"""
+VISTAS COMPLETAS DE LA API v2
+================================
+✅ Streaming con URLs firmadas (arquitectura enterprise)
+✅ Upload directo a R2
+✅ CRUD de canciones
+✅ Comentarios y likes
+✅ Métricas y monitoreo
+"""
+
+# =============================================================================
+# 📦 IMPORTACIONES UNIFICADAS - TODAS EN UN SOLO LUGAR
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ESTÁNDAR
+# -----------------------------------------------------------------------------
 import json
 import logging
-import re
-import pytz
-from .r2_utils import generate_presigned_urls_batch
-
-from django.views.decorators.cache import cache_page
-from django.utils.decorators import method_decorator
-from api2.utils.r2_direct import r2_upload  # ✅ IMPORTAR r2_upload
 import time
-from datetime import timezone as dt_timezone
 import random
-from django.db import models
+import re
+from datetime import datetime, timedelta, timezone as dt_timezone
+from typing import Tuple, Optional, Dict, Any
+
+# -----------------------------------------------------------------------------
+# DJANGO CORE
+# -----------------------------------------------------------------------------
+import pytz
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.db import transaction, DatabaseError, IntegrityError
-from django.db.models import (
-    Q, Count, Case, When, Value, 
-    CharField, IntegerField, BooleanField
-)
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.utils import timezone
-from django.db import connection
-from django.core.cache import cache
-import redis
-import os
-
-from api2.utils.celery_health import CeleryHealth
-
+from django.db import connection, models, transaction, DatabaseError, IntegrityError
+from django.db.models import Q, Count, Case, When, Value, CharField, IntegerField, BooleanField
 from django.db.models.functions import Lower
-from django.http import (
-    HttpRequest, HttpResponse, StreamingHttpResponse, 
-    JsonResponse, Http404
-)
-from django.shortcuts import get_object_or_404
+from django.http import HttpRequest, HttpResponse, StreamingHttpResponse, JsonResponse, Http404
+from django.shortcuts import get_object_or_404, redirect
 from django.utils import timezone
+from django.utils.decorators import method_decorator
 from django.utils.text import slugify
-from django_filters.rest_framework import DjangoFilterBackend
+from django.views.decorators.cache import cache_page
 
+# -----------------------------------------------------------------------------
+# DRF (Django REST Framework)
+# -----------------------------------------------------------------------------
 from rest_framework import status, generics
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import ValidationError, PermissionDenied
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
-from rest_framework.pagination import PageNumberPagination  # AGREGAR esta línea
+
+# -----------------------------------------------------------------------------
+# FILTERS
+# -----------------------------------------------------------------------------
+from django_filters.rest_framework import DjangoFilterBackend
+
+# -----------------------------------------------------------------------------
+# DRF-SPECTACULAR (Swagger)
+# -----------------------------------------------------------------------------
 from drf_spectacular.utils import (
     extend_schema, OpenApiParameter, OpenApiResponse, OpenApiExample
 )
 
-from api2.models import UploadSession, UploadQuota, Song, UserProfile, Like, Download, Comment, MusicEvent
-from api2.tasks import process_direct_upload
-from api2.utils.r2_direct import r2_direct, R2UploadValidator
-from .r2_utils import (
-    upload_file_to_r2, 
-    generate_presigned_url, 
-    delete_file_from_r2,
-    check_file_exists,
-    get_file_info,
-    get_file_size,
-    stream_file_from_r2,
-    get_content_type_from_key
+# -----------------------------------------------------------------------------
+# PROMETHEUS (OPCIONAL)
+# -----------------------------------------------------------------------------
+try:
+    from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+    # Dummy metrics
+    class DummyMetric:
+        def labels(self, *args, **kwargs): return self
+        def inc(self): pass
+    Counter = Histogram = DummyMetric
+    def generate_latest(*args, **kwargs): return b''
+    REGISTRY = None
+
+# -----------------------------------------------------------------------------
+# MODELOS LOCALES
+# -----------------------------------------------------------------------------
+from .models import (
+    UploadSession, 
+    UploadQuota, 
+    Song, 
+    UserProfile, 
+    Like, 
+    Download, 
+    Comment, 
+    MusicEvent
 )
-from . import serializers  # AGREGAR esta línea
+
+# -----------------------------------------------------------------------------
+# SERIALIZERS
+# -----------------------------------------------------------------------------
 from .serializers import (
     DirectUploadRequestSerializer,
     UploadConfirmationSerializer,
@@ -78,6 +109,29 @@ from .serializers import (
     MusicEventSerializer,
     SongUploadSerializer
 )
+
+# -----------------------------------------------------------------------------
+# UTILS R2
+# -----------------------------------------------------------------------------
+from .r2_utils import (
+    upload_file_to_r2,
+    generate_presigned_url,
+    generate_presigned_urls_batch,
+    delete_file_from_r2,
+    check_file_exists,
+    get_file_info,
+    get_file_size,
+    stream_file_from_r2,
+    get_content_type_from_key,
+    invalidate_presigned_url_cache,
+    get_cache_stats,
+    test_r2_connection
+)
+
+# -----------------------------------------------------------------------------
+# UTILS R2 DIRECT
+# -----------------------------------------------------------------------------
+from .utils.r2_direct import r2_upload, r2_direct, R2
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
