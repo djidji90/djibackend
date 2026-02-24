@@ -117,6 +117,10 @@ CORS_ALLOW_METHODS = [
     'POST',
     'PUT',
 ]
+
+# ============================================
+# 🎵 CONFIGURACIÓN CORS PARA STREAMING (NUEVO)
+# ============================================
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -130,6 +134,25 @@ CORS_ALLOW_HEADERS = [
     'x-file-name',
     'x-file-size',
     'x-upload-id',
+]
+
+# Headers adicionales para streaming
+CORS_ALLOW_HEADERS += [
+    'range',
+    'content-range',
+    'accept-ranges',
+    'if-range',
+]
+
+# Headers expuestos para streaming
+CORS_EXPOSE_HEADERS = [
+    'accept-ranges',
+    'content-range',
+    'content-length',
+    'etag',
+    'x-cache-status',
+    'x-cache-ttl',
+    'x-url-expiration',
 ]
 
 # ================================
@@ -170,7 +193,7 @@ INSTALLED_APPS = [
 # ================================
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.gzip.GZipMiddleware',  # Compresión GZIP para mejor performance
+    'django.middleware.gzip.GZipMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -185,7 +208,7 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'backend.urls'
 
 # ================================
-# TEMPLATES - CONFIGURACIÓN SIMPLIFICADA
+# TEMPLATES
 # ================================
 TEMPLATES = [
     {
@@ -205,7 +228,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 
 # ================================
-# BASE DE DATOS - INTELIGENTE Y OPTIMIZADA
+# BASE DE DATOS
 # ================================
 DATABASES = {
     'default': {
@@ -220,7 +243,6 @@ DATABASES = {
 # Detectar entorno y configurar base de datos apropiada
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-# Si hay DATABASE_URL y NO estamos en DEBUG, usar PostgreSQL
 if DATABASE_URL and not DEBUG:
     try:
         if 'postgresql://' in DATABASE_URL or 'postgres://' in DATABASE_URL:
@@ -230,8 +252,7 @@ if DATABASE_URL and not DEBUG:
                 conn_health_checks=True,
                 ssl_require=True,
             )
-            # Configuraciones de performance para PostgreSQL
-            DATABASES['default']['CONN_MAX_AGE'] = 60  # Connection pooling
+            DATABASES['default']['CONN_MAX_AGE'] = 60
             DATABASES['default']['OPTIONS'] = {
                 'connect_timeout': 10,
                 'keepalives': 1,
@@ -249,14 +270,13 @@ else:
     print("SQLite en uso para desarrollo local")
 
 # ================================
-# ARCHIVOS ESTÁTICOS OPTIMIZADOS
+# ARCHIVOS ESTÁTICOS
 # ================================
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Optimizaciones WhiteNoise
-WHITENOISE_MAX_AGE = 31536000  # 1 año de cache
+WHITENOISE_MAX_AGE = 31536000
 WHITENOISE_USE_FINDERS = True
 WHITENOISE_MANIFEST_STRICT = False
 
@@ -264,18 +284,17 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # ================================
-# CLOUDFLARE R2 CONFIG - OPTIMIZADO
+# CLOUDFLARE R2 CONFIG
 # ================================
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")  
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 
-# Configuración para uploads directos
 R2_UPLOADS_PREFIX = 'uploads/'
-R2_PRESIGNED_EXPIRY = 3600  # 1 hora
-R2_MAX_FILE_SIZE = MAX_UPLOAD_SIZE  # Usar límite global
-R2_DOWNLOAD_URL_EXPIRY = 300  # 5 minutos para URLs de descarga
+R2_PRESIGNED_EXPIRY = 3600
+R2_MAX_FILE_SIZE = MAX_UPLOAD_SIZE
+R2_DOWNLOAD_URL_EXPIRY = 300
 
 if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
@@ -286,7 +305,6 @@ if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     AWS_S3_ENDPOINT_URL = f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
     AWS_S3_REGION_NAME = 'auto'
     AWS_S3_ADDRESSING_STYLE = "virtual"
-   # AWS_S3_CUSTOM_DOMAIN = f'{R2_BUCKET_NAME}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
     AWS_S3_FILE_OVERWRITE = False
     AWS_DEFAULT_ACL = 'private'
     AWS_QUERYSTRING_AUTH = True
@@ -359,8 +377,10 @@ REST_FRAMEWORK = {
         'anon': '100/day',
         'user': '10000/day',
         'uploads': '50/hour',
-        'quota': '100/minute',  # Throttle específico para endpoint de cuota
-        'status': '200/minute',  # Throttle para endpoints de status
+        'quota': '100/minute',
+        'status': '200/minute',
+        'stream': '100/hour',      # 🎵 NUEVO - Streaming usuarios autenticados
+        'stream_anon': '10/hour',  # 🎵 NUEVO - Streaming usuarios anónimos
     },
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
@@ -382,7 +402,7 @@ REST_FRAMEWORK = {
 }
 
 # ================================
-# JWT CONFIGURACIÓN OPTIMIZADA
+# JWT CONFIGURACIÓN
 # ================================
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
@@ -412,7 +432,7 @@ SIMPLE_JWT = {
 }
 
 # ================================
-# SPECTACULAR (DOCUMENTACIÓN API)
+# SPECTACULAR
 # ================================
 SPECTACULAR_SETTINGS = {
     'TITLE': 'DJI Music API',
@@ -424,7 +444,7 @@ SPECTACULAR_SETTINGS = {
 }
 
 # ================================
-# LOGGING OPTIMIZADO PARA PRODUCCIÓN
+# LOGGING OPTIMIZADO
 # ================================
 LOGGING = {
     "version": 1,
@@ -455,7 +475,7 @@ LOGGING = {
         "file": {
             "class": "logging.handlers.RotatingFileHandler",
             "filename": BASE_DIR / "logs/django.log",
-            "maxBytes": 10485760,  # 10MB
+            "maxBytes": 10485760,
             "backupCount": 5,
             "formatter": "verbose",
         },
@@ -525,7 +545,7 @@ REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": f"{REDIS_URL}/1",  # DB 1 para cache Django
+        "LOCATION": f"{REDIS_URL}/1",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "CONNECTION_POOL_CLASS": "redis.BlockingConnectionPool",
@@ -539,38 +559,42 @@ CACHES = {
             "SOCKET_TIMEOUT": 5,
         },
         "KEY_PREFIX": "dji",
-        "TIMEOUT": 300,  # 5 minutos por defecto
-        
+        "TIMEOUT": 300,
     }
-    
-
 }
-PRESIGNED_URL_CACHE_TIMEOUT = 1800
-FILE_EXISTS_CACHE_TIMEOUT = 300
+
+# ============================================
+# 🎵 CONFIGURACIÓN DE CACHE PARA STREAMING (NUEVO)
+# ============================================
+PRESIGNED_URL_CACHE_TIMEOUT = 1800  # 30 minutos
+FILE_EXISTS_CACHE_TIMEOUT = 300      # 5 minutos
 R2_CACHE_PREFIX = "r2"
+STREAM_URL_EXPIRATION = 300          # 5 minutos para URLs firmadas
+
 # Tiempos de cache específicos por vista
 VIEW_CACHE_TIMES = {
-    'quota_view': 30,      # 30 segundos para /api2/upload/quota/
-    'status_view': 10,     # 10 segundos para /api2/upload/direct/status/
-    'user_profile': 60,    # 1 minuto para perfiles de usuario
-    'track_list': 120,     # 2 minutos para listas de tracks
+    'quota_view': 30,
+    'status_view': 10,
+    'user_profile': 60,
+    'track_list': 120,
+    'stream_url': 300,      # 🎵 URLs de streaming
+    'stream_metadata': 600, # 🎵 Metadata de canciones
 }
 
 # Configuración de sesiones en cache
 SESSION_ENGINE = "django.contrib.sessions.backends.cache"
 SESSION_CACHE_ALIAS = "default"
-SESSION_COOKIE_AGE = 1209600  # 2 semanas
+SESSION_COOKIE_AGE = 1209600
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 
 # ================================
-# CELERY - OPTIMIZADO PARA PRODUCCIÓN
+# CELERY
 # ================================
-CELERY_BROKER_URL = f"{REDIS_URL}/0"  # DB 0 para Celery broker
-CELERY_RESULT_BACKEND = 'django-db'   # Base de datos para resultados (más confiable)
+CELERY_BROKER_URL = f"{REDIS_URL}/0"
+CELERY_RESULT_BACKEND = 'django-db'
 
-# Optimización Celery
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_POOL_LIMIT = 10
 CELERY_BROKER_HEARTBEAT = 10
@@ -587,18 +611,16 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     'socket_timeout': 5,
 }
 
-# Configuración de workers
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_WORKER_MAX_TASKS_PER_CHILD = 100
-CELERY_WORKER_MAX_MEMORY_PER_CHILD = 200000  # 200MB
-CELERY_TASK_TIME_LIMIT = 300    # 5 minutos máximo
-CELERY_TASK_SOFT_TIME_LIMIT = 240  # 4 minutos (soft limit)
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = 200000
+CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_SOFT_TIME_LIMIT = 240
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_SEND_TASK_EVENTS = True
 CELERY_TASK_SEND_SENT_EVENT = True
 
-# Serialización
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -609,10 +631,9 @@ CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_DEFAULT_EXCHANGE = 'default'
 CELERY_TASK_DEFAULT_ROUTING_KEY = 'default'
 
-# Rate limiting
 CELERY_TASK_ANNOTATIONS = {
     'musica.tasks.process_upload': {
-        'rate_limit': '10/m'  # 10 tareas por minuto máximo
+        'rate_limit': '10/m'
     }
 }
 
@@ -627,28 +648,21 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 def create_database_indexes():
     """Crear índices necesarios para optimizar queries"""
     print("\n=== OPTIMIZANDO BASE DE DATOS CON ÍNDICES ===")
-    
+
     indexes_sql = [
-        # UploadSession
         "CREATE INDEX IF NOT EXISTS idx_uploadsession_status ON musica_uploadsession(status);",
         "CREATE INDEX IF NOT EXISTS idx_uploadsession_user_status ON musica_uploadsession(user_id, status);",
         "CREATE INDEX IF NOT EXISTS idx_uploadsession_created ON musica_uploadsession(created_at);",
         "CREATE INDEX IF NOT EXISTS idx_uploadsession_expires ON musica_uploadsession(expires_at) WHERE status = 'pending';",
-        
-        # UploadQuota
         "CREATE INDEX IF NOT EXISTS idx_uploadquota_user_date ON musica_uploadquota(user_id, date);",
         "CREATE INDEX IF NOT EXISTS idx_uploadquota_user ON musica_uploadquota(user_id);",
-        
-        # CustomUser
         "CREATE INDEX IF NOT EXISTS idx_customuser_email ON musica_customuser(email);",
         "CREATE INDEX IF NOT EXISTS idx_customuser_username ON musica_customuser(username);",
-        
-        # Track (si existe)
         "CREATE INDEX IF NOT EXISTS idx_track_user ON musica_track(user_id);",
         "CREATE INDEX IF NOT EXISTS idx_track_created ON musica_track(created_at);",
         "CREATE INDEX IF NOT EXISTS idx_track_status ON musica_track(status);",
     ]
-    
+
     try:
         from django.db import connection
         with connection.cursor() as cursor:
@@ -662,10 +676,20 @@ def create_database_indexes():
     except Exception as e:
         print(f"No se pudieron crear indices: {e}")
 
-# Ejecutar optimizaciones si está habilitado
 if os.getenv('CREATE_INDEXES_ON_STARTUP', 'False') == 'True':
     create_database_indexes()
 
 # ================================
 # RESUMEN DE CONFIGURACIÓN
 # ================================
+print("""
+╔════════════════════════════════════════════════════════════╗
+║  🎵 DJI MUSIC API - CONFIGURACIÓN COMPLETA                 ║
+╠════════════════════════════════════════════════════════════╣
+║  • Streaming optimizado con URLs firmadas                  ║
+║  • Rate limiting: 100 streams/hora por usuario             ║
+║  • Cache Redis: URLs cacheadas 30 minutos                  ║
+║  • CORS headers para streaming configurados                ║
+║  • Listo para producción                                   ║
+╚════════════════════════════════════════════════════════════╝
+""")
