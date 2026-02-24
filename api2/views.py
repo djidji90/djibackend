@@ -131,7 +131,7 @@ from .r2_utils import (
 # -----------------------------------------------------------------------------
 # UTILS R2 DIRECT
 # -----------------------------------------------------------------------------
-from .utils.r2_direct import r2_upload, r2_direct, R2
+from .utils.r2_direct import r2_upload, r2_direct,
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
