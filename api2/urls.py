@@ -314,6 +314,9 @@ traditional_urlpatterns = [
     path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
     path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
     path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
+    path('songs/<int:song_id>/stream/legacy/', views.StreamSongViewCompat.as_view(), name='song-stream-legacy'),
+    path('stream/debug/', views.StreamSongViewDebug.as_view(), name='stream-debug'),
+    path('stream/metrics/', views.StreamMetricsView.as_view(), name='stream-metrics'),
     path('songs/<int:song_id>/likes/', views.SongLikesView.as_view(), name='song-likes'),
     
     # 🔍 VERIFICACIÓN Y DIAGNÓSTICO

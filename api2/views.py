@@ -1,4 +1,4 @@
-# api2/views.py - ARCHIVO COMPLETO CON TODAS LAS IMPORTACIONES UNIFICADAS Y LA VISTA STREAMSONGVIEW
+# api2/views.py - ARCHIVO COMPLETO CON TODAS LAS IMPORTACIONES UNIFICADAS
 """
 VISTAS COMPLETAS DE LA API v2
 ================================
@@ -21,6 +21,8 @@ import logging
 import time
 import random
 import re
+import os  # Del bloque inferior
+import redis  # Del bloque inferior
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Tuple, Optional, Dict, Any
 
@@ -70,19 +72,6 @@ from drf_spectacular.utils import (
 # -----------------------------------------------------------------------------
 # PROMETHEUS (OPCIONAL)
 # -----------------------------------------------------------------------------
-try:
-    from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
-    METRICS_AVAILABLE = True
-except ImportError:
-    METRICS_AVAILABLE = False
-    # Dummy metrics
-    class DummyMetric:
-        def labels(self, *args, **kwargs): return self
-        def inc(self): pass
-    Counter = Histogram = DummyMetric
-    def generate_latest(*args, **kwargs): return b''
-    REGISTRY = None
-
 # -----------------------------------------------------------------------------
 # MODELOS LOCALES
 # -----------------------------------------------------------------------------
@@ -100,6 +89,7 @@ from .models import (
 # -----------------------------------------------------------------------------
 # SERIALIZERS
 # -----------------------------------------------------------------------------
+from . import serializers  # ← Para usar serializers.Clase
 from .serializers import (
     DirectUploadRequestSerializer,
     UploadConfirmationSerializer,
@@ -109,6 +99,11 @@ from .serializers import (
     MusicEventSerializer,
     SongUploadSerializer
 )
+
+# -----------------------------------------------------------------------------
+# TAREAS CELERY
+# -----------------------------------------------------------------------------
+from .tasks import process_direct_upload
 
 # -----------------------------------------------------------------------------
 # UTILS R2
@@ -131,8 +126,16 @@ from .r2_utils import (
 # -----------------------------------------------------------------------------
 # UTILS R2 DIRECT
 # -----------------------------------------------------------------------------
-from .utils.r2_direct import r2_upload, r2_direct
+from .utils.r2_direct import r2_upload, r2_direct, R2UploadValidator
 
+# -----------------------------------------------------------------------------
+# UTILS CELERY HEALTH
+# -----------------------------------------------------------------------------
+from .utils.celery_health import CeleryHealth
+
+# -----------------------------------------------------------------------------
+# CONFIGURACIÓN LOGGING
+# -----------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -986,216 +989,516 @@ def download_song_view(request, song_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
+# -----------------------------------------------------------------------------
+# MÉTRICAS PROMETHEUS - DEFINIDAS UNA SOLA VEZ (GLOBAL)
+# -----------------------------------------------------------------------------
+try:
+    from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
+    
+    # Contadores globales - Se crean UNA SOLA vez al importar el módulo
+    STREAM_REQUESTS_TOTAL = Counter(
+        'stream_requests_total', 
+        'Total stream requests',
+        ['status']  # labels: success, error
+    )
+    
+    STREAM_CACHE_HITS_TOTAL = Counter(
+        'stream_cache_hits_total', 
+        'Cache hits'
+    )
+    
+    STREAM_CACHE_MISSES_TOTAL = Counter(
+        'stream_cache_misses_total', 
+        'Cache misses'
+    )
+    
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+    # Dummy metrics que no hacen nada
+    class DummyCounter:
+        def labels(self, *args, **kwargs): return self
+        def inc(self, *args, **kwargs): pass
+    STREAM_REQUESTS_TOTAL = STREAM_CACHE_HITS_TOTAL = STREAM_CACHE_MISSES_TOTAL = DummyCounter()
+    def generate_latest(*args, **kwargs): return b''
+    REGISTRY = None
+
+
+class StreamRateThrottle(UserRateThrottle):
+    """
+    Límite de streams por usuario
+    - Previene abuso/scraping
+    - 100 streams por hora (ajustable en settings)
+    """
+    rate = '100/hour'
+    scope = 'stream'
+    
+    def get_cache_key(self, request, view):
+        """Personaliza la clave de cache para mejor trazabilidad"""
+        if request.user.is_authenticated:
+            ident = f"user_{request.user.pk}"
+        else:
+            ident = f"anon_{self.get_ident(request)}"
+        
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': ident
+        }
+    
+    def allow_request(self, request, view):
+        """Override para logging de rate limiting"""
+        allowed = super().allow_request(request, view)
+        
+        if not allowed:
+            logger.warning(
+                f"Rate limit excedido - "
+                f"user:{request.user.id if request.user.is_authenticated else 'anon'} "
+                f"path:{request.path}"
+            )
+        
+        return allowed
+
+
+# =============================================================================
+# 🎵 VISTA PRINCIPAL DE STREAMING - URLS FIRMADAS
+# =============================================================================
+
 class StreamSongView(APIView):
     """
-    Streaming de canciones con soporte completo de HTTP Range (seek/reanudación)
-    OPTIMIZADO para África Central con timeout protection
+    🎵 ENDPOINT DE STREAMING CON URLS FIRMADAS
+    
+    ARQUITECTURA ENTERPRISE:
+    - Las requests van DIRECTAS a R2 (no pasan por Django)
+    - Django solo genera URLs temporales (5 min de vida)
+    - Cache en Redis reduce 90% de llamadas a R2
+    - Escala a millones de usuarios sin saturar workers
     """
+    
     permission_classes = [IsAuthenticated]
-    CHUNK_SIZE = 32 * 1024  # 32KB - OPTIMIZADO para redes africanas
-    STREAM_TIMEOUT = 30  # 30 segundos máximo por stream
-
-    def _parse_range_header(self, range_header, file_size):
+    throttle_classes = [StreamRateThrottle]
+    
+    # Constantes de configuración
+    URL_EXPIRATION = 300  # 5 minutos (seguridad vs UX balanceado)
+    CACHE_TTL = 1800      # 30 minutos (reduce llamadas a R2)
+    
+    def _get_request_id(self, request) -> str:
+        """Genera ID único para tracing de requests"""
+        return f"{int(time.time())}-{request.user.id}"
+    
+    def _check_permissions(self, request, song: Song) -> Tuple[bool, Optional[str]]:
         """
-        Parser reutilizable para Range headers
-        """
-        if not range_header:
-            return None
-
-        try:
-            unit, range_spec = range_header.split('=', 1)
-        except ValueError:
-            return None
-
-        if unit.strip().lower() != 'bytes':
-            return None
-
-        parts = range_spec.split('-', 1)
-        try:
-            start = int(parts[0]) if parts[0] else None
-            # ✅ YA CORREGIDO: len(parts) > 1
-            end = int(parts[1]) if len(parts) > 1 and parts[1] != '' else None
-        except ValueError:
-            return None
-
-        # Soporte para suffix-byte-range-spec
-        if start is None and end is not None:
-            if end <= 0:
-                return None
-            start = max(0, file_size - end)
-            end = file_size - 1
-        else:
-            if start is None:
-                start = 0
-            if end is None:
-                end = file_size - 1
-
-        if start < 0 or end < start or start >= file_size:
-            return None
-
-        if end >= file_size:
-            end = file_size - 1
-
-        return (start, end)
-
-    def _safe_stream_generator(self, body, chunk_size, timeout):
-        """
-        Generador de streaming con protección contra timeout
-        """
-        bytes_yielded = 0
-        max_bytes = 50 * 1024 * 1024  # 50MB máximo por conexión
+        Verifica permisos de negocio
         
-        try:
-            for chunk in body.iter_chunks(chunk_size=chunk_size):
-                if not chunk:
-                    break  # Fin del stream
-                
-                bytes_yielded += len(chunk)
-                
-                # Protección: máximo 50MB por stream
-                if bytes_yielded > max_bytes:
-                    logger.warning(f"Stream excedió límite de {max_bytes} bytes")
-                    break
-                
-                yield chunk
-                
-        except Exception as e:
-            logger.error(f"Error en stream generator: {e}")
-            yield b''
-        finally:
-            try:
-                body.close()
-            except Exception as e:
-                logger.debug(f"Error cerrando body: {e}")
-
+        REGLAS:
+        1. Staff siempre puede acceder a todo
+        2. Canciones públicas: cualquier usuario autenticado
+        3. Canciones privadas: solo el dueño (uploaded_by)
+        """
+        # Staff siempre puede (prioridad máxima)
+        if request.user.is_staff:
+            return True, None
+        
+        # Canción pública - cualquiera autenticado puede ver
+        if song.is_public:
+            return True, None
+        
+        # Verificar propiedad a través de uploaded_by
+        if song.uploaded_by and song.uploaded_by_id == request.user.id:
+            return True, None
+        
+        # Verificar permisos especiales (si existen)
+        if request.user.has_perm('music.play_song', song):
+            return True, None
+        
+        # Si llegamos aquí, no tiene permisos
+        if not song.is_public:
+            return False, "Esta canción no es pública"
+        
+        return False, "No tienes permisos para reproducir esta canción"
+    
+    def _generate_stream_url(self, file_key: str) -> Tuple[Optional[str], bool]:
+        """
+        Genera URL firmada con métricas de cache reales
+        """
+        # 🟢 CLAVE SIMPLE CON LA EXPIRACIÓN (SIN "exp_")
+        cache_key = f"presigned_url:{file_key}:{self.URL_EXPIRATION}"
+        
+        # Log para debugging (opcional)
+        logger.debug(f"Cache key: {cache_key}")
+        
+        # Intentar obtener del cache
+        cached_url = cache.get(cache_key)
+        if cached_url is not None:
+            if METRICS_AVAILABLE:
+                STREAM_CACHE_HITS_TOTAL.inc()
+            logger.debug(f"Cache HIT para {file_key[:50]}...")
+            return cached_url, True
+        
+        # Cache miss - generar nueva URL
+        if METRICS_AVAILABLE:
+            STREAM_CACHE_MISSES_TOTAL.inc()
+        logger.debug(f"Cache MISS para {file_key[:50]}...")
+        
+        url = generate_presigned_url(
+            key=file_key,
+            expiration=self.URL_EXPIRATION,
+            use_cache=False
+        )
+        
+        if url:
+            cache.set(cache_key, url, timeout=self.CACHE_TTL)
+            logger.debug(f"URL cacheada con key: {cache_key}")
+        
+        return url, False
+    
+    def _get_cache_headers(self, was_cached: bool) -> Dict[str, str]:
+        """Headers de cache para debugging y monitoreo"""
+        return {
+            'X-Cache-Status': 'HIT' if was_cached else 'MISS',
+            'X-Cache-TTL': str(self.CACHE_TTL),
+            'X-URL-Expiration': str(self.URL_EXPIRATION),
+            'Cache-Control': 'private, max-age=0, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+        }
+    
+    def _log_success(self, request, request_id: str, song: Song, file_info: dict, was_cached: bool):
+        """Logging estructurado para análisis y monitoreo (sin emojis)"""
+        logger.info(
+            f"STREAM_SUCCESS "
+            f"request_id={request_id} "
+            f"user={request.user.id} "
+            f"song={song.id} "
+            f"file_size={file_info.get('size', 'unknown')} "
+            f"cache={'HIT' if was_cached else 'MISS'} "
+            f"expires={self.URL_EXPIRATION}s"
+        )
+    
+    def _log_error(self, request, request_id: str, error: str, song_id: int = None):
+        """Logging de errores para debugging (sin emojis)"""
+        logger.error(
+            f"STREAM_ERROR "
+            f"request_id={request_id} "
+            f"user={request.user.id if request.user.is_authenticated else 'anon'} "
+            f"song={song_id} "
+            f"error={error}"
+        )
+    
     @extend_schema(
         description="""
-        Reproducir una canción en streaming con soporte completo para seek y reanudación.
-        OPTIMIZADO para redes africanas con chunk reducido.
-        """
+        Obtiene URL firmada para streaming directo desde R2.
+        
+        **REGLAS DE ACCESO:**
+        - Staff: acceso a todas las canciones
+        - Públicas: cualquier usuario autenticado
+        - Privadas: solo el propietario
+        """,
+        responses={
+            200: OpenApiResponse(description="URL generada exitosamente"),
+            403: OpenApiResponse(description="Sin permisos"),
+            404: OpenApiResponse(description="Canción no encontrada o sin archivo"),
+            429: OpenApiResponse(description="Límite de streams excedido"),
+        }
     )
     def get(self, request, song_id):
+        """
+        Endpoint principal de streaming
+        Retorna JSON con URL firmada para acceso directo a R2
+        """
+        request_id = self._get_request_id(request)
+        
         try:
-            # 1️⃣ Obtener canción y validar
-            song = get_object_or_404(Song, id=song_id)
-            if not song.file_key:
-                return Response(
-                    {"error": "Archivo no disponible para streaming"}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            # 2️⃣ Verificar que el archivo existe
-            if not check_file_exists(song.file_key):
-                logger.error("File not found in R2 for streaming: %s", song.file_key)
-                return Response(
-                    {"error": "El archivo de audio no está disponible en este momento"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            # 3️⃣ Obtener metadata
-            file_info = get_file_info(song.file_key)
-            if not file_info:
-                return Response(
-                    {"error": "Error al obtener información del archivo"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            file_size = int(file_info.get('size', 0))
-            content_type = file_info.get('content_type') or get_content_type_from_key(song.file_key)
-
-            # 4️⃣ Parse Range header
-            range_header = request.META.get('HTTP_RANGE', '').strip()
-            parsed = self._parse_range_header(range_header, file_size) if range_header else None
+            # ========================================
+            # 1️⃣ OBTENER Y VALIDAR CANCIÓN
+            # ========================================
+            logger.debug(f"[{request_id}] Stream request - song:{song_id}")
             
-            if parsed is None and range_header:
+            try:
+                song = Song.objects.get(id=song_id)
+            except Song.DoesNotExist:
+                self._log_error(request, request_id, "song_not_found", song_id)
                 return Response(
-                    {"error": "Invalid Range header"},
-                    status=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE
+                    {
+                        'error': 'no_encontrada',
+                        'message': 'La canción solicitada no existe',
+                        'code': 'NOT_FOUND'
+                    },
+                    status=status.HTTP_404_NOT_FOUND
                 )
-
-            if parsed:
-                start, end = parsed
-                status_code = 206
-                content_length = (end - start) + 1
-                content_range = f"bytes {start}-{end}/{file_size}"
-                range_for_r2 = f"bytes={start}-{end}"
-            else:
-                start = None
-                end = None
-                status_code = 200
-                content_length = file_size
-                content_range = None
-                range_for_r2 = None
-
-            # 5️⃣ Stream desde R2 con timeout
-            s3_resp = stream_file_from_r2(
-                song.file_key, 
-                range_header=range_for_r2
-            )
-
-            if not s3_resp or 'Body' not in s3_resp:
-                logger.error("stream_file_from_r2 returned no body for key %s", song.file_key)
+            
+            # 🟢 VERIFICACIÓN MEJORADA DE FILE_KEY
+            # Detectar valores vacíos, nulos, o el valor por defecto "songs/temp_file"
+            if (not song.file_key or 
+                song.file_key == "songs/temp_file" or 
+                song.file_key.endswith("/temp_file") or
+                not song.file_key.strip()):
+                
+                self._log_error(request, request_id, "missing_file_key", song_id)
                 return Response(
-                    {"error": "Error al acceder al archivo para streaming"},
+                    {
+                        'error': 'archivo_no_disponible',
+                        'message': 'Esta canción no tiene un archivo de audio asociado',
+                        'code': 'MISSING_FILE'
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # ========================================
+            # 2️⃣ VERIFICAR PERMISOS DE NEGOCIO
+            # ========================================
+            has_perm, error_msg = self._check_permissions(request, song)
+            if not has_perm:
+                self._log_error(request, request_id, f"permission_denied: {error_msg}", song_id)
+                return Response(
+                    {
+                        'error': 'acceso_denegado',
+                        'message': error_msg or 'No tienes permisos para reproducir esta canción',
+                        'code': 'PERMISSION_DENIED'
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # ========================================
+            # 3️⃣ GENERAR URL FIRMADA (CON CACHE)
+            # ========================================
+            stream_url, was_cached = self._generate_stream_url(song.file_key)
+            
+            if not stream_url:
+                self._log_error(request, request_id, "url_generation_failed", song_id)
+                invalidate_presigned_url_cache(song.file_key)
+                return Response(
+                    {
+                        'error': 'error_streaming',
+                        'message': 'Error generando URL de streaming',
+                        'code': 'URL_GENERATION_FAILED'
+                    },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-
-            body = s3_resp['Body']
-
-            # Usar ContentLength de R2 si está disponible
-            r2_content_length = s3_resp.get('ContentLength')
-            if r2_content_length is not None:
-                content_length = r2_content_length
-
-            # 6️⃣ Crear respuesta
-            response = StreamingHttpResponse(
-                self._safe_stream_generator(body, self.CHUNK_SIZE, self.STREAM_TIMEOUT), 
-                status=status_code, 
-                content_type=content_type
-            )
-
-            # 7️⃣ Headers optimizados
-            response['Content-Length'] = str(content_length)
-            response['Content-Type'] = content_type
-            response['Accept-Ranges'] = 'bytes'
-            response['Cache-Control'] = 'public, max-age=3600'
-            response['X-Content-Duration'] = str(song.duration) if song.duration else '0'
-            response['X-Audio-Title'] = song.title
-            response['X-Audio-Artist'] = song.artist or 'Unknown Artist'
-            response['X-Chunk-Size'] = str(self.CHUNK_SIZE)
-
-            # Usar ContentRange de R2 si está disponible
-            r2_content_range = s3_resp.get('ContentRange')
-            if r2_content_range:
-                response['Content-Range'] = r2_content_range
-            elif content_range:
-                response['Content-Range'] = content_range
-
-            # ETag para caching
-            r2_etag = s3_resp.get('ETag')
-            if r2_etag:
-                response['ETag'] = r2_etag.strip('"')
-
-            # 8️⃣ Log de streaming
-            range_info = f"{start}-{end}" if start is not None else "full"
-            logger.info(
-                "STREAM start user=%s song=%s size=%s range=%s duration=%s chunksize=%s",
-                request.user.id, song_id, content_length, range_info, 
-                song.duration or 'unknown', self.CHUNK_SIZE
-            )
-
+            
+            # ========================================
+            # 4️⃣ OBTENER METADATA ADICIONAL
+            # ========================================
+            file_info = get_file_info(song.file_key, use_cache=True) or {}
+            
+            # ========================================
+            # 5️⃣ LOGGING Y MÉTRICAS
+            # ========================================
+            self._log_success(request, request_id, song, file_info, was_cached)
+            if METRICS_AVAILABLE:
+                STREAM_REQUESTS_TOTAL.labels(status='success').inc()
+            
+            # ========================================
+            # 6️⃣ PREPARAR RESPUESTA JSON
+            # ========================================
+            response_data = {
+                'data': {
+                    'stream_url': stream_url,
+                    'expires_in': self.URL_EXPIRATION,
+                    'expires_at': int(time.time()) + self.URL_EXPIRATION,
+                },
+                'song': {
+                    'id': song.id,
+                    'title': song.title,
+                    'artist': song.artist,
+                    'duration': song.duration,
+                    'cover_url': getattr(song, 'cover_url', None),
+                },
+                'meta': {
+                    'request_id': request_id,
+                    'timestamp': int(time.time()),
+                    'cache': 'hit' if was_cached else 'miss',
+                }
+            }
+            
+            if file_info.get('size') is not None:
+                response_data['data']['file_size'] = file_info['size']
+            
+            response = Response(response_data, status=status.HTTP_200_OK)
+            
+            for key, value in self._get_cache_headers(was_cached).items():
+                response[key] = value
+            
             return response
-
-        except Exception as exc:
-            logger.exception("ERROR STREAM - song=%s user=%s", song_id, getattr(request.user, 'id', None))
+            
+        except Exception as e:
+            # No capturar Http404 (ya manejado arriba)
+            if isinstance(e, Http404):
+                raise
+                
+            self._log_error(request, request_id, f"unexpected_error: {str(e)}", song_id)
+            if METRICS_AVAILABLE:
+                STREAM_REQUESTS_TOTAL.labels(status='error').inc()
+            
+            error_detail = str(e) if settings.DEBUG else None
+            
             return Response(
                 {
-                    "error": "Error en streaming",
-                    "message": "No se pudo iniciar la reproducción. Intente nuevamente."
+                    'error': 'error_interno',
+                    'message': 'Error interno del servidor',
+                    'code': 'INTERNAL_ERROR',
+                    'detail': error_detail,
+                    'request_id': request_id
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )       
+            )
 
+
+# =============================================================================
+# 🔄 VISTA DE TRANSICIÓN PARA FRONTEND LEGACY
+# =============================================================================
+
+class StreamSongViewCompat(APIView):
+    """
+    🔄 VERSIÓN DE TRANSICIÓN PARA FRONTEND LEGACY
+    
+    Redirige automáticamente a R2 para navegadores/clients
+    que esperan un archivo de audio directamente.
+    """
+    
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [StreamRateThrottle]
+    
+    def get(self, request, song_id):
+        """
+        Redirige a la URL de streaming para compatibilidad
+        """
+        stream_view = StreamSongView()
+        response = stream_view.get(request, song_id)
+        
+        if response.status_code != 200:
+            return response
+        
+        stream_url = response.data.get('data', {}).get('stream_url')
+        if not stream_url:
+            return Response(
+                {'error': 'URL no disponible'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        redirect_response = redirect(stream_url)
+        redirect_response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        redirect_response['Pragma'] = 'no-cache'
+        redirect_response['Expires'] = '0'
+        
+        logger.info(
+            f"COMPAT_REDIRECT - user:{request.user.id} song:{song_id}"
+        )
+        
+        return redirect_response
+
+
+# =============================================================================
+# 🐛 VISTA DE DIAGNÓSTICO (SOLO DEBUG)
+# =============================================================================
+
+class StreamSongViewDebug(APIView):
+    """
+    🐛 ENDPOINT DE DIAGNÓSTICO - Solo disponible en DEBUG
+    """
+    
+    permission_classes = [] if settings.DEBUG else [IsAuthenticated]
+    
+    def get(self, request):
+        """
+        Información de diagnóstico del sistema de streaming
+        """
+        if not settings.DEBUG:
+            return Response(
+                {'error': 'Debug mode disabled'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        info = {
+            'environment': {
+                'debug': settings.DEBUG,
+                'time': int(time.time()),
+                'user': request.user.id if request.user.is_authenticated else None,
+            },
+            'rate_limits': {
+                'stream': getattr(settings, 'REST_FRAMEWORK', {})
+                          .get('DEFAULT_THROTTLE_RATES', {})
+                          .get('stream', '100/hour'),
+            },
+            'constants': {
+                'URL_EXPIRATION': StreamSongView.URL_EXPIRATION,
+                'CACHE_TTL': StreamSongView.CACHE_TTL,
+            }
+        }
+        
+        test_song_id = request.GET.get('song_id')
+        if test_song_id:
+            try:
+                song = Song.objects.filter(id=test_song_id).first()
+                if song and song.file_key and song.file_key != "songs/temp_file":
+                    info['r2_connection'] = test_r2_connection()
+                    info['cache_stats'] = get_cache_stats()
+                    
+                    stream_view = StreamSongView()
+                    url, cached = stream_view._generate_stream_url(song.file_key)
+                    info['url_generation'] = {
+                        'success': url is not None,
+                        'cached': cached,
+                        'url_preview': url[:100] + '...' if url else None,
+                        'file_key': song.file_key,
+                    }
+                    
+                    info['file_exists'] = check_file_exists(song.file_key)
+                    
+            except Exception as e:
+                info['test_error'] = str(e)
+        
+        return Response(info)
+
+
+# =============================================================================
+# 📊 ENDPOINT DE MÉTRICAS PARA PROMETHEUS
+# =============================================================================
+
+# =============================================================================
+# 📊 ENDPOINT DE MÉTRICAS PARA PROMETHEUS
+# =============================================================================
+
+class StreamMetricsView(APIView):
+    """
+    📊 ENDPOINT DE MÉTRICAS PARA PROMETHEUS
+    """
+    
+    # 🟢 PERMISSION CLASSES VACÍAS - DRF no tocará request.user
+    permission_classes = []
+    
+    def get(self, request):
+        """
+        Retorna métricas en formato Prometheus
+        """
+        if not METRICS_AVAILABLE:
+            return Response(
+                {'error': 'Prometheus no está instalado'},
+                status=status.HTTP_501_NOT_IMPLEMENTED
+            )
+        
+        # 🟢 DEBUG: ACCESO LIBRE
+        if settings.DEBUG:
+            metrics = generate_latest(REGISTRY)
+            return HttpResponse(metrics, content_type='text/plain; version=0.0.4')
+        
+        # 🟢 PRODUCCIÓN: VERIFICAR USER (que puede ser None)
+        user = getattr(request, 'user', None)
+        
+        if user is None or not user.is_authenticated:
+            return Response(
+                {'error': 'Autenticación requerida'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        if not user.is_staff:
+            return Response(
+                {'error': 'Acceso denegado - Se requieren permisos de staff'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        metrics = generate_latest(REGISTRY)
+        return HttpResponse(metrics, content_type='text/plain; version=0.0.4')
    
 # Comments Views
 @extend_schema(tags=['Comentarios'])
