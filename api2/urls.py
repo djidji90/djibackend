@@ -7,17 +7,19 @@ from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-
+ # Importar views tradicionales
 # =========================================================================
 # 📚 IMPORTS PARA VIEWS EXISTENTES (primera sección)
 # =========================================================================
 from . import views  # Views tradicionales ya existentes
+from api2.views import download_song_view, get_download_url_view
 
 # =========================================================================
 # 🆕 IMPORTS PARA UPLOAD DIRECTO (segunda sección)
 # =========================================================================
 # Importaciones con manejo de errores para evitar problemas
 from django.core.cache import cache
+
 from django.db.models import Count, Sum, Avg, Q
 from django.db.models.functions import TruncDate
 from django.contrib.auth import get_user_model
@@ -280,6 +282,7 @@ try:
     UserUploadQuotaView = RealUserUploadQuotaView
     UploadCancellationView = RealUploadCancellationView
     
+    
     logger.info(" Vistas de upload_direct importadas correctamente desde views.py")
     
     # También intentar importar las views de health
@@ -313,6 +316,9 @@ traditional_urlpatterns = [
     # 🔄 INTERACCIONES CON CANCIONES
     path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
     path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
+    path('songs/<int:song_id>/download-url/', 
+         get_download_url_view, 
+         name='song-download-url'),
     path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
     path('songs/<int:song_id>/stream/legacy/', views.StreamSongViewCompat.as_view(), name='song-stream-legacy'),
     path('stream/debug/', views.StreamSongViewDebug.as_view(), name='stream-debug'),
