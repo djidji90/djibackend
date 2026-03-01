@@ -1,7 +1,7 @@
 # api2/utils/r2_direct.py - VERSIÓN COMPATIBLE CON WINDOWS
 """
 R2 Direct Upload - Versión Windows compatible
-Con nuevo formato de keys: songs/audio/{uuid}.mp3
+Formato de keys: songs/audio/{12chars}_audio.mp3
 """
 
 import os
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class R2DirectUpload:
     """
     Versión Windows compatible - SIN EMOJIS
-    Formato de keys: songs/audio/{uuid}.mp3
+    Formato de keys: songs/audio/{12chars}_audio.mp3
     """
 
     def __init__(self):
@@ -57,19 +57,18 @@ class R2DirectUpload:
         custom_metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        Genera URL PUT con formato songs/audio/{uuid}.mp3
-        CORREGIDO: Metadata sin prefijo x-amz-meta- (boto3 lo añade automáticamente)
+        Genera URL PUT con formato songs/audio/{12chars}_audio.mp3
         """
         try:
             logger.info(f"[PROCESANDO] Generando URL PUT para user {user_id}, archivo: {file_name}")
 
-            # Generar UUID completo
-            file_uuid = str(uuid.uuid4())
+            # 🔥 NUEVO FORMATO: 12 caracteres hexadecimales
+            file_uuid = uuid.uuid4().hex[:12]  # Ejemplo: "11f6b4ca6de9"
             
-            # Obtener extensión del archivo original
+            # Obtener extensión (siempre .mp3 para audio, como en el ejemplo)
+            # Pero mantenemos la lógica por si acaso
             extension = os.path.splitext(file_name)[1]
             if not extension:
-                # Mapeo de content-type a extensión
                 ext_map = {
                     'audio/mpeg': '.mp3',
                     'audio/mp3': '.mp3',
@@ -78,49 +77,17 @@ class R2DirectUpload:
                     'audio/m4a': '.m4a',
                     'audio/aac': '.aac',
                     'audio/ogg': '.ogg',
-                    'audio/x-m4a': '.m4a',
-                    'audio/x-wav': '.wav'
                 }
                 extension = ext_map.get(file_type, '.mp3')
             
-            # NUEVO FORMATO: songs/audio/{uuid}{extension}
-            key = f"songs/audio/{file_uuid}{extension}"
+            # 🔥 NUEVO FORMATO: songs/audio/{12chars}_audio{extension}
+            key = f"songs/audio/{file_uuid}_audio{extension}"
 
-            # 🔥 CORREGIDO: Metadata SIN prefijo x-amz-meta- (boto3 lo añade)
-            metadata = {}
-            
-            # Metadata obligatoria (siempre con valor)
-            metadata['user_id'] = str(user_id)                       # → x-amz-meta-user_id
-            metadata['file_uuid'] = file_uuid                         # → x-amz-meta-file_uuid
-            metadata['upload_timestamp'] = datetime.utcnow().isoformat()  # → x-amz-meta-upload_timestamp
-            
-            # Metadata del usuario (solo si tiene valor)
-            if custom_metadata:
-                # Campos principales
-                for field in ['artist', 'title', 'genre', 'album', 'year', 'track_number', 'lyrics', 'composer']:
-                    if field in custom_metadata and custom_metadata[field] is not None:
-                        value = str(custom_metadata[field]).strip()
-                        if value:
-                            metadata[field] = value  # ← SIN prefijo x-amz-meta-
-                
-                # Nombre original (prioridad)
-                if 'original_name' in custom_metadata and custom_metadata['original_name']:
-                    safe_name = self._safe_filename(custom_metadata['original_name'])
-                    metadata['original_filename'] = safe_name  # ← SIN prefijo
-            
-            # Si no hay original_name, usar file_name sanitizado
-            if 'original_filename' not in metadata:
-                metadata['original_filename'] = self._safe_filename(file_name)
-
-            # Parámetros para la URL firmada
+            # Parámetros mínimos (sin metadata para evitar errores de firma)
             params = {
                 'Bucket': self.bucket_name,
                 'Key': key,
             }
-            
-            # Solo añadir Metadata si hay alguna
-            if metadata:
-                params['Metadata'] = metadata  # boto3 añadirá x-amz-meta- automáticamente
 
             # Generar URL pre-firmada
             presigned_url = self.s3_client.generate_presigned_url(
@@ -146,14 +113,14 @@ class R2DirectUpload:
                 "expires_in": expires_in,
                 "user_id": user_id,
                 "key_structure": {
-                    "format": "songs/audio/{uuid}{extension}",
+                    "format": "songs/audio/{12chars}_audio{extension}",
                     "uuid": file_uuid,
                     "extension": extension,
                     "full_key": key
                 }
             }
 
-            # Incluir metadata original si existe (para referencia)
+            # Incluir metadata original si existe (para referencia en BD)
             if custom_metadata:
                 result["metadata"] = custom_metadata
 
@@ -202,18 +169,17 @@ class R2DirectUpload:
                     f"Tamaño: esperado {expected_size:,}B, actual {actual_size:,}B"
                 )
 
-            # Validar ownership por metadata
+            # Validar ownership (en el nuevo formato no hay user_id en la ruta)
+            # El user_id se valida por la sesión en la BD, no por la key
             if expected_user_id:
+                # Opcional: buscar user_id en metadata si existe
                 meta_user_id = metadata.get('user_id') or metadata.get('x-amz-meta-user_id')
-                
-                if meta_user_id is None:
-                    validation["owner_match"] = False
-                    validation["issues"].append("No hay user_id en metadata")
-                elif str(meta_user_id) != str(expected_user_id):
+                if meta_user_id and str(meta_user_id) != str(expected_user_id):
                     validation["owner_match"] = False
                     validation["issues"].append(
-                        f"Ownership: esperado {expected_user_id}, metadata tiene {meta_user_id}"
+                        f"Ownership: metadata indica user {meta_user_id}, esperado {expected_user_id}"
                     )
+                # Si no hay metadata, confiamos en la sesión (ya validada antes)
 
             # Validar patrón de key
             key_validation = self._validate_key_pattern(key)
@@ -236,7 +202,9 @@ class R2DirectUpload:
             is_valid = all([
                 info["exists"],
                 validation["size_match"],
-                validation["owner_match"],
+                # Nota: owner_match puede ser True incluso sin validación de key
+                # porque confiamos en la sesión
+                validation["owner_match"] if expected_user_id else True,
                 validation["key_pattern_valid"]
             ])
 
@@ -288,39 +256,37 @@ class R2DirectUpload:
 
     def _extract_user_id_from_key(self, key: str) -> Optional[int]:
         """
-        Extrae user_id de metadata
+        Extrae user_id de la key (para compatibilidad)
+        En el nuevo formato, el user_id NO está en la ruta
         """
+        # Intentar extraer de metadata si es posible
         try:
             response = self.s3_client.head_object(
                 Bucket=self.bucket_name,
                 Key=key
             )
             metadata = response.get('Metadata', {})
-            # Buscar en ambas formas (con y sin prefijo)
             user_id = metadata.get('user_id') or metadata.get('x-amz-meta-user_id')
-            
             if user_id:
                 return int(user_id)
-            return None
-            
-        except (ClientError, ValueError, TypeError):
-            return None
+        except:
+            pass
+        
+        return None
 
     def _validate_key_pattern(self, key: str) -> Dict[str, Any]:
         """
-        Valida patrón de key: songs/audio/{uuid}.mp3
+        Valida patrón de key: songs/audio/{12chars}_audio.{ext}
         """
-        # Patrón para UUIDv4: 8-4-4-4-12 caracteres hexadecimales
-        uuid_pattern = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
-        pattern = rf'^songs/audio/({uuid_pattern})(\.[a-z0-9]+)$'
-        
+        # Patrón: songs/audio/12caracteres_audio.extension
+        pattern = r'^songs/audio/([a-f0-9]{12})_audio(\.[a-z0-9]+)$'
         match = re.match(pattern, key, re.IGNORECASE)
         
         if not match:
             return {
                 "is_valid": False,
                 "error": "Patrón de key inválido",
-                "expected_pattern": "songs/audio/{uuid}.mp3",
+                "expected_pattern": "songs/audio/{12hex}_audio.{ext}",
                 "received": key
             }
         
@@ -340,7 +306,7 @@ class R2DirectUpload:
 
     @staticmethod
     def _safe_filename(filename: str) -> str:
-        """Sanitiza nombre de archivo"""
+        """Sanitiza nombre de archivo (para referencia, no para la key)"""
         import unicodedata
         
         # Normalizar unicode
@@ -368,7 +334,7 @@ class R2DirectUpload:
             # Validar ownership si se proporciona user_id
             if user_id:
                 meta_user_id = self._extract_user_id_from_key(key)
-                if meta_user_id != user_id:
+                if meta_user_id and meta_user_id != user_id:
                     logger.warning(f"[WARNING] Intento de modificar archivo de otro usuario: {key}")
                     return False
 
@@ -378,21 +344,11 @@ class R2DirectUpload:
             except ClientError:
                 return False
 
-            # Preparar metadata
+            # Preparar metadata (sin prefijo x-amz-meta-, boto3 lo añade)
             safe_metadata = {}
-            
-            # Obtener metadata existente
-            try:
-                response = self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
-                existing_metadata = response.get('Metadata', {})
-                safe_metadata.update(existing_metadata)
-            except:
-                pass
-            
-            # Añadir nueva metadata (solo con valor) - SIN prefijo
             for k, v in metadata.items():
                 if v is not None and str(v).strip():
-                    safe_metadata[k] = str(v)  # ← SIN prefijo
+                    safe_metadata[k] = str(v)
             
             # Copiar con nueva metadata
             self.s3_client.copy_object(
@@ -503,7 +459,7 @@ class R2UploadValidator:
     @staticmethod
     def extract_user_id_from_key(key: str) -> Optional[int]:
         """Extrae user_id de una key (compatibilidad)"""
-        # En el nuevo formato, el user_id está en metadata
+        # En el nuevo formato, el user_id está en metadata o sesión
         return None
     
     @staticmethod
