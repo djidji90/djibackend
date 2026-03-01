@@ -58,7 +58,7 @@ class R2DirectUpload:
     ) -> Dict[str, Any]:
         """
         Genera URL PUT con formato songs/audio/{uuid}.mp3
-        CORREGIDO: Solo incluye metadata con valor para evitar error SignatureDoesNotMatch
+        CORREGIDO: Metadata sin prefijo x-amz-meta- (boto3 lo añade automáticamente)
         """
         try:
             logger.info(f"[PROCESANDO] Generando URL PUT para user {user_id}, archivo: {file_name}")
@@ -86,13 +86,13 @@ class R2DirectUpload:
             # NUEVO FORMATO: songs/audio/{uuid}{extension}
             key = f"songs/audio/{file_uuid}{extension}"
 
-            # 🔥 SOLUCIÓN: Solo incluir metadata que TIENE VALOR
+            # 🔥 CORREGIDO: Metadata SIN prefijo x-amz-meta- (boto3 lo añade)
             metadata = {}
             
             # Metadata obligatoria (siempre con valor)
-            metadata['x-amz-meta-user_id'] = str(user_id)
-            metadata['x-amz-meta-file_uuid'] = file_uuid
-            metadata['x-amz-meta-upload_timestamp'] = datetime.utcnow().isoformat()
+            metadata['user_id'] = str(user_id)                       # → x-amz-meta-user_id
+            metadata['file_uuid'] = file_uuid                         # → x-amz-meta-file_uuid
+            metadata['upload_timestamp'] = datetime.utcnow().isoformat()  # → x-amz-meta-upload_timestamp
             
             # Metadata del usuario (solo si tiene valor)
             if custom_metadata:
@@ -101,16 +101,16 @@ class R2DirectUpload:
                     if field in custom_metadata and custom_metadata[field] is not None:
                         value = str(custom_metadata[field]).strip()
                         if value:
-                            metadata[f'x-amz-meta-{field}'] = value
+                            metadata[field] = value  # ← SIN prefijo x-amz-meta-
                 
                 # Nombre original (prioridad)
                 if 'original_name' in custom_metadata and custom_metadata['original_name']:
                     safe_name = self._safe_filename(custom_metadata['original_name'])
-                    metadata['x-amz-meta-original_filename'] = safe_name
+                    metadata['original_filename'] = safe_name  # ← SIN prefijo
             
             # Si no hay original_name, usar file_name sanitizado
-            if 'x-amz-meta-original_filename' not in metadata:
-                metadata['x-amz-meta-original_filename'] = self._safe_filename(file_name)
+            if 'original_filename' not in metadata:
+                metadata['original_filename'] = self._safe_filename(file_name)
 
             # Parámetros para la URL firmada
             params = {
@@ -118,9 +118,9 @@ class R2DirectUpload:
                 'Key': key,
             }
             
-            # Solo añadir Metadata si hay alguna (si está vacío, no incluir el campo)
+            # Solo añadir Metadata si hay alguna
             if metadata:
-                params['Metadata'] = metadata
+                params['Metadata'] = metadata  # boto3 añadirá x-amz-meta- automáticamente
 
             # Generar URL pre-firmada
             presigned_url = self.s3_client.generate_presigned_url(
@@ -204,7 +204,7 @@ class R2DirectUpload:
 
             # Validar ownership por metadata
             if expected_user_id:
-                meta_user_id = metadata.get('x-amz-meta-user_id')
+                meta_user_id = metadata.get('user_id') or metadata.get('x-amz-meta-user_id')
                 
                 if meta_user_id is None:
                     validation["owner_match"] = False
@@ -288,7 +288,7 @@ class R2DirectUpload:
 
     def _extract_user_id_from_key(self, key: str) -> Optional[int]:
         """
-        Extrae user_id de metadata (ya no de la key)
+        Extrae user_id de metadata
         """
         try:
             response = self.s3_client.head_object(
@@ -296,7 +296,8 @@ class R2DirectUpload:
                 Key=key
             )
             metadata = response.get('Metadata', {})
-            user_id = metadata.get('x-amz-meta-user_id')
+            # Buscar en ambas formas (con y sin prefijo)
+            user_id = metadata.get('user_id') or metadata.get('x-amz-meta-user_id')
             
             if user_id:
                 return int(user_id)
@@ -388,10 +389,10 @@ class R2DirectUpload:
             except:
                 pass
             
-            # Añadir nueva metadata (solo con valor)
+            # Añadir nueva metadata (solo con valor) - SIN prefijo
             for k, v in metadata.items():
                 if v is not None and str(v).strip():
-                    safe_metadata[f'x-amz-meta-{k}'] = str(v)
+                    safe_metadata[k] = str(v)  # ← SIN prefijo
             
             # Copiar con nueva metadata
             self.s3_client.copy_object(
