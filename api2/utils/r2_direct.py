@@ -58,12 +58,13 @@ class R2DirectUpload:
     ) -> Dict[str, Any]:
         """
         Genera URL PUT con formato songs/audio/{uuid}.mp3
+        CORREGIDO: Solo incluye metadata con valor para evitar error SignatureDoesNotMatch
         """
         try:
             logger.info(f"[PROCESANDO] Generando URL PUT para user {user_id}, archivo: {file_name}")
 
             # Generar UUID completo
-            file_uuid = str(uuid.uuid4())  # Ej: "8ef1fa79-579e-4329-b4a3-1c2d3e4f5a6b"
+            file_uuid = str(uuid.uuid4())
             
             # Obtener extensión del archivo original
             extension = os.path.splitext(file_name)[1]
@@ -85,26 +86,41 @@ class R2DirectUpload:
             # NUEVO FORMATO: songs/audio/{uuid}{extension}
             key = f"songs/audio/{file_uuid}{extension}"
 
-            # Preparar metadata del usuario para S3
+            # 🔥 SOLUCIÓN: Solo incluir metadata que TIENE VALOR
             metadata = {}
-            if custom_metadata:
-                for k, v in custom_metadata.items():
-                    if v is not None:
-                        # Prefijo 'x-amz-meta-' y limitar a strings
-                        metadata[f'x-amz-meta-{k}'] = str(v)
             
-            # Añadir metadata útil
+            # Metadata obligatoria (siempre con valor)
             metadata['x-amz-meta-user_id'] = str(user_id)
-            metadata['x-amz-meta-original_filename'] = self._safe_filename(file_name)
-            metadata['x-amz-meta-upload_timestamp'] = datetime.utcnow().isoformat()
             metadata['x-amz-meta-file_uuid'] = file_uuid
+            metadata['x-amz-meta-upload_timestamp'] = datetime.utcnow().isoformat()
+            
+            # Metadata del usuario (solo si tiene valor)
+            if custom_metadata:
+                # Campos principales
+                for field in ['artist', 'title', 'genre', 'album', 'year', 'track_number', 'lyrics', 'composer']:
+                    if field in custom_metadata and custom_metadata[field] is not None:
+                        value = str(custom_metadata[field]).strip()
+                        if value:
+                            metadata[f'x-amz-meta-{field}'] = value
+                
+                # Nombre original (prioridad)
+                if 'original_name' in custom_metadata and custom_metadata['original_name']:
+                    safe_name = self._safe_filename(custom_metadata['original_name'])
+                    metadata['x-amz-meta-original_filename'] = safe_name
+            
+            # Si no hay original_name, usar file_name sanitizado
+            if 'x-amz-meta-original_filename' not in metadata:
+                metadata['x-amz-meta-original_filename'] = self._safe_filename(file_name)
 
             # Parámetros para la URL firmada
             params = {
                 'Bucket': self.bucket_name,
                 'Key': key,
-                'Metadata': metadata
             }
+            
+            # Solo añadir Metadata si hay alguna (si está vacío, no incluir el campo)
+            if metadata:
+                params['Metadata'] = metadata
 
             # Generar URL pre-firmada
             presigned_url = self.s3_client.generate_presigned_url(
@@ -137,7 +153,7 @@ class R2DirectUpload:
                 }
             }
 
-            # Incluir metadata si existe
+            # Incluir metadata original si existe (para referencia)
             if custom_metadata:
                 result["metadata"] = custom_metadata
 
@@ -273,7 +289,6 @@ class R2DirectUpload:
     def _extract_user_id_from_key(self, key: str) -> Optional[int]:
         """
         Extrae user_id de metadata (ya no de la key)
-        Este método se mantiene por compatibilidad
         """
         try:
             response = self.s3_client.head_object(
@@ -365,7 +380,7 @@ class R2DirectUpload:
             # Preparar metadata
             safe_metadata = {}
             
-            # Obtener metadata existente (opcional)
+            # Obtener metadata existente
             try:
                 response = self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
                 existing_metadata = response.get('Metadata', {})
@@ -373,9 +388,9 @@ class R2DirectUpload:
             except:
                 pass
             
-            # Añadir nueva metadata
+            # Añadir nueva metadata (solo con valor)
             for k, v in metadata.items():
-                if v is not None:
+                if v is not None and str(v).strip():
                     safe_metadata[f'x-amz-meta-{k}'] = str(v)
             
             # Copiar con nueva metadata
