@@ -23,10 +23,12 @@ logger = logging.getLogger(__name__)
 def process_direct_upload(self, upload_session_id, file_key=None, file_size=None, 
                           content_type=None, metadata=None):
     """
-    Procesa un archivo subido directamente a R2 después de confirmación
+    VERSIÓN SIMPLIFICADA - Procesa un archivo subido directamente a R2
+    SIN descarga de archivos - SOLO usa metadatos
+    Mantiene: título, artista, duración desde metadata
     """
     
-    logger.info(f"🎵 Iniciando procesamiento de upload: {upload_session_id}")
+    logger.info(f"🎵 Iniciando procesamiento SIMPLIFICADO de upload: {upload_session_id}")
     
     try:
         # 1. Obtener sesión y actualizar estado
@@ -63,134 +65,161 @@ def process_direct_upload(self, upload_session_id, file_key=None, file_size=None
         if not metadata:
             metadata = upload_session.metadata
         
-        # 2. Validar que el archivo existe en R2
+        # 2. Validar que el archivo existe en R2 (solo existencia)
         file_exists, file_metadata = r2_direct.verify_upload_complete(file_key)
         if not file_exists:
             error_msg = f"Archivo no encontrado en R2: {file_key}"
             upload_session.mark_as_failed(error_msg)
             raise ValueError(error_msg)
         
-        # 3. Validar integridad del archivo - CORREGIDO
-        is_valid, info = r2_direct.verify_upload_complete(
-            key=file_key,
-            expected_size=file_size,
-            expected_user_id=user.id  # ← Cambiado de expected_uploader_id
+        logger.info(f"✅ Archivo verificado en R2: {file_key}")
+        
+        # 3. EXTRAER METADATOS DESDE LA SESIÓN (sin descargar el archivo)
+        
+        # ===== TÍTULO =====
+        title = (
+            # Intentar desde metadata enviada por el cliente
+            metadata.get('title') or
+            metadata.get('name') or
+            metadata.get('filename') or
+            # O desde el nombre original del archivo
+            upload_session.original_file_name or
+            upload_session.file_name or
+            # Fallback genérico
+            "Canción sin título"
         )
         
-        if not is_valid:
-            # Extraer issues del diccionario info - CORREGIDO
-            validation_data = info.get('validation', {})
-            issues = validation_data.get('issues', ['Error de validación desconocido'])
-            error_msg = f"Archivo inválido: {', '.join(issues)}"
-            
-            upload_session.mark_as_failed(error_msg)
-            
-            # Liberar cuota pendiente
+        # Limpiar título: quitar extensiones y normalizar
+        if isinstance(title, str):
+            if '.' in title:
+                title = title.rsplit('.', 1)[0]  # Quitar extensión
+            title = title.replace('_', ' ').replace('-', ' ').strip()
+            title = ' '.join(title.split())  # Normalizar espacios
+        
+        if not title or title.strip() == '':
+            title = "Canción sin título"
+        
+        title = title[:255]  # Limitar longitud
+        
+        # ===== ARTISTA =====
+        artist = (
+            metadata.get('artist') or
+            metadata.get('author') or
+            metadata.get('uploader') or
+            metadata.get('composer') or
+            metadata.get('performer') or
+            # Si no hay, usar nombre de usuario
+            user.get_full_name() or
+            user.username or
+            user.email or
+            "Artista desconocido"
+        )
+        
+        if isinstance(artist, str):
+            artist = artist.strip()
+        
+        if not artist or artist.strip() == '':
+            artist = "Artista desconocido"
+        
+        artist = artist[:255]  # Limitar longitud
+        
+        # ===== GÉNERO =====
+        genre = (
+            metadata.get('genre') or
+            metadata.get('style') or
+            metadata.get('category') or
+            "Otro"
+        )
+        
+        if isinstance(genre, str):
+            genre = genre.strip()
+        
+        if not genre or genre.strip() == '':
+            genre = "Otro"
+        
+        genre = genre[:100]
+        
+        # ===== DURACIÓN =====
+        # Intentar obtener duración de metadata
+        duration_formatted = metadata.get('duration_formatted', '0:00')
+        duration_seconds = metadata.get('duration', 0)
+        
+        # Si tenemos duración en segundos, formatearla
+        if duration_seconds and duration_seconds > 0:
+            minutes = int(duration_seconds // 60)
+            seconds = int(duration_seconds % 60)
+            duration_formatted = f"{minutes}:{seconds:02d}"
+        elif duration_formatted == '0:00' and file_size:
+            # Estimación basada en tamaño: ~1MB = 1 minuto para MP3 (tasa ~128kbps)
+            estimated_minutes = max(1, file_size // (1024 * 1024))
+            estimated_seconds = estimated_minutes * 60
+            minutes = estimated_minutes
+            seconds = 0
+            duration_formatted = f"{minutes}:{seconds:02d}"
+            logger.info(f"⏱️ Duración estimada: {duration_formatted} (basado en tamaño {file_size} bytes)")
+        
+        # Asegurar formato MM:SS
+        if ':' not in duration_formatted:
             try:
-                quota = UploadQuota.objects.get(user=user)
-                quota.release_pending_quota(file_size)
-            except Exception as quota_error:
-                logger.warning(f"Error liberando cuota: {quota_error}")
-            
-            raise ValueError(error_msg)
+                # Si es solo un número, asumir que son segundos
+                secs = int(duration_formatted)
+                minutes = secs // 60
+                seconds = secs % 60
+                duration_formatted = f"{minutes}:{seconds:02d}"
+            except:
+                duration_formatted = "3:30"  # Fallback razonable
         
-        logger.info(f"✅ Validación exitosa - Tamaño: {info.get('size')} bytes, Issues: {len(validation_data.get('issues', []))}")
+        duration_formatted = duration_formatted[:20]  # Limitar
         
-        # 4. Procesar archivo
-        temp_file = None
-        
-        try:
-            # Generar URL temporal para descarga
-            download_url = r2_direct.generate_download_url(file_key, expires_in=600)
-            if not download_url:
-                raise Exception("No se pudo generar URL de descarga")
-            
-            # Descargar archivo temporalmente
-            temp_file = download_to_tempfile(download_url)
-            
-            # Validar que sea un archivo de audio válido
-            audio_info = validate_and_analyze_audio(temp_file, upload_session.original_file_name)
-            
-            if not audio_info['is_valid']:
-                error_msg = f"Archivo de audio inválido: {audio_info.get('error', 'Unknown error')}"
-                upload_session.mark_as_failed(error_msg)
-                raise ValueError(error_msg)
-            
-            # Extraer metadatos de audio (opcional)
-            audio_metadata = extract_audio_metadata(temp_file, audio_info)
-            
-            # Combinar metadatos
-            final_metadata = {
-                **metadata,
-                'audio_info': audio_info,
-                'audio_metadata': audio_metadata,
-                'processing_timestamp': timezone.now().isoformat(),
-                'file_checksum': calculate_file_checksum(temp_file)
-            }
-            
-            # 5. Crear objeto Song con transacción (AJUSTADO A TU MODELO)
-            with transaction.atomic():
-                song = create_song_record(
-                    upload_session=upload_session,
-                    user=user,
-                    file_key=file_key,
-                    audio_info=audio_info,
-                    metadata=final_metadata
-                )
-                
-                # Actualizar sesión como completada
-                upload_session.mark_as_ready(song)
-                
-                # Actualizar estadísticas del usuario
-                update_user_stats(user, file_size)
-                
-                logger.info(
-                    f"✅ Upload procesado exitosamente: {upload_session_id} → "
-                    f"Song: {song.id} ({song.title})"
-                )
-            
-            return {
-                'status': 'success',
-                'upload_session_id': upload_session_id,
-                'song_id': song.id,
-                'song_title': song.title,
-                'duration': audio_info.get('duration_formatted', '0:00'),
-                'file_size_mb': round(file_size / (1024 * 1024), 2)
-            }
-            
-        except Exception as processing_error:
-            logger.error(
-                f"Error procesando upload {upload_session_id}: {str(processing_error)}",
-                exc_info=True
+        # 4. Crear objeto Song con los metadatos disponibles
+        with transaction.atomic():
+            song = Song.objects.create(
+                title=title,
+                artist=artist,
+                genre=genre,
+                duration=duration_formatted,
+                file_key=file_key,  # Key real de R2
+                uploaded_by=user,
+                is_public=metadata.get('is_public', True),
             )
             
-            # Marcar como fallido
-            upload_session.mark_as_failed(str(processing_error))
+            # Relacionar upload_session con song
+            upload_session.song = song
+            upload_session.mark_as_ready(song)
             
-            # Reintentar si es un error transitorio
-            if is_transient_error(processing_error):
-                try:
-                    logger.warning(f"Reintentando upload {upload_session_id}")
-                    raise self.retry(exc=processing_error, countdown=60 * (2 ** self.request.retries))
-                except MaxRetriesExceededError:
-                    logger.error(f"Max retries exceeded for upload {upload_session_id}")
-                    raise
+            # Actualizar estadísticas del usuario
+            update_user_stats(user, file_size)
             
-            raise
-            
-        finally:
-            # Limpiar archivo temporal
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                except Exception as cleanup_error:
-                    logger.warning(f"Error limpiando archivo temporal: {cleanup_error}")
-    
+            logger.info(
+                f"✅ Upload SIMPLIFICADO exitoso: {upload_session_id} → "
+                f"Song: {song.id} | Título: '{song.title}' | Artista: '{song.artist}' | Duración: {song.duration}"
+            )
+        
+        return {
+            'status': 'success',
+            'upload_session_id': upload_session_id,
+            'song_id': song.id,
+            'song_title': song.title,
+            'artist': song.artist,
+            'duration': song.duration,
+            'genre': song.genre,
+            'file_size_mb': round(file_size / (1024 * 1024), 2),
+            'processing_time_ms': 0  # Podríamos calcular si queremos
+        }
+        
     except Exception as e:
         logger.error(
             f"Error crítico en process_direct_upload para {upload_session_id}: {str(e)}",
             exc_info=True
         )
+        
+        # Intentar marcar como fallido si la sesión existe
+        try:
+            upload_session = UploadSession.objects.get(id=upload_session_id)
+            upload_session.mark_as_failed(str(e))
+        except:
+            pass
+        
         raise
 
 
@@ -392,7 +421,13 @@ def reprocess_failed_upload(upload_session_id):
 # ==================== MÉTODOS HELPER ====================
 
 def download_to_tempfile(url):
-    """Descarga un archivo a un archivo temporal"""
+    """
+    Descarga un archivo a un archivo temporal
+    NOTA: Este método ya NO se usa en el flujo principal simplificado
+    Se mantiene por compatibilidad con código legacy
+    """
+    logger.warning("⚠️ download_to_tempfile llamado - esto ya no debería usarse en el flujo principal")
+    
     temp_fd, temp_path = tempfile.mkstemp(prefix='djidji_upload_', suffix='.tmp')
     os.close(temp_fd)
     
@@ -418,7 +453,13 @@ def download_to_tempfile(url):
 
 
 def validate_and_analyze_audio(file_path, original_filename):
-    """Valida y analiza un archivo de audio"""
+    """
+    Valida y analiza un archivo de audio
+    NOTA: Este método ya NO se usa en el flujo principal simplificado
+    Se mantiene por compatibilidad
+    """
+    logger.warning("⚠️ validate_and_analyze_audio llamado - esto ya no debería usarse")
+    
     try:
         # Validaciones básicas
         if not os.path.exists(file_path):
@@ -476,7 +517,11 @@ def validate_and_analyze_audio(file_path, original_filename):
 
 
 def extract_audio_metadata(file_path, audio_info):
-    """Extrae metadatos de audio"""
+    """
+    Extrae metadatos de audio
+    NOTA: Este método ya NO se usa en el flujo principal simplificado
+    """
+    logger.warning("⚠️ extract_audio_metadata llamado - esto ya no debería usarse")
     metadata = {}
     
     try:
@@ -515,7 +560,11 @@ def extract_audio_metadata(file_path, audio_info):
 
 
 def create_song_record(upload_session, user, file_key, audio_info, metadata):
-    """Crea el registro de Song en la base de datos (AJUSTADO A TU MODELO)"""
+    """
+    Versión legacy - mantenida por compatibilidad
+    Crea el registro de Song en la base de datos
+    """
+    logger.warning("⚠️ Usando create_song_record legacy - considerar migrar al nuevo flujo simplificado")
     
     # Extraer título y artista
     title = (
@@ -540,7 +589,7 @@ def create_song_record(upload_session, user, file_key, audio_info, metadata):
         artist=artist,
         genre=audio_metadata.get('genre', metadata.get('genre', 'Otro'))[:100],
         duration=audio_info.get('duration_formatted', '0:00')[:20],
-        file_key=file_key,  # Usamos la key real de R2, NO generamos nueva
+        file_key=file_key,
         uploaded_by=user,
         is_public=metadata.get('is_public', True),
     )
@@ -577,7 +626,11 @@ def update_user_stats(user, file_size):
 
 
 def calculate_file_checksum(file_path):
-    """Calcula checksum SHA256 del archivo"""
+    """
+    Calcula checksum SHA256 del archivo
+    NOTA: Ya no se usa en el flujo principal
+    """
+    logger.warning("⚠️ calculate_file_checksum llamado - esto ya no debería usarse")
     sha256_hash = hashlib.sha256()
     
     with open(file_path, "rb") as f:
