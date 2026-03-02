@@ -3,10 +3,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from datetime import timedelta
 import dj_database_url
+from kombu import Queue
 
 # ================================
 # CONFIGURACIÓN BASE
 # ================================
+
 # Cargar variables de entorno
 load_dotenv()
 
@@ -24,13 +26,15 @@ ALLOWED_HOSTS = os.getenv(
 # ================================
 # URLs BASE
 # ================================
+
 SITE_URL = os.getenv('SITE_URL', 'https://djidjimusic.com')
 API_URL = os.getenv('API_URL', 'https://api.djidjimusic.com')
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://djidjimusic.com')
 
-# ================================ 
+# ================================
 # TAMAÑOS DE ARCHIVO
 # ================================
+
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB límite absoluto
 DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE
 FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE
@@ -39,6 +43,7 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
 # ================================
 # LÍMITES Y CUOTAS - CONSOLIDADO Y OPTIMIZADO
 # ================================
+
 UPLOAD_LIMITS = {
     'free': {
         'max_daily_uploads': 50,
@@ -67,6 +72,7 @@ MAX_IMAGE_SIZE = 20 * 1024 * 1024   # 20MB para imágenes
 # ================================
 # CSRF + CORS CONFIGURACIÓN OPTIMIZADA
 # ================================
+
 CSRF_TRUSTED_ORIGINS = [
     "https://djidjimusic.com",
     "https://www.djidjimusic.com",
@@ -105,7 +111,6 @@ if DEBUG:
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5176",
-
     ])
 
 CORS_ALLOW_CREDENTIALS = True
@@ -121,6 +126,7 @@ CORS_ALLOW_METHODS = [
 # ============================================
 # 🎵 CONFIGURACIÓN CORS PARA STREAMING (NUEVO)
 # ============================================
+
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -158,11 +164,13 @@ CORS_EXPOSE_HEADERS = [
 # ================================
 # USUARIO PERSONALIZADO
 # ================================
+
 AUTH_USER_MODEL = 'musica.CustomUser'
 
 # ================================
 # APLICACIONES INSTALADAS
 # ================================
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -170,12 +178,12 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-
+    
     # Apps locales
     'musica',
     'api2',
     'django_filters',
-
+    
     # Librerías externas
     "django_celery_beat",
     "django_celery_results",
@@ -191,6 +199,7 @@ INSTALLED_APPS = [
 # ================================
 # MIDDLEWARE OPTIMIZADO
 # ================================
+
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.gzip.GZipMiddleware',
@@ -210,6 +219,7 @@ ROOT_URLCONF = 'backend.urls'
 # ================================
 # TEMPLATES
 # ================================
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -230,6 +240,7 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # ================================
 # BASE DE DATOS
 # ================================
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
@@ -272,6 +283,7 @@ else:
 # ================================
 # ARCHIVOS ESTÁTICOS
 # ================================
+
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
@@ -286,8 +298,9 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # ================================
 # CLOUDFLARE R2 CONFIG
 # ================================
+
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")  
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 
@@ -298,7 +311,6 @@ R2_DOWNLOAD_URL_EXPIRY = 300
 
 if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-
     AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID
     AWS_SECRET_ACCESS_KEY = R2_SECRET_ACCESS_KEY
     AWS_STORAGE_BUCKET_NAME = R2_BUCKET_NAME
@@ -313,12 +325,12 @@ if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     AWS_S3_USE_SSL = True
     AWS_S3_VERIFY = True
     AWS_S3_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE
-
+    
     print("R2 Configurado correctamente con optimizaciones")
 else:
     missing = []
     if not R2_ACCESS_KEY_ID: missing.append('R2_ACCESS_KEY_ID')
-    if not R2_SECRET_ACCESS_KEY: missing.append('R2_SECRET_ACCESS_KEY') 
+    if not R2_SECRET_ACCESS_KEY: missing.append('R2_SECRET_ACCESS_KEY')
     if not R2_ACCOUNT_ID: missing.append('R2_ACCOUNT_ID')
     if not R2_BUCKET_NAME: missing.append('R2_BUCKET_NAME')
     print(f"R2 no configurado. Variables faltantes: {missing}")
@@ -326,6 +338,7 @@ else:
 # ================================
 # VALIDACIÓN DE CONTRASEÑAS
 # ================================
+
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
@@ -336,6 +349,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # ================================
 # INTERNACIONALIZACIÓN
 # ================================
+
 LANGUAGE_CODE = 'es-es'
 TIME_ZONE = 'UTC'
 USE_I18N = True
@@ -344,6 +358,7 @@ USE_TZ = True
 # ================================
 # SEGURIDAD EN PRODUCCIÓN
 # ================================
+
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True
@@ -358,6 +373,7 @@ if not DEBUG:
 # ================================
 # REST FRAMEWORK OPTIMIZADO
 # ================================
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -404,6 +420,7 @@ REST_FRAMEWORK = {
 # ================================
 # JWT CONFIGURACIÓN
 # ================================
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
@@ -434,6 +451,7 @@ SIMPLE_JWT = {
 # ================================
 # SPECTACULAR
 # ================================
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'DJI Music API',
     'DESCRIPTION': 'API para plataforma de música Dji Music',
@@ -446,6 +464,7 @@ SPECTACULAR_SETTINGS = {
 # ================================
 # LOGGING OPTIMIZADO
 # ================================
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -540,6 +559,7 @@ if not os.path.exists(BASE_DIR / "logs"):
 # ================================
 # CACHE - OPTIMIZADO PARA PRODUCCIÓN
 # ================================
+
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
 
 CACHES = {
@@ -566,6 +586,7 @@ CACHES = {
 # ============================================
 # 🎵 CONFIGURACIÓN DE CACHE PARA STREAMING (NUEVO)
 # ============================================
+
 PRESIGNED_URL_CACHE_TIMEOUT = 1800  # 30 minutos
 FILE_EXISTS_CACHE_TIMEOUT = 300      # 5 minutos
 R2_CACHE_PREFIX = "r2"
@@ -592,6 +613,7 @@ SESSION_COOKIE_SAMESITE = 'Lax'
 # ================================
 # CELERY
 # ================================
+
 CELERY_BROKER_URL = f"{REDIS_URL}/0"
 CELERY_RESULT_BACKEND = 'django-db'
 
@@ -626,10 +648,18 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 CELERY_ENABLE_UTC = True
-CELERY_TASK_CREATE_MISSING_QUEUES = True
+
+# Configuración de colas
+CELERY_TASK_QUEUES = (
+    Queue('default'),
+    Queue('uploads'),
+    Queue('maintenance'),
+)
+
 CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_DEFAULT_EXCHANGE = 'default'
 CELERY_TASK_DEFAULT_ROUTING_KEY = 'default'
+CELERY_TASK_CREATE_MISSING_QUEUES = True
 
 CELERY_TASK_ANNOTATIONS = {
     'musica.tasks.process_upload': {
@@ -640,15 +670,17 @@ CELERY_TASK_ANNOTATIONS = {
 # ================================
 # CONFIGURACIONES FINALES
 # ================================
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ================================
 # FUNCIONES DE OPTIMIZACIÓN
 # ================================
+
 def create_database_indexes():
     """Crear índices necesarios para optimizar queries"""
     print("\n=== OPTIMIZANDO BASE DE DATOS CON ÍNDICES ===")
-
+    
     indexes_sql = [
         "CREATE INDEX IF NOT EXISTS idx_uploadsession_status ON musica_uploadsession(status);",
         "CREATE INDEX IF NOT EXISTS idx_uploadsession_user_status ON musica_uploadsession(user_id, status);",
@@ -662,7 +694,7 @@ def create_database_indexes():
         "CREATE INDEX IF NOT EXISTS idx_track_created ON musica_track(created_at);",
         "CREATE INDEX IF NOT EXISTS idx_track_status ON musica_track(status);",
     ]
-
+    
     try:
         from django.db import connection
         with connection.cursor() as cursor:
@@ -682,14 +714,16 @@ if os.getenv('CREATE_INDEXES_ON_STARTUP', 'False') == 'True':
 # ================================
 # RESUMEN DE CONFIGURACIÓN
 # ================================
+
 print("""
-╔════════════════════════════════════════════════════════════╗
-║  🎵 DJI MUSIC API - CONFIGURACIÓN COMPLETA                 ║
-╠════════════════════════════════════════════════════════════╣
-║  • Streaming optimizado con URLs firmadas                  ║
-║  • Rate limiting: 100 streams/hora por usuario             ║
-║  • Cache Redis: URLs cacheadas 30 minutos                  ║
-║  • CORS headers para streaming configurados                ║
-║  • Listo para producción                                   ║
-╚════════════════════════════════════════════════════════════╝
+ ╔════════════════════════════════════════════════════════════╗
+ ║  🎵 DJI MUSIC API - CONFIGURACIÓN COMPLETA                 ║
+ ╠════════════════════════════════════════════════════════════╣
+ ║  • Streaming optimizado con URLs firmadas                  ║
+ ║  • Rate limiting: 100 streams/hora por usuario             ║
+ ║  • Cache Redis: URLs cacheadas 30 minutos                  ║
+ ║  • CORS headers para streaming configurados                ║
+ ║  • Colas Celery: default, uploads, maintenance             ║
+ ║  • Listo para producción                                   ║
+ ╚════════════════════════════════════════════════════════════╝
 """)
