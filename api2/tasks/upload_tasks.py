@@ -70,16 +70,19 @@ def process_direct_upload(self, upload_session_id, file_key=None, file_size=None
             upload_session.mark_as_failed(error_msg)
             raise ValueError(error_msg)
         
-        # 3. Validar integridad del archivo
-        validation_result = r2_direct.verify_upload_complete(
+        # 3. Validar integridad del archivo - CORREGIDO
+        is_valid, info = r2_direct.verify_upload_complete(
             key=file_key,
             expected_size=file_size,
-            expected_user_id=user.id
+            expected_user_id=user.id  # ← Cambiado de expected_uploader_id
         )
         
-        if not validation_result['valid']:
-            issues = validation_result.get('issues', [])
+        if not is_valid:
+            # Extraer issues del diccionario info - CORREGIDO
+            validation_data = info.get('validation', {})
+            issues = validation_data.get('issues', ['Error de validación desconocido'])
             error_msg = f"Archivo inválido: {', '.join(issues)}"
+            
             upload_session.mark_as_failed(error_msg)
             
             # Liberar cuota pendiente
@@ -90,6 +93,8 @@ def process_direct_upload(self, upload_session_id, file_key=None, file_size=None
                 logger.warning(f"Error liberando cuota: {quota_error}")
             
             raise ValueError(error_msg)
+        
+        logger.info(f"✅ Validación exitosa - Tamaño: {info.get('size')} bytes, Issues: {len(validation_data.get('issues', []))}")
         
         # 4. Procesar archivo
         temp_file = None
