@@ -1,7 +1,8 @@
 # api2/utils/r2_direct.py - VERSIÓN COMPATIBLE CON WINDOWS
+
 """
 R2 Direct Upload - Versión Windows compatible
-Formato de keys: songs/audio/{12chars}_audio.mp3
+Sin emojis, con compatibilidad total
 """
 
 import os
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 class R2DirectUpload:
     """
     Versión Windows compatible - SIN EMOJIS
-    Formato de keys: songs/audio/{12chars}_audio.mp3
     """
 
     def __init__(self):
@@ -41,6 +41,7 @@ class R2DirectUpload:
                 ),
             )
             
+            # ✅ SIN EMOJIS PARA WINDOWS
             logger.info(f"[OK] R2DirectUpload inicializado. Bucket: {self.bucket_name}")
             
         except Exception as e:
@@ -57,36 +58,23 @@ class R2DirectUpload:
         custom_metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        Genera URL PUT con formato songs/audio/{12chars}_audio.mp3
+        PUT mínimo y robusto - Windows compatible
         """
         try:
             logger.info(f"[PROCESANDO] Generando URL PUT para user {user_id}, archivo: {file_name}")
 
-            # 🔥 NUEVO FORMATO: 12 caracteres hexadecimales
-            file_uuid = uuid.uuid4().hex[:12]  # Ejemplo: "11f6b4ca6de9"
+            # Generar key con estructura de ownership
+            safe_name = self._safe_filename(file_name)
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
             
-            # Obtener extensión (siempre .mp3 para audio, como en el ejemplo)
-            # Pero mantenemos la lógica por si acaso
-            extension = os.path.splitext(file_name)[1]
-            if not extension:
-                ext_map = {
-                    'audio/mpeg': '.mp3',
-                    'audio/mp3': '.mp3',
-                    'audio/wav': '.wav',
-                    'audio/flac': '.flac',
-                    'audio/m4a': '.m4a',
-                    'audio/aac': '.aac',
-                    'audio/ogg': '.ogg',
-                }
-                extension = ext_map.get(file_type, '.mp3')
-            
-            # 🔥 NUEVO FORMATO: songs/audio/{12chars}_audio{extension}
-            key = f"songs/audio/{file_uuid}_audio{extension}"
+            key = f"uploads/user_{user_id}/{timestamp}_{unique_id}_{safe_name}"
 
-            # Parámetros mínimos (sin metadata para evitar errores de firma)
+            # Parámetros mínimos (robustos)
             params = {
                 'Bucket': self.bucket_name,
                 'Key': key,
+                # ❌ NO 'ContentType': file_type (evita 403 por mismatch)
             }
 
             # Generar URL pre-firmada
@@ -97,34 +85,28 @@ class R2DirectUpload:
                 HttpMethod='PUT'
             )
 
+            # Validación básica
             if not presigned_url or '?' not in presigned_url:
                 raise ValueError("URL pre-firmada inválida")
 
-            # Respuesta con nuevo formato
+            # Respuesta coherente
             result = {
                 "upload_url": presigned_url,
                 "method": "PUT",
                 "file_key": key,
-                "file_name": file_name,
-                "file_uuid": file_uuid,
+                "file_name": safe_name,
                 "file_size": file_size,
-                "suggested_content_type": file_type,
+                "suggested_content_type": file_type,  # ✅ Solo sugerencia
                 "expires_at": int(time.time() + expires_in),
                 "expires_in": expires_in,
                 "user_id": user_id,
                 "key_structure": {
-                    "format": "songs/audio/{12chars}_audio{extension}",
-                    "uuid": file_uuid,
-                    "extension": extension,
-                    "full_key": key
+                    "format": "uploads/user_{id}/timestamp_uuid_filename",
+                    "ownership_proof": "path_based"
                 }
             }
 
-            # Incluir metadata original si existe (para referencia en BD)
-            if custom_metadata:
-                result["metadata"] = custom_metadata
-
-            logger.info(f"[OK] URL PUT generada: {key}")
+            logger.info(f"[OK] URL PUT generada exitosamente para key: {key}")
             return result
 
         except ClientError as e:
@@ -142,19 +124,19 @@ class R2DirectUpload:
         expected_user_id: Optional[int] = None
     ) -> Tuple[bool, Dict[str, Any]]:
         """
-        Verifica que un archivo existe en R2 y es válido
+        Verificación robusta - Windows compatible
         """
         try:
-            # Verificar existencia
+            # Verificar existencia física
             response = self.s3_client.head_object(
                 Bucket=self.bucket_name,
                 Key=key
             )
 
+            # Extraer información básica
             actual_size = response.get('ContentLength', 0)
-            metadata = response.get('Metadata', {})
 
-            # Validaciones
+            # Validación coherente
             validation = {
                 "size_match": True,
                 "owner_match": True,
@@ -162,24 +144,25 @@ class R2DirectUpload:
                 "issues": []
             }
 
-            # Validar tamaño
+            # Validar tamaño si se espera
             if expected_size and actual_size != expected_size:
                 validation["size_match"] = False
                 validation["issues"].append(
                     f"Tamaño: esperado {expected_size:,}B, actual {actual_size:,}B"
                 )
 
-            # Validar ownership (en el nuevo formato no hay user_id en la ruta)
-            # El user_id se valida por la sesión en la BD, no por la key
+            # Validar ownership por estructura de key
             if expected_user_id:
-                # Opcional: buscar user_id en metadata si existe
-                meta_user_id = metadata.get('user_id') or metadata.get('x-amz-meta-user_id')
-                if meta_user_id and str(meta_user_id) != str(expected_user_id):
+                extracted_user_id = self._extract_user_id_from_key(key)
+                
+                if extracted_user_id is None:
+                    validation["owner_match"] = False
+                    validation["issues"].append("Key no tiene formato de ownership válido")
+                elif extracted_user_id != expected_user_id:
                     validation["owner_match"] = False
                     validation["issues"].append(
-                        f"Ownership: metadata indica user {meta_user_id}, esperado {expected_user_id}"
+                        f"Ownership: esperado user_{expected_user_id}, key es user_{extracted_user_id}"
                     )
-                # Si no hay metadata, confiamos en la sesión (ya validada antes)
 
             # Validar patrón de key
             key_validation = self._validate_key_pattern(key)
@@ -194,21 +177,20 @@ class R2DirectUpload:
                 "content_type": response.get('ContentType', ''),
                 "etag": response.get('ETag', '').strip('"'),
                 "last_modified": response.get('LastModified'),
-                "metadata": metadata,
+                "metadata": response.get('Metadata', {}),
                 "validation": validation,
                 "key_analysis": key_validation
             }
 
+            # Determinar validez
             is_valid = all([
                 info["exists"],
                 validation["size_match"],
-                # Nota: owner_match puede ser True incluso sin validación de key
-                # porque confiamos en la sesión
-                validation["owner_match"] if expected_user_id else True,
+                validation["owner_match"],
                 validation["key_pattern_valid"]
             ])
 
-            logger.info(f"[VERIFICACION] Key: {key} | Valido: {is_valid}")
+            logger.info(f"[VERIFICACION] Key: {key} | Valido: {is_valid} | Issues: {len(validation['issues'])}")
             
             return is_valid, info
 
@@ -255,58 +237,48 @@ class R2DirectUpload:
     # ==========================================================
 
     def _extract_user_id_from_key(self, key: str) -> Optional[int]:
-        """
-        Extrae user_id de la key (para compatibilidad)
-        En el nuevo formato, el user_id NO está en la ruta
-        """
-        # Intentar extraer de metadata si es posible
+        """Extrae user_id de la estructura de key"""
         try:
-            response = self.s3_client.head_object(
-                Bucket=self.bucket_name,
-                Key=key
-            )
-            metadata = response.get('Metadata', {})
-            user_id = metadata.get('user_id') or metadata.get('x-amz-meta-user_id')
-            if user_id:
-                return int(user_id)
-        except:
-            pass
-        
-        return None
+            pattern = r'^uploads/user_(\d+)/'
+            match = re.match(pattern, key)
+            
+            if match:
+                return int(match.group(1))
+            return None
+        except (ValueError, TypeError):
+            return None
 
     def _validate_key_pattern(self, key: str) -> Dict[str, Any]:
-        """
-        Valida patrón de key: songs/audio/{12chars}_audio.{ext}
-        """
-        # Patrón: songs/audio/12caracteres_audio.extension
-        pattern = r'^songs/audio/([a-f0-9]{12})_audio(\.[a-z0-9]+)$'
-        match = re.match(pattern, key, re.IGNORECASE)
+        """Valida patrón de key"""
+        pattern = r'^uploads/user_(\d+)/(\d{8}_\d{6})_([a-f0-9]{8})_([\w\s\-\.]+)$'
+        match = re.match(pattern, key)
         
         if not match:
             return {
                 "is_valid": False,
                 "error": "Patrón de key inválido",
-                "expected_pattern": "songs/audio/{12hex}_audio.{ext}",
-                "received": key
+                "expected_pattern": "uploads/user_{id}/YYYYMMDD_HHMMSS_{uuid8}_{filename}"
             }
         
         try:
             return {
                 "is_valid": True,
                 "components": {
-                    "uuid": match.group(1),
-                    "extension": match.group(2)
+                    "user_id": int(match.group(1)),
+                    "timestamp": match.group(2),
+                    "uuid": match.group(3),
+                    "filename": match.group(4)
                 }
             }
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError):
             return {
                 "is_valid": False,
-                "error": f"Componente inválido en key: {e}"
+                "error": "Componente inválido en key"
             }
 
     @staticmethod
     def _safe_filename(filename: str) -> str:
-        """Sanitiza nombre de archivo (para referencia, no para la key)"""
+        """Sanitiza nombre de archivo"""
         import unicodedata
         
         # Normalizar unicode
@@ -328,14 +300,14 @@ class R2DirectUpload:
         
         return filename.strip('_.')
 
+    # Métodos existentes (simplificados)
     def add_metadata_to_file(self, key: str, metadata: Dict[str, str], user_id: Optional[int] = None) -> bool:
-        """Añade metadata a un archivo existente"""
+        """Añade metadata opcional"""
         try:
-            # Validar ownership si se proporciona user_id
+            # Validar ownership
             if user_id:
-                meta_user_id = self._extract_user_id_from_key(key)
-                if meta_user_id and meta_user_id != user_id:
-                    logger.warning(f"[WARNING] Intento de modificar archivo de otro usuario: {key}")
+                extracted_id = self._extract_user_id_from_key(key)
+                if extracted_id != user_id:
                     return False
 
             # Verificar que existe
@@ -344,11 +316,8 @@ class R2DirectUpload:
             except ClientError:
                 return False
 
-            # Preparar metadata (sin prefijo x-amz-meta-, boto3 lo añade)
-            safe_metadata = {}
-            for k, v in metadata.items():
-                if v is not None and str(v).strip():
-                    safe_metadata[k] = str(v)
+            # Preparar metadata
+            safe_metadata = {str(k): str(v) for k, v in metadata.items() if v is not None}
             
             # Copiar con nueva metadata
             self.s3_client.copy_object(
@@ -389,13 +358,9 @@ class R2DirectUpload:
         filename: Optional[str] = None,
         expires_in: int = 300
     ) -> Optional[str]:
-        """Genera URL de descarga firmada"""
+        """Genera URL de descarga"""
         try:
-            params = {
-                'Bucket': self.bucket_name,
-                'Key': key
-            }
-            
+            params = {'Bucket': self.bucket_name, 'Key': key}
             if filename:
                 params['ResponseContentDisposition'] = f'attachment; filename="{filename}"'
 
@@ -417,19 +382,21 @@ class R2DirectUpload:
             return {
                 "key": key,
                 "is_valid": True,
-                "uuid": validation["components"]["uuid"],
-                "extension": validation["components"]["extension"]
+                "user_id": validation["components"]["user_id"],
+                "timestamp": validation["components"]["timestamp"],
+                "filename": validation["components"]["filename"]
             }
         else:
             return {
                 "key": key,
                 "is_valid": False,
+                "user_id": self._extract_user_id_from_key(key),
                 "error": validation.get("error", "Key inválida")
             }
 
 
 # ==========================================================
-# CLASES DE COMPATIBILIDAD
+# ✅ CLASES DE COMPATIBILIDAD (para imports existentes)
 # ==========================================================
 
 class R2UploadValidator:
@@ -450,21 +417,38 @@ class R2UploadValidator:
         if len(key) > 500:
             return False, "Key demasiado larga"
         
-        # Validar formato general (songs/audio/)
-        if not key.startswith('songs/audio/'):
-            return False, "Key debe empezar con songs/audio/"
+        # Validar ownership si se proporciona user_id
+        if user_id is not None:
+            pattern = r'^uploads/user_(\d+)/'
+            match = re.match(pattern, key)
+            if not match:
+                return False, f"Key no pertenece al usuario {user_id}"
+            
+            try:
+                key_user_id = int(match.group(1))
+                if key_user_id != user_id:
+                    return False, f"Key pertenece a otro usuario"
+            except (ValueError, TypeError):
+                return False, "User ID inválido en key"
         
         return True, "Key válida"
     
     @staticmethod
     def extract_user_id_from_key(key: str) -> Optional[int]:
-        """Extrae user_id de una key (compatibilidad)"""
-        # En el nuevo formato, el user_id está en metadata o sesión
+        """Extrae user_id de una key"""
+        pattern = r'uploads/user_(\d+)/'
+        match = re.search(pattern, key)
+        if match:
+            try:
+                return int(match.group(1))
+            except (ValueError, TypeError):
+                return None
         return None
     
     @staticmethod
     def sanitize_key(key: str) -> str:
         """Sanitiza una key"""
+        import re
         key = re.sub(r'//+', '/', key)
         key = re.sub(r'\.\.+', '.', key)
         key = key.strip().lstrip('/')
@@ -476,7 +460,7 @@ class R2UploadValidator:
 # ==========================================================
 
 r2_upload = R2DirectUpload()
-r2_direct = r2_upload  # Compatibilidad total
+r2_direct = r2_upload  # ✅ Compatibilidad total
 
 
 def generate_presigned_put_url(user_id: int, file_name: str, file_size: int, **kwargs) -> Dict[str, Any]:
