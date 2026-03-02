@@ -74,7 +74,7 @@ def process_direct_upload(self, upload_session_id, file_key=None, file_size=None
         validation_result = r2_direct.verify_upload_complete(
             key=file_key,
             expected_size=file_size,
-            expected_uploader_id=user.id
+            expected_user_id=user.id
         )
         
         if not validation_result['valid']:
