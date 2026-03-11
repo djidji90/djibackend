@@ -17,9 +17,11 @@ VISTAS COMPLETAS DE LA API v2
 # ESTÁNDAR
 # -----------------------------------------------------------------------------
 import json
+from django.db.models import F
 import logging
 import time
 import random
+import secrets
 import re
 import os  # Del bloque inferior
 import redis  # Del bloque inferior
@@ -809,6 +811,23 @@ URL_EXPIRATION = 3600       # URLs de descarga válidas por 1 hora
         403: OpenApiResponse(description="Sin permisos"),
         404: OpenApiResponse(description="Canción no encontrada"),
         429: OpenApiResponse(description="Límite de descargas excedido"),
+    } )
+
+      # URLs de descarga válidas por 1 hora
+# ============================================
+# 🎯 ENDPOINT PRINCIPAL (MODIFICADO - CAMBIOS MÍNIMOS)
+# ============================================
+@extend_schema(
+    description="""
+    Descargar una canción con streaming eficiente y soporte para reanudación.
+    Redirige directamente a Cloudflare R2 para una descarga optimizada.
+    """,
+    responses={
+        302: OpenApiResponse(description="Redirect a la URL firmada de R2"),
+        200: OpenApiResponse(description="Descarga directa (fallback)"),
+        403: OpenApiResponse(description="Sin permisos"),
+        404: OpenApiResponse(description="Canción no encontrada"),
+        429: OpenApiResponse(description="Límite de descargas excedido"),
     }
 )
 @api_view(['GET'])
@@ -902,25 +921,42 @@ def download_song_view(request, song_id):
             )
 
         # ========================================
-        # 6️⃣ REGISTRAR DESCARGA (opcional, para estadísticas)
+        # 🔥 CAMBIO 1: Generar token para esta descarga
+        # ========================================
+        download_token = secrets.token_urlsafe(32)
+
+        # ========================================
+        # 🔥 CAMBIO 2: Registrar descarga con token (PENDIENTE)
         # ========================================
         try:
             with transaction.atomic():
-                Download.objects.create(
+                download = Download.objects.create(
                     user=request.user, 
                     song=song,
+                    download_token=download_token,  # 🆕 NUEVO
+                    is_confirmed=False,              # 🆕 NUEVO - Pendiente
                     file_size=file_size,
                     ip_address=request.META.get('REMOTE_ADDR'),
                     user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
                 )
                 cache.set(cache_key, True, timeout=RATE_CACHE_TIMEOUT)
+                
+                # Guardar token en cache para validación rápida
+                cache.set(
+                    f"token_{download_token}",
+                    {
+                        'download_id': download.id,
+                        'user_id': request.user.id,
+                        'song_id': song.id
+                    },
+                    timeout=URL_EXPIRATION
+                )
         except Exception as e:
             logger.exception(f"Error registrando descarga (continuando): {e}")
 
         # ========================================
         # 7️⃣ GENERAR NOMBRE DE ARCHIVO SEGURO
         # ========================================
-        # Crear nombre: "Artista - Título.mp3"
         artist_part = slugify(song.artist or "Artista", allow_unicode=True)
         title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
         filename = f"{artist_part} - {title_part}".strip(' -')
@@ -939,14 +975,15 @@ def download_song_view(request, song_id):
         response['Pragma'] = 'no-cache'
         response['Expires'] = '0'
         
-        # Información adicional (opcional)
+        # 🔥 CAMBIO 3: Añadir token a los headers
+        response['X-Download-Token'] = download_token
         response['X-Download-Size'] = str(file_size)
         response['X-Download-Expires'] = str(URL_EXPIRATION)
         
         logger.info(
             f"DOWNLOAD REDIRECT - user={request.user.id} "
-            f"song={song_id} size={file_size} "
-            f"expires={URL_EXPIRATION}s"
+            f"song={song_id} token={download_token[:8]}... "
+            f"size={file_size}"
         )
         
         return response
@@ -960,7 +997,7 @@ def download_song_view(request, song_id):
 
 
 # ============================================
-# ENDPOINT COMPLEMENTARIO: Obtener URL de descarga (modo API)
+# 🎯 ENDPOINT COMPLEMENTARIO (MODIFICADO - AÑADIR TOKEN)
 # ============================================
 @extend_schema(
     description="""
@@ -1038,30 +1075,47 @@ def get_download_url_view(request, song_id):
         # Marcar rate limit
         cache.set(cache_key, True, timeout=RATE_CACHE_TIMEOUT)
         
+        # 🔥 CAMBIO: Generar token
+        download_token = secrets.token_urlsafe(32)
+        
         # ========================================
-        # REGISTRAR DESCARGA (opcional)
+        # 🔥 CAMBIO: REGISTRAR DESCARGA CON TOKEN (PENDIENTE)
         # ========================================
         try:
-            Download.objects.create(
+            download = Download.objects.create(
                 user=request.user,
                 song=song,
+                download_token=download_token,  # 🆕 NUEVO
+                is_confirmed=False,              # 🆕 NUEVO - Pendiente
                 file_size=file_info.get('size', 0),
-                method='api',
                 ip_address=request.META.get('REMOTE_ADDR'),
                 user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
+            )
+            
+            # Guardar token en cache
+            cache.set(
+                f"token_{download_token}",
+                {
+                    'download_id': download.id,
+                    'user_id': request.user.id,
+                    'song_id': song.id
+                },
+                timeout=URL_EXPIRATION
             )
         except Exception as e:
             logger.warning(f"Error registrando descarga API: {e}")
         
         # ========================================
-        # RESPUESTA JSON
+        # RESPUESTA JSON (CON TOKEN)
         # ========================================
         artist_part = slugify(song.artist or "Artista", allow_unicode=True)
         title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
         filename = f"{artist_part} - {title_part}.mp3"
         
+        # 🔥 CAMBIO: Incluir token en respuesta
         return Response({
             'download_url': stream_url,
+            'download_token': download_token,  # 🆕 NUEVO
             'expires_in': URL_EXPIRATION,
             'file_size': file_info.get('size', 0),
             'filename': filename,
@@ -1081,7 +1135,80 @@ def get_download_url_view(request, song_id):
 
 
 # ============================================
-# VERSIÓN LEGACY (PROXY) - OPCIONAL PARA COMPATIBILIDAD
+# 🆕 NUEVO ENDPOINT: Confirmar descarga
+# ============================================
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def confirm_download_view(request):
+    """
+    ✅ Confirma que la descarga fue exitosa
+    Solo este endpoint INCREMENTA el contador
+    """
+    try:
+        download_token = request.data.get('download_token')
+        file_size = request.data.get('file_size')
+        success = request.data.get('success', True)
+        
+        if not download_token:
+            return Response(
+                {"error": "download_token requerido"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Buscar en cache primero (rápido)
+        token_data = cache.get(f"token_{download_token}")
+        
+        if token_data:
+            download = Download.objects.filter(id=token_data['download_id']).first()
+        else:
+            download = Download.objects.filter(
+                download_token=download_token,
+                is_confirmed=False
+            ).first()
+
+        if not download:
+            return Response(
+                {"error": "Token inválido"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Verificar propiedad
+        if download.user_id != request.user.id:
+            return Response(
+                {"error": "No autorizado"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Actualizar estado
+        with transaction.atomic():
+            download.is_confirmed = success
+            if file_size and success:
+                download.file_size = file_size
+            download.save()
+
+            # ✅ SOLO SI FUE EXITOSA: Incrementar contador
+            if success:
+                Song.objects.filter(id=download.song_id).update(
+                    downloads_count=F('downloads_count') + 1
+                )
+
+        # Limpiar cache
+        cache.delete(f"token_{download_token}")
+
+        logger.info(f"✅ Descarga confirmada: {download_token[:8]}...")
+
+        return Response({"status": "confirmed"})
+
+    except Exception as e:
+        logger.exception(f"Error confirmando: {e}")
+        return Response(
+            {"error": "Error interno"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+# ============================================
+# VERSIÓN LEGACY (SIN CAMBIOS)
 # ============================================
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

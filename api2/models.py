@@ -120,27 +120,39 @@ class Like(models.Model):
 
 
 class Download(models.Model):
+    # Tus campos actuales
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     song = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='downloads')
     downloaded_at = models.DateTimeField(auto_now_add=True)
     ip_address = models.GenericIPAddressField(blank=True, null=True)
     user_agent = models.TextField(blank=True, null=True)
+    
+    # 🆕 NUEVOS CAMPOS (solo estos 2)
+    download_token = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    is_confirmed = models.BooleanField(default=False)  # ¿Llegó la confirmación?
 
     class Meta:
         ordering = ['-downloaded_at']
         indexes = [
             models.Index(fields=['downloaded_at']),
+            models.Index(fields=['download_token']),  # 🆕 Nuevo índice
+            models.Index(fields=['is_confirmed']),     # 🆕 Nuevo índice
         ]
 
     def __str__(self):
         return f"{self.user.username} downloaded {self.song.title}"
 
     def save(self, *args, **kwargs):
+        # Guardar primero
         super().save(*args, **kwargs)
-        # Actualizar contador de descargas
-        self.song.downloads_count = Download.objects.filter(song=self.song).count()
-        self.song.save(update_fields=['downloads_count'])
-
+        
+        # 🆕 SOLO contar si está confirmada
+        if self.is_confirmed:
+            self.song.downloads_count = Download.objects.filter(
+                song=self.song, 
+                is_confirmed=True  # Solo contar confirmadas
+            ).count()
+            self.song.save(update_fields=['downloads_count'])
 
 class PlayHistory(models.Model):
     """Registro de reproducciones para analytics"""

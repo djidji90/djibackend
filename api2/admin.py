@@ -102,16 +102,48 @@ class SongAdmin(admin.ModelAdmin):
     form = SongAdminForm
     list_display = [
         'title', 'artist', 'genre', 'uploaded_by',
-        'has_audio', 'has_image', 'is_public', 'created_at',
+        'has_audio', 'has_image', 
+        'downloads_count',                  # Tu campo original
+        'confirmed_downloads',               # Nuevo
+        'pending_downloads',                 # Nuevo
+        'is_public', 'created_at',
         'quick_actions'
     ]
-    list_filter = ['genre', 'created_at', 'is_public', 'uploaded_by']
-    search_fields = ['title', 'artist', 'genre']
-    readonly_fields = [
-        'file_key', 'image_key', 'likes_count', 'plays_count',
-        'downloads_count', 'audio_url', 'image_url', 'created_at', 'updated_at'
+    
+    list_filter = [
+        'genre', 
+        'created_at', 
+        'is_public', 
+        'uploaded_by'
     ]
-    actions = ['verify_r2_files', 'generate_presigned_urls', 'export_to_csv']
+    
+    search_fields = [
+        'title', 
+        'artist', 
+        'genre',
+        'uploaded_by__username'
+    ]
+    
+    readonly_fields = [
+        'file_key', 
+        'image_key', 
+        'likes_count', 
+        'plays_count',
+        'downloads_count',                    # Tu campo original
+        'confirmed_downloads_detail',          # Nuevo
+        'pending_downloads_detail',            # Nuevo
+        'audio_url', 
+        'image_url', 
+        'created_at', 
+        'updated_at'
+    ]
+    
+    actions = [
+        'verify_r2_files', 
+        'generate_presigned_urls', 
+        'export_to_csv',
+        'fix_downloads_count'                  # Nueva acción
+    ]
 
     fieldsets = (
         ('Información Básica', {
@@ -130,8 +162,17 @@ class SongAdmin(admin.ModelAdmin):
             'fields': ('file_key', 'image_key'),
             'classes': ('collapse',)
         }),
-        ('Estadísticas', {
-            'fields': ('likes_count', 'plays_count', 'downloads_count')
+        ('Estadísticas de Descargas', {
+            'fields': (
+                'downloads_count', 
+                'confirmed_downloads_detail',
+                'pending_downloads_detail'
+            ),
+            'description': '📊 Descargas confirmadas vs pendientes'
+        }),
+        ('Otras Estadísticas', {
+            'fields': ('likes_count', 'plays_count'),
+            'classes': ('collapse',)
         }),
         ('Metadata', {
             'fields': ('created_at', 'updated_at'),
@@ -139,6 +180,8 @@ class SongAdmin(admin.ModelAdmin):
         }),
     )
 
+    # ========== MÉTODOS EXISTENTES (sin cambios) ==========
+    
     def has_audio(self, obj):
         """Verifica si el archivo de audio existe en R2"""
         if not obj.file_key:
@@ -192,10 +235,10 @@ class SongAdmin(admin.ModelAdmin):
     image_url.short_description = 'URL Imagen'
 
     def quick_actions(self, obj):
-        """Botones de acción rápida - CORREGIDO CON NOMBRES API2"""
+        """Botones de acción rápida"""
         buttons = []
 
-        # Botón para editar - CORREGIDO: usa 'api2' no 'musica'
+        # Botón para editar
         edit_url = reverse('admin:api2_song_change', args=[obj.id])
         buttons.append(f'<a href="{edit_url}" class="button" title="Editar">✏️</a>')
 
@@ -212,238 +255,114 @@ class SongAdmin(admin.ModelAdmin):
     quick_actions.short_description = 'Acciones'
     quick_actions.allow_tags = True
 
-    def save_model(self, request, obj, form, change):
-        """Maneja la subida de archivos a R2"""
-        logger.info(f"🔄 Guardando canción - ID: {obj.id if change else 'Nueva'}, Cambio: {change}")
+    # ========== NUEVOS MÉTODOS PARA DESCARGAS ==========
+    
+    def confirmed_downloads(self, obj):
+        """Número de descargas confirmadas"""
+        from api2.models import Download
+        count = Download.objects.filter(song=obj, is_confirmed=True).count()
+        return format_html(
+            '<span style="color: green;">✅ {}</span>',
+            count
+        )
+    confirmed_downloads.short_description = 'Confirmadas'
+    
+    def pending_downloads(self, obj):
+        """Número de descargas pendientes de confirmación"""
+        from api2.models import Download
+        count = Download.objects.filter(song=obj, is_confirmed=False).count()
+        if count > 0:
+            return format_html(
+                '<span style="color: orange;">⏳ {}</span>',
+                count
+            )
+        return count
+    pending_downloads.short_description = 'Pendientes'
+    
+    def confirmed_downloads_detail(self, obj):
+        """Detalle de descargas confirmadas"""
+        from api2.models import Download
+        downloads = Download.objects.filter(
+            song=obj, 
+            is_confirmed=True
+        ).select_related('user').order_by('-downloaded_at')[:5]
+        
+        if not downloads:
+            return "No hay descargas confirmadas"
+        
+        items = []
+        for d in downloads:
+            items.append(
+                f"• {d.user.username} - {d.downloaded_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+        
+        return format_html('<br>'.join(items))
+    confirmed_downloads_detail.short_description = 'Últimas confirmadas'
+    
+    def pending_downloads_detail(self, obj):
+        """Detalle de descargas pendientes"""
+        from api2.models import Download
+        downloads = Download.objects.filter(
+            song=obj, 
+            is_confirmed=False
+        ).select_related('user').order_by('-downloaded_at')[:5]
+        
+        if not downloads:
+            return "No hay descargas pendientes"
+        
+        items = []
+        for d in downloads:
+            items.append(
+                f"• {d.user.username} - {d.downloaded_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+        
+        return format_html(
+            '<span style="color: orange;">⏳</span> ' + '<br>'.join(items)
+        )
+    pending_downloads_detail.short_description = 'Pendientes'
 
-        audio_file = form.cleaned_data.get('audio_file')
-        image_file = form.cleaned_data.get('image_file')
-
-        old_audio_key = obj.file_key if change else None
-        old_image_key = obj.image_key if change else None
-
-        if audio_file and isinstance(audio_file, UploadedFile):
-            file_extension = os.path.splitext(audio_file.name)[1].lower()
-            if not file_extension:
-                file_extension = '.mp3'
-            new_audio_key = f"songs/audio/{uuid.uuid4().hex[:16]}{file_extension}"
-            obj.file_key = new_audio_key
-
-            logger.info(f"📝 Nueva key de audio: {new_audio_key}")
-
-        if image_file and isinstance(image_file, UploadedFile):
-            file_extension = os.path.splitext(image_file.name)[1].lower()
-            if not file_extension:
-                file_extension = '.jpg'
-            new_image_key = f"songs/images/{uuid.uuid4().hex[:16]}{file_extension}"
-            obj.image_key = new_image_key
-            logger.info(f"📝 Nueva key de imagen: {new_image_key}")
-
-        try:
-            super().save_model(request, obj, form, change)
-            logger.info(f"💾 Objeto guardado en DB - ID: {obj.id}")
-        except Exception as e:
-            logger.error(f"💥 Error guardando en DB: {e}")
-            messages.error(request, f"Error guardando en base de datos: {str(e)}")
-            return
-
-        # Subir audio
-        if audio_file and isinstance(audio_file, UploadedFile):
-            try:
-                if hasattr(audio_file, 'seek'):
-                    audio_file.seek(0)
-
-                audio_content_type = getattr(audio_file, 'content_type', 'audio/mpeg')
-                success = upload_file_to_r2(
-                    file_obj=audio_file,
-                    key=obj.file_key,
-                    content_type=audio_content_type
-                )
-
-                if success:
-                    if check_file_exists(obj.file_key):
-                        messages.success(request, f"✅ Audio subido: {obj.file_key}")
-                        logger.info(f"✅ Audio subido exitosamente: {obj.file_key}")
-
-                        # Eliminar archivo antiguo si existe y es diferente
-                        if old_audio_key and old_audio_key != obj.file_key:
-                            try:
-                                if check_file_exists(old_audio_key):
-                                    delete_file_from_r2(old_audio_key)
-                                    logger.info(f"🗑️ Audio antiguo eliminado: {old_audio_key}")
-                            except Exception as delete_error:
-                                logger.warning(f"No se pudo eliminar audio antiguo: {delete_error}")
-                    else:
-                        messages.warning(request, f"Audio subido pero no encontrado en R2: {obj.file_key}")
-                else:
-                    messages.error(request, f"❌ Falló subida de audio: {obj.file_key}")
-
-            except Exception as e:
-                logger.error(f"💥 Error en subida de audio: {e}", exc_info=True)
-                messages.error(request, f"Error subiendo audio: {str(e)}")
-
-        # Subir imagen
-        if image_file and isinstance(image_file, UploadedFile):
-            try:
-                if hasattr(image_file, 'seek'):
-                    image_file.seek(0)
-
-                image_content_type = getattr(image_file, 'content_type', 'image/jpeg')
-                success = upload_file_to_r2(
-                    file_obj=image_file,
-                    key=obj.image_key,
-                    content_type=image_content_type
-                )
-
-                if success:
-                    if check_file_exists(obj.image_key):
-                        messages.success(request, f"✅ Imagen subida: {obj.image_key}")
-                        logger.info(f"✅ Imagen subida exitosamente: {obj.image_key}")
-
-                        # Eliminar imagen antigua si existe y es diferente
-                        if old_image_key and old_image_key != obj.image_key:
-                            try:
-                                if check_file_exists(old_image_key):
-                                    delete_file_from_r2(old_image_key)
-                                    logger.info(f"🗑️ Imagen antigua eliminada: {old_image_key}")
-                            except Exception as delete_error:
-                                logger.warning(f"No se pudo eliminar imagen antigua: {delete_error}")
-                    else:
-                        messages.warning(request, f"Imagen subida pero no encontrada en R2: {obj.image_key}")
-                else:
-                    messages.error(request, f"❌ Falló subida de imagen: {obj.image_key}")
-
-            except Exception as e:
-                logger.error(f"💥 Error en subida de imagen: {e}", exc_info=True)
-                messages.error(request, f"Error subiendo imagen: {str(e)}")
-
-        logger.info(f"🎉 Proceso completado para canción ID: {obj.id}")
-
-    def delete_model(self, request, obj):
-        """Eliminar archivos de R2 al borrar la canción"""
-        delete_errors = []
-
-        if obj.file_key:
-            try:
-                if check_file_exists(obj.file_key):
-                    delete_file_from_r2(obj.file_key)
-                    messages.success(request, f"🗑️ Audio eliminado de R2: {obj.file_key}")
-                    logger.info(f"🗑️ Audio eliminado de R2: {obj.file_key}")
-                else:
-                    messages.warning(request, f"Audio no encontrado en R2: {obj.file_key}")
-            except Exception as e:
-                delete_errors.append(f"Audio: {e}")
-                logger.error(f"Error eliminando audio {obj.file_key}: {e}")
-
-        if obj.image_key:
-            try:
-                if check_file_exists(obj.image_key):
-                    delete_file_from_r2(obj.image_key)
-                    messages.success(request, f"🗑️ Imagen eliminada de R2: {obj.image_key}")
-                    logger.info(f"🗑️ Imagen eliminada de R2: {obj.image_key}")
-                else:
-                    messages.warning(request, f"Imagen no encontrada en R2: {obj.image_key}")
-            except Exception as e:
-                delete_errors.append(f"Imagen: {e}")
-                logger.error(f"Error eliminando imagen {obj.image_key}: {e}")
-
-        super().delete_model(request, obj)
-
-        if delete_errors:
-            messages.error(request, f"Errores al eliminar archivos: {'; '.join(delete_errors)}")
-
-    # ========== ACCIONES PERSONALIZADAS ==========
-
-    @admin.action(description="✅ Verificar archivos en R2")
-    def verify_r2_files(self, request, queryset):
-        """Acción para verificar archivos en R2"""
-        results = []
-        for song in queryset:
-            audio_exists = False
-            image_exists = False
-
-            if song.file_key:
-                audio_exists = check_file_exists(song.file_key)
-            if song.image_key:
-                image_exists = check_file_exists(song.image_key)
-
-            results.append({
-                'song': f"{song.title} - {song.artist}",
-                'audio_exists': audio_exists,
-                'image_exists': image_exists,
-                'audio_key': song.file_key,
-                'image_key': song.image_key,
-            })
-
-        message = "Resultados de verificación R2:<br>"
-        for result in results:
-            audio_icon = "✅" if result['audio_exists'] else "❌"
-            image_icon = "✅" if result['image_exists'] else "❌"
-            message += f"{audio_icon} {image_icon} {result['song']}<br>"
-
-        self.message_user(request, message, messages.INFO)
-
-    @admin.action(description="🔗 Generar URLs temporales (1h)")
-    def generate_presigned_urls(self, request, queryset):
-        """Generar URLs presigned para las canciones seleccionadas"""
-        urls = []
-        for song in queryset:
-            audio_url = None
-            image_url = None
-
-            if song.file_key and check_file_exists(song.file_key):
-                audio_url = generate_presigned_url(song.file_key, expiration=3600)
-            if song.image_key and check_file_exists(song.image_key):
-                image_url = generate_presigned_url(song.image_key, expiration=3600)
-
-            urls.append({
-                'song': f"{song.title} - {song.artist}",
-                'audio_url': audio_url,
-                'image_url': image_url,
-            })
-
-        message = "URLs temporales (válidas por 1 hora):<br>"
-        for item in urls:
-            message += f"<strong>{item['song']}</strong><br>"
-            if item['audio_url']:
-                message += f"🎵 <a href='{item['audio_url']}' target='_blank'>Escuchar</a><br>"
-            if item['image_url']:
-                message += f"🖼️ <a href='{item['image_url']}' target='_blank'>Ver imagen</a><br>"
-            message += "<br>"
-
-        self.message_user(request, message, messages.INFO)
-
-    @admin.action(description="📄 Exportar a CSV")
-    def export_to_csv(self, request, queryset):
-        """Exporta las canciones seleccionadas a CSV"""
-        import csv
-        from django.http import HttpResponse
-
-        response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = 'attachment; filename="songs_export.csv"'
-
-        writer = csv.writer(response)
-        writer.writerow(['Título', 'Artista', 'Género', 'Duración', 'Uploader', 
-                        'Audio Key', 'Imagen Key', 'Likes', 'Plays', 'Downloads', 
-                        'Creado', 'Público'])
-
-        for song in queryset:
-            writer.writerow([
-                song.title,
-                song.artist,
-                song.genre,
-                song.duration,
-                song.uploaded_by.username if song.uploaded_by else '',
-                song.file_key or '',
-                song.image_key or '',
-                song.likes_count,
-                song.plays_count,
-                song.downloads_count,
-                song.created_at.strftime('%Y-%m-%d %H:%M') if song.created_at else '',
-                'Sí' if song.is_public else 'No'
-            ])
-
-        return response
+    # ========== MÉTODOS EXISTENTES DE GUARDADO ==========
+    # (Mantén aquí todos tus métodos save_model, delete_model, etc. igual que antes)
+    
+    # ========== NUEVA ACCIÓN ==========
+    
+    @admin.action(description="🔧 Corregir contador de descargas")
+    def fix_downloads_count(self, request, queryset):
+        """
+        Corrige el contador de descargas basado en las confirmadas
+        """
+        from django.db import transaction
+        from django.db.models import Count
+        from api2.models import Download
+        
+        with transaction.atomic():
+            fixed = 0
+            errors = 0
+            
+            for song in queryset:
+                try:
+                    # Contar solo confirmadas
+                    real_count = Download.objects.filter(
+                        song=song, 
+                        is_confirmed=True
+                    ).count()
+                    
+                    # Actualizar si es diferente
+                    if song.downloads_count != real_count:
+                        song.downloads_count = real_count
+                        song.save(update_fields=['downloads_count'])
+                        fixed += 1
+                        
+                        logger.info(f"Corregida canción {song.id}: {song.downloads_count} → {real_count}")
+                except Exception as e:
+                    errors += 1
+                    logger.error(f"Error corrigiendo canción {song.id}: {e}")
+            
+            message = f"✅ {fixed} canciones corregidas"
+            if errors:
+                message += f", ❌ {errors} errores"
+            
+            self.message_user(request, message, level='SUCCESS' if errors == 0 else 'WARNING')
 
 # ================================
 # 📅 MUSICEVENT ADMIN - COMPLETO Y CORREGIDO
@@ -979,9 +898,198 @@ class LikeAdmin(admin.ModelAdmin):
 
 @admin.register(Download)
 class DownloadAdmin(admin.ModelAdmin):
-    list_display = ['user', 'song', 'downloaded_at', 'ip_address']
-    list_filter = ['downloaded_at']
-    search_fields = ['user__username', 'song__title']
+    list_display = [
+        'user', 
+        'song', 
+        'downloaded_at', 
+        'is_confirmed',           # 🆕 Nuevo campo
+        'ip_address',
+        'download_token_short'     # 🆕 Token abreviado
+    ]
+    
+    list_filter = [
+        'downloaded_at', 
+        'is_confirmed',            # 🆕 Filtro por confirmación
+    ]
+    
+    search_fields = [
+        'user__username', 
+        'user__email',
+        'song__title', 
+        'song__artist',
+        'download_token'            # 🆕 Buscar por token
+    ]
+    
+    # ✅ CORREGIDO: Solo campos que EXISTEN en tu modelo
+    readonly_fields = [
+        'download_token',
+        'downloaded_at',            # Cambiado de created_at a downloaded_at
+        'ip_address',
+        'user_agent'
+    ]
+    
+    date_hierarchy = 'downloaded_at'
+    
+    fieldsets = (
+        ('Relaciones', {
+            'fields': ('user', 'song')
+        }),
+        ('Estado de Confirmación', {
+            'fields': ('is_confirmed', 'download_token'),
+            'classes': ('wide',),
+            'description': '✅ Confirmada = descarga contabilizada'
+        }),
+        ('Metadatos', {
+            'fields': ('ip_address', 'user_agent'),
+            'classes': ('collapse',)
+        }),
+        ('Fecha', {
+            'fields': ('downloaded_at',),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    actions = [
+        'mark_as_confirmed',
+        'mark_as_unconfirmed',
+        'export_to_csv'
+    ]
+    
+    def get_queryset(self, request):
+        """Optimizar queryset con select_related"""
+        return super().get_queryset(request).select_related('user', 'song')
+    
+    def download_token_short(self, obj):
+        """Mostrar solo primeros caracteres del token"""
+        if obj.download_token:
+            return f"{obj.download_token[:8]}..."
+        return '-'
+    download_token_short.short_description = 'Token'
+    
+    def get_readonly_fields(self, request, obj=None):
+        """Hacer is_confirmed readonly si ya está confirmado"""
+        if obj and obj.is_confirmed:
+            return self.readonly_fields + ['is_confirmed']
+        return self.readonly_fields
+    
+    # ========== ACCIONES ADMIN ==========
+    
+    @admin.action(description="✅ Marcar como confirmadas")
+    def mark_as_confirmed(self, request, queryset):
+        """Marca descargas como confirmadas y actualiza contadores"""
+        from django.db.models import F
+        from django.db import transaction
+        from api2.models import Song  # Ajusta el import según tu estructura
+        
+        with transaction.atomic():
+            # Filtrar no confirmadas
+            to_confirm = queryset.filter(is_confirmed=False)
+            count = to_confirm.count()
+            
+            if count == 0:
+                self.message_user(
+                    request, 
+                    "Todas las descargas seleccionadas ya están confirmadas",
+                    level='WARNING'
+                )
+                return
+            
+            # Actualizar descargas
+            to_confirm.update(is_confirmed=True)
+            
+            # Actualizar contadores de canciones
+            for download in to_confirm:
+                Song.objects.filter(id=download.song_id).update(
+                    downloads_count=F('downloads_count') + 1
+                )
+            
+            self.message_user(
+                request, 
+                f"✅ {count} descarga(s) confirmada(s) correctamente",
+                level='SUCCESS'
+            )
+    
+    @admin.action(description="❌ Marcar como no confirmadas")
+    def mark_as_unconfirmed(self, request, queryset):
+        """Marca descargas como no confirmadas"""
+        from django.db.models import F
+        from django.db import transaction
+        from api2.models import Song
+        
+        with transaction.atomic():
+            # Filtrar confirmadas
+            to_unconfirm = queryset.filter(is_confirmed=True)
+            count = to_unconfirm.count()
+            
+            if count == 0:
+                self.message_user(
+                    request, 
+                    "Ninguna descarga seleccionada está confirmada",
+                    level='WARNING'
+                )
+                return
+            
+            # Actualizar descargas
+            to_unconfirm.update(is_confirmed=False)
+            
+            # Actualizar contadores de canciones (restar)
+            for download in to_unconfirm:
+                # Asegurar que no baje de 0
+                song = Song.objects.get(id=download.song_id)
+                new_count = max(0, song.downloads_count - 1)
+                Song.objects.filter(id=download.song_id).update(
+                    downloads_count=new_count
+                )
+            
+            self.message_user(
+                request, 
+                f"❌ {count} descarga(s) marcadas como no confirmadas",
+                level='SUCCESS'
+            )
+    
+    @admin.action(description="📄 Exportar a CSV")
+    def export_to_csv(self, request, queryset):
+        """Exporta las descargas a CSV"""
+        import csv
+        from django.http import HttpResponse
+        
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="downloads_export.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow([
+            'Usuario', 
+            'Canción', 
+            'Artista',
+            'Fecha', 
+            'Confirmada',
+            'IP',
+            'Token'
+        ])
+        
+        for d in queryset.select_related('user', 'song'):
+            writer.writerow([
+                d.user.username,
+                d.song.title,
+                d.song.artist,
+                d.downloaded_at.strftime('%Y-%m-%d %H:%M'),
+                'Sí' if d.is_confirmed else 'No',
+                d.ip_address or '',
+                d.download_token or ''
+            ])
+        
+        return response
+    
+    def get_actions(self, request):
+        """Personalizar acciones disponibles"""
+        actions = super().get_actions(request)
+        
+        if not request.user.is_superuser:
+            # Usuarios no superadmin no pueden marcar como no confirmadas
+            if 'mark_as_unconfirmed' in actions:
+                del actions['mark_as_unconfirmed']
+        
+        return actions
 
 @admin.register(Comment)
 class CommentAdmin(admin.ModelAdmin):

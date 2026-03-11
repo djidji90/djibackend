@@ -7,12 +7,15 @@ from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
- # Importar views tradicionales
+# Importar views tradicionales
 # =========================================================================
 # 📚 IMPORTS PARA VIEWS EXISTENTES (primera sección)
 # =========================================================================
 from . import views  # Views tradicionales ya existentes
 from api2.views import download_song_view, get_download_url_view
+
+# 🆕 NUEVO IMPORT para confirmación
+from api2.views import confirm_download_view  # <-- AÑADIR ESTA LÍNEA
 
 # =========================================================================
 # 🆕 IMPORTS PARA UPLOAD DIRECTO (segunda sección)
@@ -315,10 +318,13 @@ traditional_urlpatterns = [
     
     # 🔄 INTERACCIONES CON CANCIONES
     path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
+    
+    # 🎯 RUTAS DE DESCARGA (TUS ORIGINALES + NUEVA)
     path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
-    path('songs/<int:song_id>/download-url/', 
-         get_download_url_view, 
-         name='song-download-url'),
+    path('songs/<int:song_id>/download-url/', get_download_url_view, name='song-download-url'),
+    # 🆕 NUEVA RUTA DE CONFIRMACIÓN
+    path('songs/download/confirm/', confirm_download_view, name='song-download-confirm'),
+    
     path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
     path('songs/<int:song_id>/stream/legacy/', views.StreamSongViewCompat.as_view(), name='song-stream-legacy'),
     path('stream/debug/', views.StreamSongViewDebug.as_view(), name='stream-debug'),
@@ -575,4 +581,6 @@ class UploadReprocessView(APIView):
 # 4. URLs de compatibilidad
 # 5. Definiciones de vistas auxiliares
 #
-# Todo funciona incluso si algunos módulos no están implementados completamente
+# ✅ CAMBIOS REALIZADOS:
+# - Línea 17: Import de confirm_download_view
+# - Línea 162-164: Nueva ruta /songs/download/confirm/
