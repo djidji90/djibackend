@@ -1137,14 +1137,40 @@ def get_download_url_view(request, song_id):
 # ============================================
 # 🆕 NUEVO ENDPOINT: Confirmar descarga
 # ============================================
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
+# ============================================
+# 🆕 ENDPOINT DE CONFIRMACIÓN (CORREGIDO)
+# ============================================
+@api_view(['POST', 'OPTIONS'])
 def confirm_download_view(request):
     """
     ✅ Confirma que la descarga fue exitosa
-    Solo este endpoint INCREMENTA el contador
+    - OPTIONS: No requiere auth (para CORS/preflight)
+    - POST: Requiere auth y confirma la descarga
     """
+    
+    # ========================================
+    # MANEJAR OPTIONS (PREFLIGHT) - Sin autenticación
+    # ========================================
+    if request.method == 'OPTIONS':
+        response = Response(status=200)
+        response['Allow'] = 'POST, OPTIONS'
+        response['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+        response['Access-Control-Allow-Origin'] = '*'  # O tu dominio específico
+        response['Access-Control-Max-Age'] = '3600'
+        return response
+    
+    # ========================================
+    # MANEJAR POST - Requiere autenticación
+    # ========================================
     try:
+        # Verificar autenticación
+        if not request.user.is_authenticated:
+            return Response(
+                {"error": "Autenticación requerida"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
         download_token = request.data.get('download_token')
         file_size = request.data.get('file_size')
         success = request.data.get('success', True)
