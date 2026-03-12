@@ -28,6 +28,8 @@ import redis  # Del bloque inferior
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Tuple, Optional, Dict, Any
 from django.views.decorators.csrf import csrf_exempt
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from rest_framework.decorators import api_view, throttle_classes
 # -----------------------------------------------------------------------------
 # DJANGO CORE
 # -----------------------------------------------------------------------------
@@ -1137,31 +1139,27 @@ def get_download_url_view(request, song_id):
             {"error": "Error interno del servidor"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
 @api_view(['POST', 'OPTIONS'])
+@throttle_classes([])  # 🔥 Deshabilita throttling
 def confirm_download_view(request):
     """
     ✅ Confirma que la descarga fue exitosa
-    - OPTIONS: No requiere auth (para CORS/preflight)
-    - POST: Requiere auth y confirma la descarga
     """
     
-    # ========================================
-    # MANEJAR OPTIONS (PREFLIGHT) - Sin autenticación
-    # ========================================
+    # OPTIONS - Sin autenticación
     if request.method == 'OPTIONS':
         response = Response(status=200)
         response['Allow'] = 'POST, OPTIONS'
         response['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         response['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
-        response['Access-Control-Allow-Origin'] = '*'  # O tu dominio específico
+        response['Access-Control-Allow-Origin'] = '*'
         response['Access-Control-Max-Age'] = '3600'
         return response
     
-    # ========================================
-    # MANEJAR POST - Requiere autenticación
-    # ========================================
+    # POST - Confirmación
     try:
-        # Verificar autenticación
         if not request.user.is_authenticated:
             return Response(
                 {"error": "Autenticación requerida"},
@@ -1169,7 +1167,6 @@ def confirm_download_view(request):
             )
         
         download_token = request.data.get('download_token')
-        file_size = request.data.get('file_size')
         success = request.data.get('success', True)
         
         if not download_token:
@@ -1178,7 +1175,7 @@ def confirm_download_view(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Buscar en cache primero (rápido)
+        # Buscar en cache o DB
         token_data = cache.get(f"token_{download_token}")
         
         if token_data:
@@ -1195,31 +1192,24 @@ def confirm_download_view(request):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Verificar propiedad
         if download.user_id != request.user.id:
             return Response(
                 {"error": "No autorizado"},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Actualizar estado
+        # Actualizar estado (sin file_size)
         with transaction.atomic():
             download.is_confirmed = success
-            if file_size and success:
-                download.file_size = file_size
             download.save()
 
-            # ✅ SOLO SI FUE EXITOSA: Incrementar contador
             if success:
                 Song.objects.filter(id=download.song_id).update(
                     downloads_count=F('downloads_count') + 1
                 )
 
-        # Limpiar cache
         cache.delete(f"token_{download_token}")
-
         logger.info(f"✅ Descarga confirmada: {download_token[:8]}...")
-
         return Response({"status": "confirmed"})
 
     except Exception as e:
@@ -1228,7 +1218,6 @@ def confirm_download_view(request):
             {"error": "Error interno"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
 
 # ============================================
 # VERSIÓN LEGACY (SIN CAMBIOS)

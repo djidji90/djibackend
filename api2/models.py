@@ -127,7 +127,7 @@ class Download(models.Model):
     ip_address = models.GenericIPAddressField(blank=True, null=True)
     user_agent = models.TextField(blank=True, null=True)
     
-    # 🆕 NUEVOS CAMPOS (solo estos 2)
+    # 🆕 NUEVOS CAMPOS
     download_token = models.CharField(max_length=64, null=False, blank=True)  # 🔥 NO PERMITIR NULL
     is_confirmed = models.BooleanField(default=False)  # ¿Llegó la confirmación?
 
@@ -142,18 +142,9 @@ class Download(models.Model):
     def __str__(self):
         return f"{self.user.username} downloaded {self.song.title}"
 
-    def save(self, *args, **kwargs):
-        # Guardar primero
-        super().save(*args, **kwargs)
-        
-        # 🆕 SOLO contar si está confirmada
-        if self.is_confirmed:
-            self.song.downloads_count = Download.objects.filter(
-                song=self.song, 
-                is_confirmed=True  # Solo contar confirmadas
-            ).count()
-            self.song.save(update_fields=['downloads_count'])
-
+    # ⚠️ IMPORTANTE: EL MÉTODO save HA SIDO ELIMINADO
+    # El contador de descargas se maneja EXCLUSIVAMENTE en la vista confirm_download_view
+    # para evitar el doble incremento que causaba que 2 != 1 en los tests
 class PlayHistory(models.Model):
     """Registro de reproducciones para analytics"""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)

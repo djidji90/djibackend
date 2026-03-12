@@ -397,6 +397,7 @@ REST_FRAMEWORK = {
         'status': '200/minute',
         'stream': '100/hour',      # 🎵 NUEVO - Streaming usuarios autenticados
         'stream_anon': '10/hour',  # 🎵 NUEVO - Streaming usuarios anónimos
+         'confirm': '100/hour',  
     },
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
