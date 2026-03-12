@@ -27,7 +27,7 @@ import os  # Del bloque inferior
 import redis  # Del bloque inferior
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Tuple, Optional, Dict, Any
-
+from django.views.decorators.csrf import csrf_exempt
 # -----------------------------------------------------------------------------
 # DJANGO CORE
 # -----------------------------------------------------------------------------
@@ -1079,31 +1079,36 @@ def get_download_url_view(request, song_id):
         download_token = secrets.token_urlsafe(32)
         
         # ========================================
-        # 🔥 CAMBIO: REGISTRAR DESCARGA CON TOKEN (PENDIENTE)
+        # ✅ REGISTRAR DESCARGA - SIN TRY/EXCEPT
         # ========================================
-        try:
-            download = Download.objects.create(
-                user=request.user,
-                song=song,
-                download_token=download_token,  # 🆕 NUEVO
-                is_confirmed=False,              # 🆕 NUEVO - Pendiente
-                file_size=file_info.get('size', 0),
-                ip_address=request.META.get('REMOTE_ADDR'),
-                user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
-            )
+        # Asegurar que file_size no sea None
+        file_size = file_info.get('size', 0)
+        if file_size is None:
+            file_size = 0
             
-            # Guardar token en cache
-            cache.set(
-                f"token_{download_token}",
-                {
-                    'download_id': download.id,
-                    'user_id': request.user.id,
-                    'song_id': song.id
-                },
-                timeout=URL_EXPIRATION
-            )
-        except Exception as e:
-            logger.warning(f"Error registrando descarga API: {e}")
+        # Truncar user_agent a 255 chars
+        user_agent = request.META.get('HTTP_USER_AGENT', '')[:255]
+        
+        download = Download.objects.create(
+            user=request.user,
+            song=song,
+            download_token=download_token,
+            is_confirmed=False,
+            file_size=file_size,
+            ip_address=request.META.get('REMOTE_ADDR'),
+            user_agent=user_agent
+        )
+        
+        # Guardar token en cache
+        cache.set(
+            f"token_{download_token}",
+            {
+                'download_id': download.id,
+                'user_id': request.user.id,
+                'song_id': song.id
+            },
+            timeout=URL_EXPIRATION
+        )
         
         # ========================================
         # RESPUESTA JSON (CON TOKEN)
@@ -1112,12 +1117,13 @@ def get_download_url_view(request, song_id):
         title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
         filename = f"{artist_part} - {title_part}.mp3"
         
-        # 🔥 CAMBIO: Incluir token en respuesta
+        logger.info(f"✅ Token guardado en DB: {download_token[:8]}... para canción {song_id}")
+        
         return Response({
             'download_url': stream_url,
-            'download_token': download_token,  # 🆕 NUEVO
+            'download_token': download_token,
             'expires_in': URL_EXPIRATION,
-            'file_size': file_info.get('size', 0),
+            'file_size': file_size,
             'filename': filename,
             'song': {
                 'id': song.id,
@@ -1127,19 +1133,11 @@ def get_download_url_view(request, song_id):
         })
         
     except Exception as exc:
-        logger.exception(f"Error en get_download_url: {exc}")
+        logger.exception(f"❌ Error en get_download_url: {exc}")
         return Response(
             {"error": "Error interno del servidor"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
-
-# ============================================
-# 🆕 NUEVO ENDPOINT: Confirmar descarga
-# ============================================
-# ============================================
-# 🆕 ENDPOINT DE CONFIRMACIÓN (CORREGIDO)
-# ============================================
 @api_view(['POST', 'OPTIONS'])
 def confirm_download_view(request):
     """
