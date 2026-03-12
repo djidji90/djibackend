@@ -1123,7 +1123,6 @@ def get_download_url_view(request, song_id):
             'download_url': stream_url,
             'download_token': download_token,
             'expires_in': URL_EXPIRATION,
-            'file_size': file_size,
             'filename': filename,
             'song': {
                 'id': song.id,
