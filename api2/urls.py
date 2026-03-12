@@ -324,6 +324,11 @@ traditional_urlpatterns = [
     path('songs/<int:song_id>/download-url/', get_download_url_view, name='song-download-url'),
     # 🆕 NUEVA RUTA DE CONFIRMACIÓN
     path('songs/download/confirm/', confirm_download_view, name='song-download-confirm'),
+
+    # api2/urls.py - AÑADE ESTA LÍNEA
+    path('songs/<int:song_id>/download-count/', 
+     views.song_download_count_view, 
+     name='song-download-count'),
     
     path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
     path('songs/<int:song_id>/stream/legacy/', views.StreamSongViewCompat.as_view(), name='song-stream-legacy'),

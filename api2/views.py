@@ -1277,7 +1277,40 @@ def download_song_proxy_view(request, song_id):
             {"error": "Error interno"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+# views.py - AÑADIR ESTO AL FINAL
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def song_download_count_view(request, song_id):
+    """
+    ENDPOINT ULTRA SIMPLE - Solo incrementa contador
+    """
+    try:
+        # 1. Verificar que la canción existe
+        song = get_object_or_404(Song, id=song_id)
+        
+        # 2. Incrementar contador (atómico)
+        song.downloads_count = F('downloads_count') + 1
+        song.save(update_fields=['downloads_count'])
+        
+        # 3. (Opcional) Registrar para estadísticas
+        Download.objects.create(
+            user=request.user,
+            song=song,
+            ip_address=request.META.get('REMOTE_ADDR'),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
+        )
+        
+        logger.info(f"✅ Descarga contabilizada: user={request.user.id} song={song_id}")
+        
+        return Response({"status": "ok"})
+        
+    except Exception as e:
+        logger.exception(f"Error en download count: {e}")
+        return Response(
+            {"error": "Error interno"},
+            status=500
+        )
 # -----------------------------------------------------------------------------
 # MÉTRICAS PROMETHEUS - DEFINIDAS UNA SOLA VEZ (GLOBAL)
 # -----------------------------------------------------------------------------
