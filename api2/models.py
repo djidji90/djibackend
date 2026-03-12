@@ -128,7 +128,7 @@ class Download(models.Model):
     user_agent = models.TextField(blank=True, null=True)
     
     # 🆕 NUEVOS CAMPOS (solo estos 2)
-    download_token = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    download_token = models.CharField(max_length=64, null=False, blank=True)  # 🔥 NO PERMITIR NULL
     is_confirmed = models.BooleanField(default=False)  # ¿Llegó la confirmación?
 
     class Meta:
