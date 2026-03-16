@@ -1667,7 +1667,7 @@ class StreamSongView(APIView):
                     song=song,
                     duration_played=30,  # 30 segundos = 1 reproducción válida
                     ip_address=self._get_client_ip(request),
-                    user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
+                    
                 )
                 logger.debug(f"PlayHistory creado para song:{song.id} user:{request.user.id}")
             except Exception as e:
