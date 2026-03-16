@@ -30,6 +30,7 @@ from typing import Tuple, Optional, Dict, Any
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.decorators import api_view, throttle_classes
+from .models import PlayHistory  # Ajusta la ruta según tu estructura
 # -----------------------------------------------------------------------------
 # DJANGO CORE
 # -----------------------------------------------------------------------------
@@ -1445,6 +1446,15 @@ class StreamSongView(APIView):
         """Genera ID único para tracing de requests"""
         return f"{int(time.time())}-{request.user.id}"
     
+    def _get_client_ip(self, request):
+        """Obtiene IP real del cliente considerando proxies"""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0].strip()
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+    
     def _check_permissions(self, request, song: Song) -> Tuple[bool, Optional[str]]:
         """
         Verifica permisos de negocio
@@ -1648,6 +1658,22 @@ class StreamSongView(APIView):
                 STREAM_REQUESTS_TOTAL.labels(status='success').inc()
             
             # ========================================
+            # 🔥 NUEVO: REGISTRAR REPRODUCCIÓN
+            # ========================================
+            try:
+                PlayHistory.objects.create(
+                    user=request.user,
+                    song=song,
+                    duration_played=30,  # 30 segundos = 1 reproducción válida
+                    ip_address=self._get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
+                )
+                logger.debug(f"PlayHistory creado para song:{song.id} user:{request.user.id}")
+            except Exception as e:
+                # No interrumpimos el flujo principal si falla el registro
+                logger.error(f"Error creando PlayHistory: {e}")
+            
+            # ========================================
             # 6️⃣ PREPARAR RESPUESTA JSON
             # ========================================
             response_data = {
@@ -1809,10 +1835,6 @@ class StreamSongViewDebug(APIView):
         
         return Response(info)
 
-
-# =============================================================================
-# 📊 ENDPOINT DE MÉTRICAS PARA PROMETHEUS
-# =============================================================================
 
 # =============================================================================
 # 📊 ENDPOINT DE MÉTRICAS PARA PROMETHEUS

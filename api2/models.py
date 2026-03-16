@@ -165,7 +165,7 @@ class PlayHistory(models.Model):
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         # Actualizar contador de reproducciones si se reprodujo más de 30 segundos
-        if self.duration_played > 30:
+        if self.duration_played >= 30:
             self.song.plays_count += 1
             self.song.save(update_fields=['plays_count'])
 
