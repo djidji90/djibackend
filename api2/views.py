@@ -30,7 +30,7 @@ from typing import Tuple, Optional, Dict, Any
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.decorators import api_view, throttle_classes
-from .models import PlayHistory  # Ajusta la ruta según tu estructura
+ # Ajusta la ruta según tu estructura
 # -----------------------------------------------------------------------------
 # DJANGO CORE
 # -----------------------------------------------------------------------------
@@ -85,6 +85,7 @@ from .models import (
     UploadQuota, 
     Song, 
     UserProfile, 
+    PlayHistory,
     Like, 
     Download, 
     Comment, 
