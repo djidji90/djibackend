@@ -56,19 +56,27 @@ class Song(models.Model):
         return f"{self.title} by {self.artist}"
 
     def save(self, *args, **kwargs):
-        # ⚠️ CORRECCIÓN: Solo generar keys si no existen
+        # Generar file_key solo si no existe
         if not self.file_key or self.file_key == "songs/temp_file":
             self.file_key = self.generate_r2_key('songs')
-        if not self.image_key:
+        
+        # 🔥 CORREGIDO: Solo generar image_key si es explícitamente None
+        # (no si es string vacío)
+        if self.image_key is None:
             self.image_key = self.generate_r2_key('images')
         
         super().save(*args, **kwargs)
 
     def generate_r2_key(self, folder):
-        """Genera una key única para R2"""
+        """Genera una key única para R2 con el formato correcto"""
         ext = '.mp3' if folder == 'songs' else '.jpg'
         unique_id = uuid.uuid4().hex[:12]
-        return f"{folder}/{unique_id}{ext}"
+        
+        # 🔥 CORREGIDO: Las imágenes van a songs/images/
+        if folder == 'images':
+            return f"songs/images/{unique_id}{ext}"
+        else:
+            return f"{folder}/{unique_id}{ext}"
 
     def delete(self, *args, **kwargs):
         # Eliminar archivos de R2 antes de borrar el objeto
@@ -89,7 +97,6 @@ class Song(models.Model):
     @property
     def image_name(self):
         """Nombre de la imagen sin la ruta"""
-    
         return os.path.basename(self.image_key) if self.image_key else None
 
 
