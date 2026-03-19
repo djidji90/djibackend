@@ -38,6 +38,8 @@ import json
 
 # Importar modelos
 from api2.models import UploadSession, UploadQuota, Song
+from api2 import discovery_views
+
 
 # Importar tasks
 from .tasks.upload_tasks import (
@@ -360,6 +362,18 @@ traditional_urlpatterns = [
     
     # 🩺 HEALTH CHECKS
     path('health/', views.health_check, name='health_check'),
+
+
+
+    path('songs/trending/', discovery_views.TrendingSongsView.as_view(), name='trending-songs'),
+    path('songs/top-downloads/', discovery_views.TopDownloadsView.as_view(), name='top-downloads'),
+    path('songs/top-plays/', discovery_views.TopPlaysView.as_view(), name='top-plays'),
+    path('songs/top-likes/', discovery_views.TopLikesView.as_view(), name='top-likes'),
+    path('songs/recent/', discovery_views.RecentSongsView.as_view(), name='recent-songs'),
+    
+    # Géneros
+    path('genres/', discovery_views.GenreListView.as_view(), name='genre-list'),
+    path('genres/<str:genre>/songs/', discovery_views.SongsByGenreView.as_view(), name='songs-by-genre'),
 ]
 
 # Agregar rutas de health si existen las views
