@@ -47,13 +47,13 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.text import slugify
 from django.views.decorators.cache import cache_page
-
+from django.core.exceptions import ValidationError as DjangoValidationError
 # -----------------------------------------------------------------------------
 # DRF (Django REST Framework)
 # -----------------------------------------------------------------------------
 from rest_framework import status, generics
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError, PermissionDenied
+from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
@@ -148,9 +148,23 @@ User = get_user_model()
 # En tu views.py
 
 
+# pagination.pyfrom rest_framework.pagination import PageNumberPaginationfrom rest_framework.response import Response
+
 class CommentPagination(PageNumberPagination):
-    page_size = 3
+    page_size = 10  # Aumentamos de 3 a 10
     page_size_query_param = 'page_size'
+    max_page_size = 50  # Límite máximo
+    
+    def get_paginated_response(self, data):
+        """Personalizar respuesta de paginación"""
+        return Response({
+            'count': self.page.paginator.count,
+            'total_pages': self.page.paginator.num_pages,
+            'current_page': self.page.number,
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data
+        })
 
 # Music Event List View
 @extend_schema(description="Listar eventos de música")
@@ -1883,105 +1897,200 @@ class StreamMetricsView(APIView):
         return HttpResponse(metrics, content_type='text/plain; version=0.0.4')
    
 # Comments Views
-@extend_schema(tags=['Comentarios'])
+# Agregamos un throttle específico para creación de comentarios
+class CommentCreateThrottle(UserRateThrottle):
+    rate = '10/minute'  # Máximo 10 comentarios por minuto por usuario
 class CommentListCreateView(generics.ListCreateAPIView):
     serializer_class = CommentSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = CommentPagination
-
+    throttle_classes = [CommentCreateThrottle]  # Solo aplica a POST
+    
     def get_queryset(self):
-        try:
-            song_id = self.kwargs.get('song_id')
-            if not song_id:
-                logger.error("No se proporcionó song_id en la URL")
-                return Comment.objects.none()
-                
-            return Comment.objects.filter(song_id=song_id).select_related('user').order_by("-created_at")
-        except KeyError as e:
-            logger.error(f"Error: Parámetro 'song_id' no encontrado en URL: {e}")
-            return Comment.objects.none()
-        except Exception as e:
-            logger.error(f"Error getting comments: {e}")
-            raise ValidationError("Error al obtener comentarios")
-
+        """Obtener comentarios de una canción específica"""
+        song_id = self.kwargs.get('song_id')
+        
+        if not song_id:
+            logger.error("No se proporcionó song_id en la URL")
+            raise NotFound(detail="ID de canción no proporcionado")
+        
+        # Verificar que la canción existe (404 si no)
+        get_object_or_404(Song, id=song_id)
+        
+        # Retornar queryset optimizado con select_related
+        return Comment.objects.filter(
+            song_id=song_id
+        ).select_related('user').order_by('-created_at')
+    
     def perform_create(self, serializer):
+        """Crear un nuevo comentario con validaciones robustas"""
         try:
             song_id = self.kwargs.get('song_id')
+            
             if not song_id:
-                raise ValidationError("ID de canción no proporcionado en la URL")
+                raise ValidationError({"detail": "ID de canción no proporcionado"})
             
-            song = Song.objects.filter(id=song_id).first()
-            if not song:
-                raise ValidationError("La canción especificada no existe")
-                
-            serializer.save(user=self.request.user, song_id=song_id)
-            cache.delete(f"song_{song_id}_comments")
+            # Verificar que la canción existe
+            song = get_object_or_404(Song, id=song_id)
             
-        except IntegrityError as e:
-            logger.error(f"Error creating comment: {e}")
-            raise ValidationError("Error de integridad al crear comentario")
+            # Validar contenido antes de guardar
+            content = serializer.validated_data.get('content', '')
+            
+            # Usar la validación del modelo
+            temp_comment = Comment(content=content)
+            try:
+                temp_comment.clean()  # Ejecuta la validación del modelo
+            except DjangoValidationError as e:
+                # Convertir Django ValidationError a DRF ValidationError
+                raise ValidationError({"content": e.messages})
+            
+            # Guardar comentario
+            comment = serializer.save(
+                user=self.request.user,
+                song=song  # Pasamos el objeto song directamente
+            )
+            
+            # Invalidar caché
+            self._invalidate_cache(song_id)
+            
+            logger.info(
+                f"Comentario creado exitosamente",
+                extra={
+                    'comment_id': comment.id,
+                    'song_id': song_id,
+                    'user_id': self.request.user.id,
+                    'content_length': len(content)
+                }
+            )
+            
         except ValidationError:
             raise
+        except IntegrityError as e:
+            logger.error(f"Error de integridad al crear comentario: {e}")
+            raise ValidationError({"detail": "Error al guardar el comentario"})
+        except DatabaseError as e:
+            logger.error(f"Error de base de datos al crear comentario: {e}")
+            raise ValidationError({"detail": "Error de base de datos al crear comentario"})
         except Exception as e:
-            logger.error(f"Error creating comment: {e}")
-            raise ValidationError("Error inesperado al crear comentario")
+            logger.error(f"Error inesperado al crear comentario: {e}", exc_info=True)
+            raise ValidationError({"detail": "Error inesperado al crear comentario"})
+    
+    def _invalidate_cache(self, song_id):
+        """Invalidar caché de comentarios"""
+        # Invalidamos la primera página (la más común)
+        cache.delete(f"song_{song_id}_comments_page_1")
+        # También podríamos invalidar un contador si existe
+        cache.delete(f"song_{song_id}_comments_count")
 
-@extend_schema(tags=['Comentarios'])
 class SongCommentsDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Comment.objects.all()
     serializer_class = CommentSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
-   
-    def get_serializer_context(self):
-        """Asegurar que el request está en el contexto del serializer"""
-        context = super().get_serializer_context()
-        # DRF ya debería incluir 'request', pero nos aseguramos
-        if 'request' not in context and hasattr(self, 'request'):
-            context['request'] = self.request
-        return context
-
+    
+    def get_queryset(self):
+        """Base queryset con select_related optimizado"""
+        return Comment.objects.select_related('user', 'song')
+    
+    def get_object(self):
+        """Obtener objeto con verificación de permisos"""
+        obj = super().get_object()
+        
+        # Verificar permisos para operaciones de escritura
+        if self.request.method in ['PUT', 'PATCH', 'DELETE']:
+            if obj.user != self.request.user:
+                logger.warning(
+                    f"Intento de modificación no autorizado",
+                    extra={
+                        'comment_id': obj.id,
+                        'user_id': self.request.user.id,
+                        'comment_owner_id': obj.user.id,
+                        'method': self.request.method
+                    }
+                )
+                raise PermissionDenied("No tienes permiso para modificar este comentario")
+        
+        return obj
+    
+    def perform_update(self, serializer):
+        """Actualizar comentario usando la lógica del modelo"""
+        try:
+            comment = serializer.instance
+            
+            # Validar contenido usando el método clean() del modelo
+            new_content = serializer.validated_data.get('content', comment.content)
+            temp_comment = Comment(content=new_content)
+            try:
+                temp_comment.clean()
+            except DjangoValidationError as e:
+                raise ValidationError({"content": e.messages})
+            
+            # Guardar cambios (el modelo se encargará de marcar is_edited si cambia)
+            serializer.save()
+            
+            # Invalidar caché
+            self._invalidate_cache(comment.song_id)
+            
+            logger.info(
+                f"Comentario actualizado",
+                extra={
+                    'comment_id': comment.id,
+                    'user_id': self.request.user.id,
+                    'song_id': comment.song_id,
+                    'was_edited': comment.is_edited
+                }
+            )
+            
+        except ValidationError:
+            raise
+        except DatabaseError as e:
+            logger.error(f"Error de base de datos al actualizar comentario: {e}")
+            raise ValidationError({"detail": "Error al actualizar el comentario"})
+    
+    def perform_destroy(self, instance):
+        """Eliminar comentario (hard delete)"""
+        try:
+            song_id = instance.song_id
+            
+            # Registrar antes de eliminar
+            logger.info(
+                f"Eliminando comentario",
+                extra={
+                    'comment_id': instance.id,
+                    'user_id': self.request.user.id,
+                    'song_id': song_id,
+                    'content_preview': instance.content[:100]
+                }
+            )
+            
+            # Eliminar físicamente
+            instance.delete()
+            
+            # Invalidar caché
+            self._invalidate_cache(song_id)
+            
+        except DatabaseError as e:
+            logger.error(f"Error de base de datos al eliminar comentario: {e}")
+            raise ValidationError({"detail": "Error al eliminar el comentario"})
+    
+    def _invalidate_cache(self, song_id):
+        """Invalidar caché de comentarios"""
+        cache.delete(f"song_{song_id}_comments_page_1")
+        cache.delete(f"song_{song_id}_comments_count")
+    
     def handle_exception(self, exc):
+        """Manejo centralizado de excepciones"""
         if isinstance(exc, DatabaseError):
-            logger.error(f"Database error in comment detail: {exc}")
+            logger.error(f"Error de base de datos: {exc}")
             return Response(
-                {"error": "Error de base de datos al procesar comentario"},
+                {"detail": "Error de base de datos, intente más tarde"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        elif isinstance(exc, PermissionDenied):
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         return super().handle_exception(exc)
-
-    def perform_update(self, serializer):
-        try:
-            # Verificar que el usuario sea el dueño del comentario
-            if serializer.instance.user != self.request.user:
-                raise PermissionDenied("No puedes editar este comentario")
-           
-            # Marcar como editado
-            serializer.save(is_edited=True)
-           
-            # Invalidar cache si es necesario
-            cache_key = f"song_{serializer.instance.song_id}_comments"
-            cache.delete(cache_key)
-           
-        except DatabaseError as e:
-            logger.error(f"Database error updating comment: {e}")
-            raise ValidationError("Error al actualizar el comentario")
-
-    def perform_destroy(self, instance):
-        try:
-            # Verificar que el usuario sea el dueño del comentario
-            if instance.user != self.request.user:
-                raise PermissionDenied("No puedes eliminar este comentario")
-           
-            super().perform_destroy(instance)
-           
-            # Invalidar cache
-            cache_key = f"song_{instance.song_id}_comments"
-            cache.delete(cache_key)
-           
-        except DatabaseError as e:
-            logger.error(f"Database error deleting comment: {e}")
-            raise ValidationError("Error al eliminar el comentario")
-
 # Artist List View
 @extend_schema(description="Lista de artistas únicos con cache")
 class ArtistListView(APIView):

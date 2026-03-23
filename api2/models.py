@@ -169,10 +169,17 @@ class PlayHistory(models.Model):
             self.song.plays_count += 1
             self.song.save(update_fields=['plays_count'])
 
-
 class Comment(models.Model):
-    song = models.ForeignKey(Song, related_name="comments", on_delete=models.CASCADE)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="comments", on_delete=models.CASCADE)
+    song = models.ForeignKey(
+        Song, 
+        related_name="comments", 
+        on_delete=models.CASCADE
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        related_name="comments", 
+        on_delete=models.CASCADE
+    )
     content = models.TextField(max_length=1000)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -181,26 +188,43 @@ class Comment(models.Model):
     class Meta:
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['created_at']),
+            # Índice compuesto: filtra por song y ordena por created_at descendente
+            # Este es el más importante porque es la consulta principal:
+            # Comment.objects.filter(song_id=id).order_by('-created_at')
+            models.Index(fields=['song', '-created_at'], name='comment_song_created_idx'),
+            
+            # Índice compuesto para consultas por usuario (útil para "mis comentarios")
+            models.Index(fields=['user', '-created_at'], name='comment_user_created_idx'),
+            
+            # Índice simple para ordenamiento global
+            models.Index(fields=['-created_at'], name='comment_created_idx'),
         ]
 
     def __str__(self):
         return f"{self.user.username} - {self.song.title}"
 
     def clean(self):
+        """Validación a nivel de modelo"""
         if len(self.content.strip()) == 0:
             raise ValidationError("El comentario no puede estar vacío.")
         if len(self.content.strip()) > 1000:
             raise ValidationError("El comentario no puede tener más de 1000 caracteres.")
 
     def save(self, *args, **kwargs):
-        # Marcar como editado si ya existe y está cambiando el contenido
+        """Marcar como editado si el contenido cambia"""
+        # Llamar a clean() antes de guardar para asegurar validación
+        self.clean()
+        
+        # Verificar si es una actualización y el contenido cambió
         if self.pk:
-            original = Comment.objects.get(pk=self.pk)
-            if original.content != self.content:
-                self.is_edited = True
+            try:
+                original = Comment.objects.get(pk=self.pk)
+                if original.content != self.content:
+                    self.is_edited = True
+            except Comment.DoesNotExist:
+                pass  # Es un caso raro, pero manejable
+        
         super().save(*args, **kwargs)
-
 
 class CommentReaction(models.Model):
     REACTION_TYPES = [
