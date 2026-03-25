@@ -124,7 +124,7 @@ CORS_ALLOW_METHODS = [
 ]
 
 # ============================================
-# 🎵 CONFIGURACIÓN CORS PARA STREAMING (NUEVO)
+# 🎵 CONFIGURACIÓN CORS PARA STREAMING
 # ============================================
 
 CORS_ALLOW_HEADERS = [
@@ -140,17 +140,12 @@ CORS_ALLOW_HEADERS = [
     'x-file-name',
     'x-file-size',
     'x-upload-id',
-]
-
-# Headers adicionales para streaming
-CORS_ALLOW_HEADERS += [
     'range',
     'content-range',
     'accept-ranges',
     'if-range',
 ]
 
-# Headers expuestos para streaming
 CORS_EXPOSE_HEADERS = [
     'accept-ranges',
     'content-range',
@@ -238,7 +233,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 
 # ================================
-# BASE DE DATOS
+# BASE DE DATOS - CORREGIDA (SIN CONEXIONES PERMANENTES)
 # ================================
 
 DATABASES = {
@@ -257,21 +252,23 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 if DATABASE_URL and not DEBUG:
     try:
         if 'postgresql://' in DATABASE_URL or 'postgres://' in DATABASE_URL:
+            # 🔥 CORRECCIÓN: CONN_MAX_AGE=0 para cerrar conexiones después de cada request
+            # Esto evita el error "too many clients already"
             DATABASES['default'] = dj_database_url.parse(
                 DATABASE_URL,
-                conn_max_age=600,
+                conn_max_age=0,  # Conexiones efímeras
                 conn_health_checks=True,
                 ssl_require=True,
             )
-            DATABASES['default']['CONN_MAX_AGE'] = 60
+            DATABASES['default']['CONN_MAX_AGE'] = 0
             DATABASES['default']['OPTIONS'] = {
-                'connect_timeout': 10,
+                'connect_timeout': 5,
                 'keepalives': 1,
-                'keepalives_idle': 30,
-                'keepalives_interval': 10,
-                'keepalives_count': 5,
+                'keepalives_idle': 5,
+                'keepalives_interval': 1,
+                'keepalives_count': 2,
             }
-            print("PostgreSQL configurado para producción con optimizaciones")
+            print("✅ PostgreSQL configurado con CONN_MAX_AGE=0 (conexiones efímeras)")
         else:
             print("DATABASE_URL no es de PostgreSQL. Usando SQLite.")
     except Exception as e:
@@ -326,7 +323,7 @@ if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
     AWS_S3_VERIFY = True
     AWS_S3_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE
     
-    print("R2 Configurado correctamente con optimizaciones")
+    print("✅ R2 Configurado correctamente con optimizaciones")
 else:
     missing = []
     if not R2_ACCESS_KEY_ID: missing.append('R2_ACCESS_KEY_ID')
@@ -395,9 +392,9 @@ REST_FRAMEWORK = {
         'uploads': '50/hour',
         'quota': '100/minute',
         'status': '200/minute',
-        'stream': '100/hour',      # 🎵 NUEVO - Streaming usuarios autenticados
-        'stream_anon': '10/hour',  # 🎵 NUEVO - Streaming usuarios anónimos
-         'confirm': '100/hour',  
+        'stream': '100/hour',
+        'stream_anon': '10/hour',
+        'confirm': '100/hour',  
     },
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
@@ -558,7 +555,7 @@ if not os.path.exists(BASE_DIR / "logs"):
     os.makedirs(BASE_DIR / "logs")
 
 # ================================
-# CACHE - OPTIMIZADO PARA PRODUCCIÓN
+# CACHE - OPTIMIZADO (CONEXIONES REDUCIDAS)
 # ================================
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
@@ -571,10 +568,10 @@ CACHES = {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "CONNECTION_POOL_CLASS": "redis.BlockingConnectionPool",
             "CONNECTION_POOL_KWARGS": {
-                "max_connections": 50,
-                "timeout": 20,
+                "max_connections": 10,  # 🔥 Reducido de 50 a 10
+                "timeout": 10,
             },
-            "MAX_CONNECTIONS": 1000,
+            "MAX_CONNECTIONS": 20,  # 🔥 Reducido de 1000 a 20
             "PICKLE_VERSION": -1,
             "SOCKET_KEEPALIVE": True,
             "SOCKET_TIMEOUT": 5,
@@ -585,7 +582,7 @@ CACHES = {
 }
 
 # ============================================
-# 🎵 CONFIGURACIÓN DE CACHE PARA STREAMING (NUEVO)
+# 🎵 CONFIGURACIÓN DE CACHE PARA STREAMING
 # ============================================
 
 PRESIGNED_URL_CACHE_TIMEOUT = 1800  # 30 minutos
@@ -593,14 +590,13 @@ FILE_EXISTS_CACHE_TIMEOUT = 300      # 5 minutos
 R2_CACHE_PREFIX = "r2"
 STREAM_URL_EXPIRATION = 300          # 5 minutos para URLs firmadas
 
-# Tiempos de cache específicos por vista
 VIEW_CACHE_TIMES = {
     'quota_view': 30,
     'status_view': 10,
     'user_profile': 60,
     'track_list': 120,
-    'stream_url': 300,      # 🎵 URLs de streaming
-    'stream_metadata': 600, # 🎵 Metadata de canciones
+    'stream_url': 300,
+    'stream_metadata': 600,
 }
 
 # Configuración de sesiones en cache
@@ -725,6 +721,7 @@ print("""
  ║  • Cache Redis: URLs cacheadas 30 minutos                  ║
  ║  • CORS headers para streaming configurados                ║
  ║  • Colas Celery: default, uploads, maintenance             ║
+ ║  • PostgreSQL: CONN_MAX_AGE=0 (conexiones efímeras)        ║
  ║  • Listo para producción                                   ║
  ╚════════════════════════════════════════════════════════════╝
 """)
