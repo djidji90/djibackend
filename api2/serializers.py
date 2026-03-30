@@ -40,9 +40,10 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 
-            'full_name', 'profile', 'date_joined'
+            'full_name', 'profile', 'date_joined',
+            'is_verified',  # ✅ AÑADIDO
         ]
-        read_only_fields = ['date_joined']
+        read_only_fields = ['date_joined', 'is_verified']  # ✅ is_verified solo lectura
 
     def get_full_name(self, obj) -> str:
         """Nombre completo del usuario"""
