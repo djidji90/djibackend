@@ -89,6 +89,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://www.api.djidjimusic.com",
     "https://djibackend-production.up.railway.app",
     "http://localhost:5173"
+    
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [

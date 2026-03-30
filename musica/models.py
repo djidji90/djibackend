@@ -1,8 +1,7 @@
 from django.db import models
+from django.contrib.auth.models import AbstractUser, Group, Permission
 
 # Create your models here.
-from django.contrib.auth.models import AbstractUser, Group, Permission
-from django.db import models
 
 class CustomUser(AbstractUser):
     first_name = models.CharField(max_length=200, blank=True)
@@ -11,6 +10,12 @@ class CustomUser(AbstractUser):
     city = models.CharField(max_length=100, blank=True)
     neighborhood = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=15, blank=True)
+    
+    # CAMPO NUEVO: usuario verificado
+    is_verified = models.BooleanField(
+        default=False,
+        help_text="Usuario verificado con badge azul"
+    )
 
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['email']
@@ -20,6 +25,7 @@ class CustomUser(AbstractUser):
 
     def __str__(self):
         return self.email
+
 
 class UserVisit(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name="visitas")
@@ -39,19 +45,3 @@ class UserVisit(models.Model):
 
     def __str__(self):
         return f"{self.ip} - {self.pais} ({self.ciudad}) - {self.fecha_visita}"
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-    
