@@ -61,6 +61,8 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
+# api2/views.py - AL INICIO DEL ARCHIVO
+from wallet.constants import SONG_CATEGORIES  # Si existe en constants.py
 
 # -----------------------------------------------------------------------------
 # FILTERS
@@ -103,7 +105,8 @@ from .serializers import (
     SongSerializer,
     CommentSerializer,
     MusicEventSerializer,
-    SongUploadSerializer
+    SongUploadSerializer, 
+    SongDetailSerializer
 )
 
 # -----------------------------------------------------------------------------
@@ -493,14 +496,37 @@ def song_suggestions(request):
         OpenApiParameter(name='page_size', description='Items por página', required=False, type=int),
     ]
 )
+# ============================================
+# 🎵 VISTA DE LISTA DE CANCIONES (MEJORADA CON WALLET)
+# ============================================
+
+@extend_schema(
+    description="Lista y busca canciones con filtros avanzados. Incluye filtros por categoría y disponibilidad de compra.",
+    parameters=[
+        OpenApiParameter(name='title', description='Filtrar por título', required=False, type=str),
+        OpenApiParameter(name='artist', description='Filtrar por artista', required=False, type=str),
+        OpenApiParameter(name='genre', description='Filtrar por género', required=False, type=str),
+        OpenApiParameter(name='category', description='Filtrar por categoría (standard, hit, premium, classic)', required=False, type=str),
+        OpenApiParameter(name='purchasable', description='Solo canciones disponibles para compra (true/false)', required=False, type=bool),
+        OpenApiParameter(name='q', description='Búsqueda general', required=False, type=str),
+        OpenApiParameter(name='page', description='Número de página', required=False, type=int),
+        OpenApiParameter(name='page_size', description='Items por página', required=False, type=int),
+    ]
+)
 class SongListView(generics.ListCreateAPIView):
     """
-    Vista para listar y crear canciones con filtros avanzados
+    Vista para listar y crear canciones con filtros avanzados.
+    
+    🔥 MEJORAS INCORPORADAS:
+    - Filtro por categoría (standard, hit, premium, classic)
+    - Filtro por disponibilidad de compra (is_purchasable)
+    - Información de precios en metadatos para frontend
+    - Campos de wallet incluidos en respuesta (vía SongSerializer)
     """
     serializer_class = SongSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['title', 'artist', 'genre']
+    filterset_fields = ['title', 'artist', 'genre', 'category']  # ✅ AGREGADO category
     
     # Optimizaciones
     renderer_classes = [JSONRenderer]
@@ -511,7 +537,15 @@ class SongListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         """
-        Construye el queryset con filtros avanzados
+        Construye el queryset con filtros avanzados.
+        
+        Filtros soportados:
+        - title: búsqueda parcial en título
+        - artist: búsqueda parcial en artista
+        - genre: búsqueda parcial en género
+        - category: filtro exacto por categoría (standard, hit, premium, classic)
+        - purchasable: filtrar solo canciones disponibles para compra
+        - q: búsqueda general en título, artista y género
         """
         try:
             queryset = Song.objects.all()
@@ -520,6 +554,8 @@ class SongListView(generics.ListCreateAPIView):
             title = self.request.query_params.get('title', '').strip()
             artist = self.request.query_params.get('artist', '').strip()
             genre = self.request.query_params.get('genre', '').strip()
+            category = self.request.query_params.get('category', '').strip()  # ✅ NUEVO
+            only_purchasable = self.request.query_params.get('purchasable', '').lower() == 'true'  # ✅ NUEVO
             general_query = self.request.query_params.get('q', '').strip()
             
             # Aplicar filtros
@@ -532,6 +568,18 @@ class SongListView(generics.ListCreateAPIView):
             if genre:
                 queryset = queryset.filter(genre__icontains=genre)
             
+            # ✅ NUEVO: Filtrar por categoría
+            if category:
+                valid_categories = ['standard', 'hit', 'premium', 'classic']
+                if category in valid_categories:
+                    queryset = queryset.filter(category=category)
+                else:
+                    logger.warning(f"Invalid category filter: {category}")
+            
+            # ✅ NUEVO: Solo canciones disponibles para compra
+            if only_purchasable:
+                queryset = queryset.filter(is_purchasable=True, is_public=True)
+            
             # Búsqueda general (en múltiples campos)
             if general_query:
                 queryset = queryset.filter(
@@ -543,6 +591,9 @@ class SongListView(generics.ListCreateAPIView):
             # Ordenar por fecha de creación (más recientes primero)
             queryset = queryset.order_by('-created_at')
             
+            # Optimizar: select_related para evitar queries adicionales
+            queryset = queryset.select_related('uploaded_by')
+            
             return queryset
             
         except Exception as e:
@@ -551,17 +602,22 @@ class SongListView(generics.ListCreateAPIView):
 
     def list(self, request, *args, **kwargs):
         """
-        Sobrescribir para agregar mensajes personalizados y metadatos
+        Sobrescribir para agregar mensajes personalizados y metadatos.
+        
+        Metadatos incluidos:
+        - timestamp: fecha y hora de la consulta
+        - page: página actual
+        - page_size: items por página
+        - has_filters: si se aplicaron filtros
+        - price_info: información de precios por categoría
         """
         try:
-            # ⚠️ SOLAMENTE ESTE CAMBIO: Proteger acceso a request.user
-            # Asegurar que request.user existe antes de usarlo
+            # Proteger acceso a request.user
             if not hasattr(request, 'user') or request.user is None:
-                # Si request.user es None, crear un usuario anónimo seguro
                 from django.contrib.auth.models import AnonymousUser
                 request.user = AnonymousUser()
             
-            # Ahora puedes llamar a super().list() de forma segura
+            # Ejecutar la consulta
             response = super().list(request, *args, **kwargs)
             
             # Agregar mensaje si no hay resultados
@@ -570,6 +626,7 @@ class SongListView(generics.ListCreateAPIView):
                     request.GET.get('title'),
                     request.GET.get('artist'),
                     request.GET.get('genre'),
+                    request.GET.get('category'),  # ✅ NUEVO
                     request.GET.get('q')
                 ])
                 
@@ -578,7 +635,7 @@ class SongListView(generics.ListCreateAPIView):
                 else:
                     response.data['message'] = "No hay canciones disponibles"
             
-            # Agregar metadatos
+            # ✅ NUEVO: Agregar metadatos enriquecidos
             response.data['_metadata'] = {
                 'timestamp': timezone.now().isoformat(),
                 'page': int(request.GET.get('page', 1)),
@@ -587,8 +644,25 @@ class SongListView(generics.ListCreateAPIView):
                     request.GET.get('title'),
                     request.GET.get('artist'),
                     request.GET.get('genre'),
+                    request.GET.get('category'),
                     request.GET.get('q')
-                ])
+                ]),
+                # ✅ NUEVO: Información de precios para frontend
+                'price_info': {
+                    'categories': {
+                        'standard': {'price': 500, 'currency': 'XAF', 'display': '500 XAF'},
+                        'hit': {'price': 750, 'currency': 'XAF', 'display': '750 XAF'},
+                        'premium': {'price': 1000, 'currency': 'XAF', 'display': '1000 XAF'},
+                        'classic': {'price': 300, 'currency': 'XAF', 'display': '300 XAF'},
+                    },
+                    'commission': {
+                        'artist_percentage': 80,
+                        'platform_percentage': 20,
+                        'artist_share': '80%',
+                        'platform_share': '20%'
+                    },
+                    'note': 'Los precios son fijos según categoría, definidos por la plataforma en acuerdo con el gremio de artistas.'
+                }
             }
             
             return response
@@ -602,16 +676,20 @@ class SongListView(generics.ListCreateAPIView):
 
     def handle_exception(self, exc):
         """
-        Manejar excepciones específicas
+        Manejar excepciones específicas con mensajes amigables.
         """
         if isinstance(exc, (DatabaseError, IntegrityError)):
             logger.error(f"Database error in SongListView: {exc}")
             return Response(
-                {"error": "Error de base de datos"},
+                {"error": "Error de base de datos", "detail": str(exc) if settings.DEBUG else None},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
+        if isinstance(exc, ValidationError):
+            return Response(
+                {"error": "Parámetros inválidos", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         return super().handle_exception(exc)
-# ============================================
 
 @api_view(['GET'])
 def debug_suggestions(request):
@@ -818,53 +896,49 @@ URL_EXPIRATION = 3600       # URLs de descarga válidas por 1 hora
 # ============================================
 # VISTA PRINCIPAL DE DESCARGA CON REDIRECT
 # ============================================
-@extend_schema(
-    description="""
-    Descargar una canción con streaming eficiente y soporte para reanudación.
-    Redirige directamente a Cloudflare R2 para una descarga optimizada.
-    """,
-    responses={
-        302: OpenApiResponse(description="Redirect a la URL firmada de R2"),
-        200: OpenApiResponse(description="Descarga directa (fallback)"),
-        403: OpenApiResponse(description="Sin permisos"),
-        404: OpenApiResponse(description="Canción no encontrada"),
-        429: OpenApiResponse(description="Límite de descargas excedido"),
-    } )
+# ============================================
+# 🎯 ENDPOINT PRINCIPAL DE DESCARGA (CORREGIDO)
+# ============================================
 
-      # URLs de descarga válidas por 1 hora
-# ============================================
-# 🎯 ENDPOINT PRINCIPAL (MODIFICADO - CAMBIOS MÍNIMOS)
-# ============================================
 @extend_schema(
     description="""
-    Descargar una canción con streaming eficiente y soporte para reanudación.
-    Redirige directamente a Cloudflare R2 para una descarga optimizada.
+    Descargar una canción con compra automática si es necesario.
+    
+    🔥 FLUJO:
+    1. Si el usuario ya compró la canción → descarga inmediata
+    2. Si no compró → intenta comprar con saldo actual
+    3. Si tiene saldo → compra + descarga
+    4. Si no tiene saldo → error 402 con opciones de recarga
+    
+    📌 NOTA: El streaming permanece gratuito con límites definidos.
     """,
     responses={
         302: OpenApiResponse(description="Redirect a la URL firmada de R2"),
-        200: OpenApiResponse(description="Descarga directa (fallback)"),
-        403: OpenApiResponse(description="Sin permisos"),
+        402: OpenApiResponse(description="Saldo insuficiente - Recarga requerida"),
+        403: OpenApiResponse(description="No autorizado (canción privada)"),
         404: OpenApiResponse(description="Canción no encontrada"),
-        429: OpenApiResponse(description="Límite de descargas excedido"),
+        429: OpenApiResponse(description="Límite de descargas alcanzado"),
+        500: OpenApiResponse(description="Error interno del servidor"),
     }
 )
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def download_song_view(request, song_id):
     """
-    🚀 VERSIÓN OPTIMIZADA - Descarga directa desde R2
+    🚀 VERSIÓN OPTIMIZADA CON COMPRA AUTOMÁTICA
     
-    FLUJO:
-    1. Verificar permisos y rate limiting
-    2. Generar URL firmada de R2 (válida 1 hora)
-    3. REDIRIGIR al cliente directamente a R2
-    
-    BENEFICIOS:
-    - ✅ El archivo NO pasa por el servidor
-    - ✅ 50% menos de ancho de banda
-    - ✅ Menor latencia (CDN global)
-    - ✅ Escalabilidad infinita
+    FLUJO COMPLETO:
+    1. Validar canción y archivo
+    2. Verificar si ya compró
+    3. Si no compró, intentar compra automática
+    4. Si compra exitosa o ya tenía, proceder con descarga
+    5. Rate limiting y registro de descarga
+    6. Redirigir a R2 con URL firmada
     """
+    
+    from wallet.services import WalletService
+    from wallet.exceptions import InsufficientFundsError, PurchaseFailedError
+    from decimal import Decimal
     
     try:
         # ========================================
@@ -872,59 +946,164 @@ def download_song_view(request, song_id):
         # ========================================
         song = get_object_or_404(Song, id=song_id)
         
+        # Validar que la canción está disponible
+        if not song.is_public and song.uploaded_by_id != request.user.id and not request.user.is_staff:
+            return Response(
+                {
+                    "error": "private_song",
+                    "message": "Esta canción es privada y no está disponible para descarga"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         # Validar que tiene archivo
         if not song.file_key or song.file_key == "songs/temp_file":
             logger.warning(f"Download attempt without file_key: song_id={song_id}")
             return Response(
-                {"error": "Archivo no disponible para descarga"},
+                {
+                    "error": "file_not_available",
+                    "message": "El archivo de audio no está disponible para descarga"
+                },
                 status=status.HTTP_404_NOT_FOUND
             )
 
         # ========================================
-        # 2️⃣ VERIFICAR PERMISOS
+        # 2️⃣ VERIFICAR SI EL USUARIO YA COMPRÓ
         # ========================================
-        # Staff siempre puede
-        if not request.user.is_staff:
-            # Canciones públicas: cualquiera autenticado
-            if not song.is_public:
-                # Canciones privadas: solo el propietario
-                if song.uploaded_by_id != request.user.id:
-                    return Response(
-                        {"error": "No tienes permisos para descargar esta canción"},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
+        from wallet.models import Transaction
+        has_purchased = Transaction.objects.filter(
+            wallet__user=request.user,
+            transaction_type='purchase',
+            metadata__song_id=song_id,
+            status='completed'
+        ).exists()
+        
+        # ========================================
+        # 3️⃣ SI NO COMPRÓ, INTENTAR COMPRA AUTOMÁTICA
+        # ========================================
+        purchase_attempted = False
+        if not has_purchased and request.user != song.uploaded_by and not request.user.is_staff:
+            try:
+                logger.info(
+                    f"Auto-purchase attempt: user={request.user.id}, song={song_id}, price={song.price}"
+                )
+                transaction, hold = WalletService.purchase_song(
+                    user_id=request.user.id,
+                    song_id=song_id
+                )
+                purchase_attempted = True
+                has_purchased = True
+                logger.info(
+                    f"Auto-purchase successful: user={request.user.id}, "
+                    f"song={song_id}, amount={abs(transaction.amount)}"
+                )
+                
+            except InsufficientFundsError as e:
+                wallet = request.user.wallet
+                return Response(
+                    {
+                        "error": "insufficient_funds",
+                        "message": "Saldo insuficiente para descargar esta canción",
+                        "required": float(song.price),
+                        "current_balance": float(wallet.available_balance),
+                        "currency": wallet.currency,
+                        "song": {
+                            "id": song.id,
+                            "title": song.title,
+                            "artist": song.artist,
+                            "price": float(song.price),
+                            "price_display": song.formatted_price
+                        },
+                        "action": "topup",
+                        "topup_url": "/api/wallet/deposit/",
+                        "topup_options": [
+                            {"amount": 1000, "display": "1,000 XAF"},
+                            {"amount": 5000, "display": "5,000 XAF"},
+                            {"amount": 10000, "display": "10,000 XAF"},
+                            {"amount": 50000, "display": "50,000 XAF"}
+                        ]
+                    },
+                    status=status.HTTP_402_PAYMENT_REQUIRED
+                )
+                
+            except PurchaseFailedError as e:
+                logger.error(f"Auto-purchase failed: {e}")
+                return Response(
+                    {
+                        "error": "purchase_failed",
+                        "message": "No se pudo procesar la compra. Intenta nuevamente.",
+                        "detail": str(e)
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+            except Exception as e:
+                logger.exception(f"Unexpected error in auto-purchase: {e}")
+                return Response(
+                    {
+                        "error": "purchase_error",
+                        "message": "Error al procesar la compra. Intenta nuevamente."
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        
+        # ========================================
+        # 4️⃣ VERIFICAR PERMISO FINAL
+        # ========================================
+        # Casos permitidos:
+        # - Usuario compró (ahora o antes)
+        # - Es el artista (dueño)
+        # - Es staff
+        if not (has_purchased or song.uploaded_by_id == request.user.id or request.user.is_staff):
+            return Response(
+                {
+                    "error": "permission_denied",
+                    "message": "No tienes permisos para descargar esta canción",
+                    "purchase_required": True,
+                    "song_price": float(song.price),
+                    "song_price_display": song.formatted_price
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # ========================================
-        # 3️⃣ RATE LIMITING (1 descarga/hora por canción)
+        # 5️⃣ RATE LIMITING (1 descarga/hora por canción)
         # ========================================
+        RATE_CACHE_TIMEOUT = 3600  # 1 hora
         cache_key = f"download_{request.user.id}_{song_id}"
+        
         if cache.get(cache_key):
             return Response(
                 {
-                    "error": "Límite de descargas alcanzado",
-                    "message": "Espera 1 hora antes de volver a descargar esta canción",
+                    "error": "rate_limit_exceeded",
+                    "message": "Límite de descargas alcanzado. Espera 1 hora antes de volver a descargar.",
                     "retry_after": RATE_CACHE_TIMEOUT
                 },
                 status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
         # ========================================
-        # 4️⃣ VERIFICAR QUE EL ARCHIVO EXISTE EN R2
+        # 6️⃣ VERIFICAR QUE EL ARCHIVO EXISTE EN R2
         # ========================================
+        from .r2_utils import check_file_exists, get_file_info, generate_presigned_url
+        
         if not check_file_exists(song.file_key):
             logger.error(f"File not found in R2: {song.file_key}")
             return Response(
-                {"error": "El archivo de audio no está disponible"},
+                {
+                    "error": "file_missing",
+                    "message": "El archivo de audio no está disponible en el servidor"
+                },
                 status=status.HTTP_404_NOT_FOUND
             )
 
         # ========================================
-        # 5️⃣ GENERAR URL FIRMADA (DIRECTA A R2)
+        # 7️⃣ GENERAR URL FIRMADA (DIRECTA A R2)
         # ========================================
+        URL_EXPIRATION = 3600  # 1 hora
         file_info = get_file_info(song.file_key) or {}
         file_size = file_info.get('size', 0)
         
-        # Generar URL firmada (válida 1 hora)
         stream_url = generate_presigned_url(
             key=song.file_key,
             expiration=URL_EXPIRATION,
@@ -934,29 +1113,33 @@ def download_song_view(request, song_id):
         if not stream_url:
             logger.error(f"Failed to generate presigned URL for {song.file_key}")
             return Response(
-                {"error": "Error al generar URL de descarga"},
+                {
+                    "error": "url_generation_failed",
+                    "message": "Error al generar la URL de descarga"
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
         # ========================================
-        # 🔥 CAMBIO 1: Generar token para esta descarga
+        # 8️⃣ REGISTRAR DESCARGA PARA ANALYTICS
         # ========================================
+        import secrets
+        from .models import Download
+        from django.db import transaction as db_transaction
+        
         download_token = secrets.token_urlsafe(32)
-
-        # ========================================
-        # 🔥 CAMBIO 2: Registrar descarga con token (PENDIENTE)
-        # ========================================
+        
         try:
-            with transaction.atomic():
+            with db_transaction.atomic():
                 download = Download.objects.create(
                     user=request.user, 
                     song=song,
-                    download_token=download_token,  # 🆕 NUEVO
-                    is_confirmed=False,              # 🆕 NUEVO - Pendiente
-                    file_size=file_size,
+                    download_token=download_token,
+                    is_confirmed=False,
                     ip_address=request.META.get('REMOTE_ADDR'),
                     user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
                 )
+                
                 cache.set(cache_key, True, timeout=RATE_CACHE_TIMEOUT)
                 
                 # Guardar token en cache para validación rápida
@@ -969,18 +1152,26 @@ def download_song_view(request, song_id):
                     },
                     timeout=URL_EXPIRATION
                 )
+                
+                # Si fue una compra automática, actualizar contador de descargas
+                if purchase_attempted:
+                    song.downloads_count = F('downloads_count') + 1
+                    song.save(update_fields=['downloads_count'])
+                    
         except Exception as e:
-            logger.exception(f"Error registrando descarga (continuando): {e}")
+            logger.exception(f"Error registering download (continuing): {e}")
 
         # ========================================
-        # 7️⃣ GENERAR NOMBRE DE ARCHIVO SEGURO
+        # 9️⃣ GENERAR NOMBRE DE ARCHIVO SEGURO
         # ========================================
+        from django.utils.text import slugify
+        
         artist_part = slugify(song.artist or "Artista", allow_unicode=True)
         title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
         filename = f"{artist_part} - {title_part}".strip(' -')
         
         # ========================================
-        # 8️⃣ REDIRIGIR DIRECTAMENTE A R2 🚀
+        # 🔟 REDIRIGIR DIRECTAMENTE A R2
         # ========================================
         response = redirect(stream_url)
         
@@ -988,28 +1179,48 @@ def download_song_view(request, song_id):
         response['Content-Disposition'] = f'attachment; filename="{filename}.mp3"'
         response['Content-Type'] = 'audio/mpeg'
         
-        # Headers de control
+        # Headers de control y caché
         response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         response['Pragma'] = 'no-cache'
         response['Expires'] = '0'
         
-        # 🔥 CAMBIO 3: Añadir token a los headers
+        # Headers informativos
         response['X-Download-Token'] = download_token
         response['X-Download-Size'] = str(file_size)
         response['X-Download-Expires'] = str(URL_EXPIRATION)
+        response['X-Purchased'] = str(has_purchased)
         
+        # Logging estructurado
         logger.info(
-            f"DOWNLOAD REDIRECT - user={request.user.id} "
-            f"song={song_id} token={download_token[:8]}... "
-            f"size={file_size}"
+            f"DOWNLOAD SUCCESS | "
+            f"user={request.user.id} | "
+            f"song={song_id} | "
+            f"title={song.title[:30]} | "
+            f"purchased={has_purchased} | "
+            f"auto_purchase={purchase_attempted} | "
+            f"size={file_size} | "
+            f"token={download_token[:8]}"
         )
         
         return response
 
-    except Exception as exc:
-        logger.exception(f"ERROR en download - song={song_id} user={request.user.id}")
+    except Song.DoesNotExist:
+        logger.warning(f"Song not found: {song_id}")
         return Response(
-            {"error": "Error interno del servidor"},
+            {
+                "error": "song_not_found",
+                "message": "La canción solicitada no existe"
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+        
+    except Exception as exc:
+        logger.exception(f"ERROR en download_song_view: {exc}")
+        return Response(
+            {
+                "error": "internal_error",
+                "message": "Error interno del servidor. Por favor, intenta nuevamente."
+            },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -2525,6 +2736,8 @@ def custom_500(request):
 # api2/views.py - Agrega esto al final del archiv
 
 
+# api2/views.py - SongUploadView COMPLETA ACTUALIZADA
+
 @extend_schema(
     description="""
     Sube una nueva canción con archivos de audio e imagen a R2 Cloudflare.
@@ -2534,10 +2747,11 @@ def custom_500(request):
     - Máximo 20 subidas por hora
     - Archivo de audio: MP3, WAV, OGG, M4A, FLAC, AAC, WEBM (max 100MB)
     - Imagen opcional: JPG, PNG, WEBP, GIF (max 10MB)
+    - Categoría opcional: standard, hit, premium, classic (default: standard)
     """,
     request=SongUploadSerializer,
     responses={
-        201: SongUploadSerializer,
+        201: OpenApiResponse(description="Canción subida exitosamente"),
         400: OpenApiResponse(description="Datos inválidos o archivos faltantes"),
         401: OpenApiResponse(description="No autenticado"),
         403: OpenApiResponse(description="Sin permisos"),
@@ -2547,7 +2761,12 @@ def custom_500(request):
 )
 class SongUploadView(APIView):
     """
-    Vista optimizada para subir canciones con archivos a R2 Cloudflare
+    Vista optimizada para subir canciones con archivos a R2 Cloudflare.
+    
+    🔥 MEJORAS INCORPORADAS:
+    - Guarda categoría de la canción (standard, hit, premium, classic)
+    - Devuelve información de precio en la respuesta
+    - Incluye campos de wallet para frontend
     """
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [IsAuthenticated]
@@ -2600,7 +2819,7 @@ class SongUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # 4. Usar serializer
+        # 4. Usar serializer (incluye category)
         serializer = SongUploadSerializer(
             data=request.data,
             context={'request': request}
@@ -2631,15 +2850,17 @@ class SongUploadView(APIView):
             
             # 7. Log exitoso
             logger.info(
-                f" Canción subida exitosamente - "
+                f"Canción subida exitosamente - "
                 f"ID: {song.id}, "
                 f"Usuario: {request.user.username}, "
                 f"Título: {song.title}, "
+                f"Categoría: {song.category}, "
+                f"Precio: {song.price} XAF, "
                 f"Audio Key: {song.file_key}, "
                 f"Tamaño: {song.file_size if hasattr(song, 'file_size') else 'N/A'} bytes"
             )
             
-            # 8. Respuesta exitosa
+            # 8. Respuesta exitosa con campos de wallet
             return Response(
                 {
                     "success": True,
@@ -2650,6 +2871,12 @@ class SongUploadView(APIView):
                         "artist": song.artist,
                         "genre": song.genre,
                         "duration": song.duration,
+                        "category": song.category,                        # 🆕 NUEVO
+                        "price": float(song.price),                       # 🆕 NUEVO
+                        "price_display": song.formatted_price,            # 🆕 NUEVO
+                        "artist_share": float(song.artist_share),         # 🆕 NUEVO
+                        "platform_share": float(song.platform_share),     # 🆕 NUEVO
+                        "is_purchasable": song.is_purchasable,            # 🆕 NUEVO
                         "is_public": song.is_public,
                         "audio_key": song.file_key,
                         "image_key": song.image_key,
@@ -2662,6 +2889,13 @@ class SongUploadView(APIView):
                     "stats": {
                         "uploads_this_hour": current_uploads + 1,
                         "remaining_uploads": 20 - (current_uploads + 1)
+                    },
+                    "price_info": {                                          # 🆕 NUEVO
+                        "category": song.category,
+                        "price": float(song.price),
+                        "display": song.formatted_price,
+                        "artist_gets": f"{song.artist_share} XAF (80%)",
+                        "platform_gets": f"{song.platform_share} XAF (20%)"
                     }
                 },
                 status=status.HTTP_201_CREATED
@@ -2670,7 +2904,7 @@ class SongUploadView(APIView):
         except serializers.ValidationError as e:
             # Error de validación del serializer
             logger.warning(
-                f" Error de validación en upload - "
+                f"Error de validación en upload - "
                 f"Usuario: {request.user.username}, "
                 f"Error: {str(e)}"
             )
@@ -2687,7 +2921,7 @@ class SongUploadView(APIView):
         except Exception as e:
             # Error inesperado
             logger.error(
-                f" Error inesperado en SongUploadView - "
+                f"Error inesperado en SongUploadView - "
                 f"Usuario: {request.user.username}, "
                 f"Error: {str(e)}",
                 exc_info=True
@@ -3107,27 +3341,27 @@ def health_check(request):
             }
         }, status=503)
     
+# api2/views.py - complete_search (versión actualizada)
+
 @extend_schema(
     description="Búsqueda completa para frontend moderno (todo en una respuesta)",
     parameters=[
         OpenApiParameter(name='q', description='Texto de búsqueda', required=True, type=str),
         OpenApiParameter(name='limit', description='Límite por categoría (default: 5, max: 10)', required=False, type=int),
         OpenApiParameter(name='include', description='Incluir: songs,artists,suggestions,all', required=False, type=str)
-    ]  # ← CIERRA LA LISTA
-)  # ← ¡Y ESTE ES EL PARÉNTESIS QUE FALTA! CIERRA EL DECORADOR
+    ]
+)
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def complete_search(request):
     """
     Endpoint único para el search bar profesional
     Devuelve canciones, artistas y sugerencias en una sola respuesta
-    Optimizado para el frontend React + search.service.js
     """
     query = request.GET.get('q', '').strip()
     limit = min(int(request.GET.get('limit', 5)), 10)
     include = request.GET.get('include', 'all').split(',')
 
-    # Validaciones básicas
     if not query or len(query) < 2:
         return Response({
             "songs": [],
@@ -3153,20 +3387,15 @@ def complete_search(request):
         import hashlib
         import json
 
-        # Generar cache key
         cache_key = f"complete_search:{hashlib.md5(f'{query}:{limit}:{include}'.encode()).hexdigest()}"
-        cache_timeout = 300  # 5 minutos para búsquedas
+        cache_timeout = 300
 
-        # Intentar cache primero
         if 'no_cache' not in request.GET:
             cached = cache.get(cache_key)
             if cached:
-                logger.debug(f"Cache HIT para búsqueda: {query}")
                 cached['_metadata']['cache_hit'] = True
                 cached['_metadata']['cached_at'] = timezone.now().isoformat()
                 return Response(cached)
-
-        logger.debug(f"Cache MISS para búsqueda: {query}")
 
         result = {
             "songs": [],
@@ -3176,13 +3405,11 @@ def complete_search(request):
             "playlists": [],
         }
 
-        # 1. BUSCAR CANCIONES (si está incluido) - ERROR CORREGIDO AQUÍ
+        # 1. BUSCAR CANCIONES (INCLUYENDO CAMPOS WALLET)
         if 'all' in include or 'songs' in include:
             songs = Song.objects.filter(
                 Q(title__icontains=query) | Q(artist__icontains=query) | Q(genre__icontains=query)
             ).annotate(
-                # SOLO anotar match_relevance - NO usar likes_count aquí
-                # porque ya existe como campo en el modelo Song
                 match_relevance=Case(
                     When(title__icontains=query, artist__icontains=query, then=Value(100)),
                     When(title__icontains=query, then=Value(80)),
@@ -3193,13 +3420,31 @@ def complete_search(request):
                 )
             ).select_related('uploaded_by').values(
                 'id', 'title', 'artist', 'genre', 'duration',
-                'uploaded_by__username', 'created_at', 'likes_count',  # ← Usar campo existente del modelo
-                'file_key', 'stream_url', 'download_url'
-            ).order_by('-match_relevance', '-likes_count', '-created_at')[:limit]  # ← Ordenar por campo existente
+                'category',  # ← NUEVO
+                'is_purchasable',  # ← NUEVO
+                'uploaded_by__username', 'created_at', 'likes_count',
+                'file_key'
+            ).order_by('-match_relevance', '-likes_count', '-created_at')[:limit]
 
-            result["songs"] = list(songs)
+            # Procesar canciones para incluir información de precio
+            songs_list = []
+            for s in songs:
+                # Obtener precio según categoría
+                price_map = {'standard': 500, 'hit': 750, 'premium': 1000, 'classic': 300}
+                category = s.get('category', 'standard')
+                price = price_map.get(category, 500)
+                
+                songs_list.append({
+                    **s,
+                    'price': price,
+                    'price_display': f"{price} XAF",
+                    'artist_share': int(price * 0.8),
+                    'platform_share': int(price * 0.2)
+                })
+            
+            result["songs"] = songs_list
 
-        # 2. BUSCAR ARTISTAS (si está incluido)
+        # 2. BUSCAR ARTISTAS (sin cambios)
         if 'all' in include or 'artists' in include:
             from django.db.models import Subquery, OuterRef
 
@@ -3237,20 +3482,18 @@ def complete_search(request):
                 for a in artists
             ]
 
-        # 3. SUGERENCIAS (usar el endpoint optimizado)
+        # 3. SUGERENCIAS (sin cambios)
         if 'all' in include or 'suggestions' in include:
-            # Crear request simulada para llamar a song_suggestions internamente
             from django.test import RequestFactory
             factory = RequestFactory()
             mock_request = factory.get(f'/api2/suggestions/?query={query}&limit={limit}')
             mock_request.user = request.user
 
-            # Llamar a la función optimizada
             suggestions_response = song_suggestions(mock_request)
             if suggestions_response.status_code == 200:
                 result["suggestions"] = suggestions_response.data.get("suggestions", [])
 
-        # 4. METADATA ENRIQUECIDA
+        # 4. METADATA ENRIQUECIDA CON INFORMACIÓN DE PRECIOS
         total_items = (
             len(result["songs"]) + 
             len(result["artists"]) + 
@@ -3269,15 +3512,19 @@ def complete_search(request):
                 "suggestions": len(result["suggestions"])
             },
             "query_length": len(query),
-            "response_time_ms": 0  # Podrías calcular esto
+            # ← NUEVO: Información de precios para frontend
+            "price_info": {
+                "standard": {"price": 500, "display": "500 XAF"},
+                "hit": {"price": 750, "display": "750 XAF"},
+                "premium": {"price": 1000, "display": "1000 XAF"},
+                "classic": {"price": 300, "display": "300 XAF"}
+            }
         }
 
         result["_metadata"] = metadata
 
-        # Guardar en cache (excepto para queries muy cortas)
         if len(query) >= 3 and total_items > 0:
             cache.set(cache_key, result, timeout=cache_timeout)
-            logger.debug(f"Cache SET para búsqueda: {query} ({total_items} items)")
 
         return Response(result)
 
@@ -3298,8 +3545,7 @@ def complete_search(request):
                 "error": "search_failed",
                 "cache_hit": False
             }
-        }, status=200)  # Siempre 200 para que frontend maneje el error
-    
+        }, status=200)
 class UploadRateThrottle(UserRateThrottle):
     """Rate limiting para uploads"""
     scope = 'uploads'
@@ -4407,3 +4653,238 @@ class CeleryStatusView(APIView):
         })
         
         return Response(health)               
+
+# api2/views.py - AGREGAR DESPUÉS DE SongListView
+
+# ============================================
+# 🎵 VISTA DE DETALLE DE CANCIÓN (NUEVA)
+# ============================================
+
+@extend_schema(
+    description="""
+    Obtener detalles completos de una canción específica.
+    
+    **Información incluida:**
+    - Datos básicos: título, artista, género, duración
+    - Wallet: categoría, precio, disponible para compra
+    - Para artistas: estadísticas de ventas y ganancias
+    - URLs firmadas para streaming (si tiene permisos)
+    
+    **Permisos:**
+    - Canciones públicas: cualquier usuario autenticado
+    - Canciones privadas: solo el dueño
+    - Estadísticas de ventas: solo el dueño o admin
+    """,
+    responses={
+        200: SongDetailSerializer,
+        403: OpenApiResponse(description="No tienes permisos para ver esta canción"),
+        404: OpenApiResponse(description="Canción no encontrada")
+    }
+)
+
+
+# api2/views.py - SongDetailView COMPLETO (ubicar después de SongListView)
+
+# ============================================
+# 🎵 VISTA DE DETALLE DE CANCIÓN (CORREGIDA)
+# ============================================
+
+@extend_schema(
+    description="""
+    Obtener detalles completos de una canción específica.
+    
+    **Información incluida:**
+    - Datos básicos: título, artista, género, duración
+    - Wallet: categoría, precio, disponible para compra
+    - Para artistas: estadísticas de ventas y ganancias
+    - URLs firmadas para streaming (si tiene permisos)
+    
+    **Permisos:**
+    - Canciones públicas: cualquier usuario autenticado
+    - Canciones privadas: solo el dueño
+    - Estadísticas de ventas: solo el dueño o admin
+    """,
+    responses={
+        200: SongDetailSerializer,
+        403: OpenApiResponse(description="No tienes permisos para ver esta canción"),
+        404: OpenApiResponse(description="Canción no encontrada")
+    }
+)
+class SongDetailView(generics.RetrieveAPIView):
+    """
+    Vista para obtener el detalle de una canción específica.
+
+    🔥 CARACTERÍSTICAS:
+    - Manejo seguro de usuarios anónimos
+    - Permisos robustos
+    - URLs firmadas para streaming
+    - Información de precios y permisos
+    """
+
+    serializer_class = SongDetailSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    lookup_field = 'id'
+    lookup_url_kwarg = 'pk'
+
+    # ----------------------------------
+    # 📦 QUERYSET OPTIMIZADO
+    # ----------------------------------
+    def get_queryset(self):
+        return Song.objects.select_related('uploaded_by').prefetch_related(
+            'likes',
+            'comments'
+        )
+
+    # ----------------------------------
+    # 🔐 GET OBJECT SEGURO
+    # ----------------------------------
+    def get_object(self):
+        song = super().get_object()
+
+        user = getattr(self.request, 'user', None)
+        is_authenticated = bool(user and user.is_authenticated)
+
+        # Control de acceso a canciones privadas
+        if not song.is_public:
+            if not is_authenticated:
+                raise PermissionDenied("No tienes permiso para ver esta canción")
+
+            if song.uploaded_by != user and not user.is_staff:
+                raise PermissionDenied("No tienes permiso para ver esta canción")
+
+        return song
+
+    # ----------------------------------
+    # 🎧 RETRIEVE PRINCIPAL
+    # ----------------------------------
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+
+        response_data = serializer.data
+
+        # usuario seguro
+        user = getattr(request, 'user', None)
+        is_authenticated = bool(user and user.is_authenticated)
+
+        # ----------------------------------
+        # 🎧 STREAM URL
+        # ----------------------------------
+        stream_url = None
+
+        if is_authenticated:
+            if instance.uploaded_by == user or user.is_staff:
+                stream_url = self._generate_stream_url(instance)
+            else:
+                try:
+                    from wallet.models import Transaction
+
+                    has_purchased = Transaction.objects.filter(
+                        wallet__user=user,
+                        transaction_type='purchase',
+                        metadata__song_id=instance.id,
+                        status='completed'
+                    ).exists()
+
+                    if has_purchased:
+                        stream_url = self._generate_stream_url(instance)
+
+                except Exception as e:
+                    logger.warning(f"Error checking purchase: {e}")
+
+        if stream_url:
+            response_data['stream_url'] = stream_url
+
+        # ----------------------------------
+        # 🔐 PERMISOS
+        # ----------------------------------
+        response_data['_permissions'] = {
+            'can_edit': is_authenticated and (
+                instance.uploaded_by == user or (user and user.is_staff)
+            ),
+            'can_download': is_authenticated,
+            'can_purchase': instance.can_be_purchased and (
+                not is_authenticated or instance.uploaded_by != user
+            ),
+            'is_owner': is_authenticated and instance.uploaded_by == user,
+            'is_public': instance.is_public
+        }
+
+        # ----------------------------------
+        # 💰 PRECIOS - CORREGIDO
+        # ----------------------------------
+        # ✅ Usar SONG_CATEGORY_CHOICES en lugar de dict(SONG_CATEGORIES)
+        try:
+            from wallet.constants import SONG_CATEGORY_CHOICES
+            category_dict = dict(SONG_CATEGORY_CHOICES)
+        except ImportError:
+            # Fallback seguro
+            category_dict = {
+                'standard': 'Estándar',
+                'hit': 'Éxito',
+                'premium': 'Premium',
+                'classic': 'Clásico'
+            }
+        
+        response_data['_price_info'] = {
+            'price': float(instance.price or 0),
+            'formatted': instance.formatted_price,
+            'artist_share': float(instance.artist_share or 0),
+            'platform_share': float(instance.platform_share or 0),
+            'category': instance.category,
+            'category_display': category_dict.get(
+                instance.category, instance.category
+            )
+        }
+
+        return Response(response_data)
+
+    # ----------------------------------
+    # 🔑 GENERAR URL SEGURA
+    # ----------------------------------
+    def _generate_stream_url(self, song):
+        try:
+            from .r2_utils import generate_presigned_url, check_file_exists
+
+            if not song.file_key or song.file_key == "songs/temp_file":
+                return None
+
+            if not check_file_exists(song.file_key):
+                logger.warning(f"File not found: {song.file_key}")
+                return None
+
+            return generate_presigned_url(
+                key=song.file_key,
+                expiration=3600,
+                use_cache=True
+            )
+
+        except Exception as e:
+            logger.error(f"Error generating stream URL for song {song.id}: {e}")
+            return None
+
+    # ----------------------------------
+    # ⚠️ MANEJO DE ERRORES
+    # ----------------------------------
+    def handle_exception(self, exc):
+        if isinstance(exc, PermissionDenied):
+            return Response(
+                {
+                    "error": "permission_denied",
+                    "message": str(exc),
+                    "code": "PERMISSION_DENIED"
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if isinstance(exc, Http404):
+            return Response(
+                {
+                    "error": "not_found",
+                    "message": "Canción no encontrada",
+                    "code": "NOT_FOUND"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return super().handle_exception(exc)

@@ -7,22 +7,13 @@ from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
 # Importar views tradicionales
-# =========================================================================
-# 📚 IMPORTS PARA VIEWS EXISTENTES (primera sección)
-# =========================================================================
-from . import views  # Views tradicionales ya existentes
-from api2.views import download_song_view, get_download_url_view
+from . import views
+from api2.views import download_song_view, get_download_url_view, confirm_download_view
 
-# 🆕 NUEVO IMPORT para confirmación
-from api2.views import confirm_download_view  # <-- AÑADIR ESTA LÍNEA
-
-# =========================================================================
-# 🆕 IMPORTS PARA UPLOAD DIRECTO (segunda sección)
-# =========================================================================
 # Importaciones con manejo de errores para evitar problemas
 from django.core.cache import cache
-
 from django.db.models import Count, Sum, Avg, Q
 from django.db.models.functions import TruncDate
 from django.contrib.auth import get_user_model
@@ -40,7 +31,6 @@ import json
 from api2.models import UploadSession, UploadQuota, Song
 from api2 import discovery_views
 
-
 # Importar tasks
 from .tasks.upload_tasks import (
     cleanup_expired_uploads,
@@ -50,28 +40,21 @@ from .tasks.upload_tasks import (
 
 logger = logging.getLogger(__name__)
 
+
 # =========================================================================
 # 🎯 VISTAS AUXILIARES (definidas localmente para evitar imports circulares)
 # =========================================================================
 
-# PRIMERO definimos las clases que usaremos en las URLs
-# (esto evita el error de "cannot import name before definition")
-
 class UploadAdminDashboardView(APIView):
-    """
-    Dashboard administrativo para monitorear uploads
-    GET /api/admin/uploads/
-    """
+    """Dashboard administrativo para monitorear uploads"""
     permission_classes = [IsAdminUser]
     
     def get(self, request):
         User = get_user_model()
         
-        # Parámetros de fecha
         days = int(request.query_params.get('days', 7))
         start_date = timezone.now() - timedelta(days=days)
         
-        # Estadísticas generales
         total_uploads = UploadSession.objects.count()
         successful_uploads = UploadSession.objects.filter(status='ready').count()
         failed_uploads = UploadSession.objects.filter(status='failed').count()
@@ -79,12 +62,10 @@ class UploadAdminDashboardView(APIView):
             status__in=['pending', 'uploaded', 'confirmed', 'processing']
         ).count()
         
-        # Distribución por estado
         status_distribution = UploadSession.objects.values('status').annotate(
             count=Count('id')
         ).order_by('-count')
         
-        # Uploads por día (últimos N días)
         daily_uploads = UploadSession.objects.filter(
             created_at__gte=start_date
         ).annotate(
@@ -95,7 +76,6 @@ class UploadAdminDashboardView(APIView):
             avg_size=Avg('file_size')
         ).order_by('date')
         
-        # Top usuarios por uploads
         top_users = UploadSession.objects.values(
             'user__id', 'user__username', 'user__email'
         ).annotate(
@@ -124,10 +104,7 @@ class UploadAdminDashboardView(APIView):
 
 
 class UploadStatsView(APIView):
-    """
-    Estadísticas públicas de uploads
-    GET /api/stats/uploads/
-    """
+    """Estadísticas públicas de uploads"""
     
     def get_permissions(self):
         if getattr(settings, 'UPLOAD_STATS_PUBLIC', False):
@@ -135,13 +112,11 @@ class UploadStatsView(APIView):
         return [IsAuthenticated()]
     
     def get(self, request):
-        # Estadísticas generales (simplificadas)
         total_stats = UploadSession.objects.aggregate(
             total_uploads=Count('id'),
             successful_uploads=Count('id', filter=Q(status='ready')),
         )
         
-        # Últimos 7 días
         week_ago = timezone.now() - timedelta(days=7)
         weekly_stats = UploadSession.objects.filter(
             created_at__gte=week_ago
@@ -166,15 +141,11 @@ class UploadStatsView(APIView):
 
 
 class CleanupExpiredUploadsView(APIView):
-    """
-    Trigger manual para cleanup de uploads expirados
-    POST /api/maintenance/cleanup-expired/
-    """
+    """Trigger manual para cleanup de uploads expirados"""
     permission_classes = [IsAdminUser]
     
     def post(self, request):
         try:
-            # Ejecutar cleanup sincrónicamente o async
             async_mode = request.data.get('async', True)
             
             if async_mode:
@@ -203,19 +174,14 @@ class CleanupExpiredUploadsView(APIView):
 
 
 class CheckOrphanedFilesView(APIView):
-    """
-    Verificar archivos huérfanos en R2
-    POST /api/maintenance/check-orphaned/
-    """
+    """Verificar archivos huérfanos en R2"""
     permission_classes = [IsAdminUser]
     
     def post(self, request):
         try:
-            # Solo verificar o también eliminar
             delete_files = request.data.get('delete_files', False)
             
             if delete_files:
-                # Ejecutar cleanup completo
                 task = cleanup_orphaned_r2_files.delay()
                 return Response({
                     "success": True,
@@ -224,7 +190,6 @@ class CheckOrphanedFilesView(APIView):
                     "action": "check_and_delete"
                 })
             else:
-                # Solo verificar (modo seguro)
                 task = cleanup_orphaned_r2_files.delay()
                 return Response({
                     "success": True,
@@ -242,35 +207,46 @@ class CheckOrphanedFilesView(APIView):
             )
 
 
-# Ahora intentamos importar las views de upload directo desde views.py
-# 1. Definir stubs para views que pueden no existir todavía
-class DirectUploadRequestView(APIView):
+# =========================================================================
+# 🚀 STUBS PARA VISTAS DE UPLOAD DIRECTO (por si no existen en views.py)
+# =========================================================================
 
+class DirectUploadRequestView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request): 
         return Response({"error": "not_implemented"}, status=501)
+
 
 class UploadConfirmationView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, upload_id):
         return Response({"error": "not_implemented"}, status=501)
 
+
 class DirectUploadStatusView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request, upload_id):
         return Response({"error": "not_implemented"}, status=501)
+
 
 class UserUploadQuotaView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         return Response({"error": "not_implemented"}, status=501)
 
+
 class UploadCancellationView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, upload_id):
         return Response({"error": "not_implemented"}, status=501)
 
-# 2. Intentar importar las views reales si existen
+
+# =========================================================================
+# 🔄 INTENTAR IMPORTAR VISTAS REALES DESDE views.py
+# =========================================================================
+
+has_health_views = False
+
 try:
     from .views import (
         DirectUploadRequestView as RealDirectUploadRequestView,
@@ -280,32 +256,28 @@ try:
         UploadCancellationView as RealUploadCancellationView,
     )
     
-    # Si existen, reemplazar los stubs con las reales
     DirectUploadRequestView = RealDirectUploadRequestView
     UploadConfirmationView = RealUploadConfirmationView
     DirectUploadStatusView = RealDirectUploadStatusView
     UserUploadQuotaView = RealUserUploadQuotaView
     UploadCancellationView = RealUploadCancellationView
     
-    
     logger.info(" Vistas de upload_direct importadas correctamente desde views.py")
     
-    # También intentar importar las views de health
     try:
         from .views import HealthCheckView, CeleryStatusView
-        # Agregar a traditional_urlpatterns más abajo
         has_health_views = True
     except ImportError:
-        has_health_views = False
-        logger.warning("⚠️  Vistas de health no encontradas")
+        logger.warning("⚠️ Vistas de health no encontradas")
         
 except ImportError:
-    logger.warning("  Vistas de upload_direct no encontradas en views.py, usando stubs")
-    has_health_views = False
+    logger.warning("⚠️ Vistas de upload_direct no encontradas en views.py, usando stubs")
+
 
 # =========================================================================
 # 📋 URL PATTERNS - SISTEMA TRADICIONAL (EXISTENTE)
 # =========================================================================
+
 traditional_urlpatterns = [
     # 📚 DOCUMENTACIÓN API
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
@@ -321,17 +293,13 @@ traditional_urlpatterns = [
     # 🔄 INTERACCIONES CON CANCIONES
     path('songs/<int:song_id>/like/', views.LikeSongView.as_view(), name='song-like'),
     
-    # 🎯 RUTAS DE DESCARGA (TUS ORIGINALES + NUEVA)
+    # 🎯 RUTAS DE DESCARGA
     path('songs/<int:song_id>/download/', views.download_song_view, name='song-download'),
     path('songs/<int:song_id>/download-url/', get_download_url_view, name='song-download-url'),
-    # 🆕 NUEVA RUTA DE CONFIRMACIÓN
     path('songs/download/confirm/', confirm_download_view, name='song-download-confirm'),
-
-    # api2/urls.py - AÑADE ESTA LÍNEA
-    path('songs/<int:song_id>/download-count/', 
-     views.song_download_count_view, 
-     name='song-download-count'),
+    path('songs/<int:song_id>/download-count/', views.song_download_count_view, name='song-download-count'),
     
+    # 🎵 STREAMING
     path('songs/<int:song_id>/stream/', views.StreamSongView.as_view(), name='song-stream'),
     path('songs/<int:song_id>/stream/legacy/', views.StreamSongViewCompat.as_view(), name='song-stream-legacy'),
     path('stream/debug/', views.StreamSongViewDebug.as_view(), name='stream-debug'),
@@ -362,16 +330,16 @@ traditional_urlpatterns = [
     
     # 🩺 HEALTH CHECKS
     path('health/', views.health_check, name='health_check'),
-
-
-
+    
+    # 🆕 NUEVAS RUTAS DE DESCUBRIMIENTO
     path('songs/trending/', discovery_views.TrendingSongsView.as_view(), name='trending-songs'),
     path('songs/top-downloads/', discovery_views.TopDownloadsView.as_view(), name='top-downloads'),
     path('songs/top-plays/', discovery_views.TopPlaysView.as_view(), name='top-plays'),
     path('songs/top-likes/', discovery_views.TopLikesView.as_view(), name='top-likes'),
     path('songs/recent/', discovery_views.RecentSongsView.as_view(), name='recent-songs'),
+    path('songs/<int:pk>/', views.SongDetailView.as_view(), name='song-detail'),
     
-    # Géneros
+    # 🎵 GÉNEROS
     path('genres/', discovery_views.GenreListView.as_view(), name='genre-list'),
     path('genres/<str:genre>/songs/', discovery_views.SongsByGenreView.as_view(), name='songs-by-genre'),
 ]
@@ -383,7 +351,6 @@ if has_health_views:
         path('api/health/', HealthCheckView.as_view(), name='api-health'),
     ])
 else:
-    # Si no existen, agregar placeholder
     class HealthPlaceholderView(APIView):
         def get(self, request):
             return Response({
@@ -398,46 +365,45 @@ else:
         path('api/health/', HealthPlaceholderView.as_view(), name='api-health'),
     ])
 
+
 # =========================================================================
-# 🆕 URL PATTERNS - SISTEMA DE UPLOAD DIRECTO (NUEVO)
+# 🆕 URL PATTERNS - SISTEMA DE UPLOAD DIRECTO
 # =========================================================================
+
 direct_upload_urlpatterns = [
-    # 📤 UPLOAD DIRECTO A R2
     path('upload/direct/request/', DirectUploadRequestView.as_view(), name='direct-upload-request'),
     path('upload/direct/confirm/<uuid:upload_id>/', UploadConfirmationView.as_view(), name='direct-upload-confirm'),
     path('upload/direct/status/<uuid:upload_id>/', DirectUploadStatusView.as_view(), name='direct-upload-status'),
     path('upload/direct/cancel/<uuid:upload_id>/', UploadCancellationView.as_view(), name='direct-upload-cancel'),
-    
-    # 📊 CUOTA Y HISTORIAL
     path('upload/quota/', UserUploadQuotaView.as_view(), name='user-upload-quota'),
 ]
+
 
 # =========================================================================
 # 📊 URL PATTERNS - MONITORING Y ADMINISTRACIÓN
 # =========================================================================
+
 admin_urlpatterns = [
-    # Dashboard de uploads para admin
     path('admin/uploads/', UploadAdminDashboardView.as_view(), name='upload-admin-dashboard'),
-    
-    # Estadísticas de uploads
     path('stats/uploads/', UploadStatsView.as_view(), name='upload-stats'),
-    
-    # 🧹 UTILIDADES DE MANTENIMIENTO
     path('maintenance/cleanup-expired/', CleanupExpiredUploadsView.as_view(), name='cleanup-expired-uploads'),
     path('maintenance/check-orphaned/', CheckOrphanedFilesView.as_view(), name='check-orphaned-files'),
 ]
 
+
 # =========================================================================
-# ⚠️ URLS PARA COMPATIBILIDAD (SISTEMA TRADICIONAL)
+# ⚠️ URLS PARA COMPATIBILIDAD
 # =========================================================================
+
 compatibility_urlpatterns = [
-    # Upload tradicional (deprecated pero mantenido para compatibilidad)
     path('upload/', views.SongUploadView.as_view(), name='song-upload'),
 ]
+
 
 # =========================================================================
 # 🔗 COMBINAR TODAS LAS URL PATTERNS
 # =========================================================================
+
 urlpatterns = (
     traditional_urlpatterns + 
     direct_upload_urlpatterns + 
@@ -445,40 +411,34 @@ urlpatterns = (
     compatibility_urlpatterns
 )
 
+
 # =========================================================================
 # 🛠️ URLS PARA DESARROLLO
 # =========================================================================
+
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-    
-    # Health check adicional para desarrollo
     urlpatterns += [
         path('health/debug/', views.health_check, name='health-debug'),
     ]
 
+
 # =========================================================================
-# 📦 DEFINICIONES DE VISTAS AUXILIARES ADICIONALES
+# 📦 VISTAS AUXILIARES ADICIONALES
 # =========================================================================
 
 class UserUploadHistoryView(APIView):
-    """
-    Lista el historial de uploads del usuario
-    GET /api/upload/history/
-    """
+    """Lista el historial de uploads del usuario"""
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        # Parámetros de paginación
         page = request.query_params.get('page', 1)
         page_size = min(int(request.query_params.get('page_size', 20)), 100)
-        
-        # Filtros
         status_filter = request.query_params.get('status')
         date_from = request.query_params.get('date_from')
         date_to = request.query_params.get('date_to')
         
-        # Construir queryset
         uploads = UploadSession.objects.filter(user=request.user)
         
         if status_filter:
@@ -498,7 +458,6 @@ class UserUploadHistoryView(APIView):
             except (ValueError, TypeError):
                 pass
         
-        # Ordenar y paginar
         uploads = uploads.order_by('-created_at')
         paginator = Paginator(uploads, page_size)
         
@@ -510,7 +469,6 @@ class UserUploadHistoryView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Serializar resultados (simplificado - necesitarías el serializer real)
         items = [
             {
                 'id': str(u.id),
@@ -538,35 +496,25 @@ class UserUploadHistoryView(APIView):
 
 
 class UploadReprocessView(APIView):
-    """
-    Reprocesa un upload fallido
-    POST /api/upload/reprocess/<upload_id>/
-    """
+    """Reprocesa un upload fallido"""
     permission_classes = [IsAuthenticated]
     
     def post(self, request, upload_id):
         try:
             upload_session = UploadSession.objects.get(id=upload_id)
             
-            # Verificar permisos
             if not (request.user.is_staff or request.user == upload_session.user):
                 return Response(
-                    {"error": "permission_denied", "message": "No tienes permisos para reprocesar este upload"},
+                    {"error": "permission_denied", "message": "No tienes permisos"},
                     status=status.HTTP_403_FORBIDDEN
                 )
             
-            # Verificar que esté en estado failed
             if upload_session.status != 'failed':
                 return Response(
-                    {
-                        "error": "invalid_status",
-                        "message": f"No se puede reprocesar un upload en estado '{upload_session.status}'",
-                        "current_status": upload_session.status
-                    },
+                    {"error": "invalid_status", "message": f"No se puede reprocesar upload en estado '{upload_session.status}'"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Encolar reprocesamiento
             task_result = reprocess_failed_upload.delay(str(upload_session.id))
             
             return Response({
@@ -574,8 +522,7 @@ class UploadReprocessView(APIView):
                 "message": "Upload encolado para reprocesamiento",
                 "upload_id": str(upload_session.id),
                 "task_id": task_result.id,
-                "status": "queued",
-                "estimated_time": "1-2 minutos"
+                "status": "queued"
             })
             
         except UploadSession.DoesNotExist:
@@ -590,16 +537,32 @@ class UploadReprocessView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
+# Agregar rutas adicionales para upload history y reprocess
+urlpatterns += [
+    path('upload/history/', UserUploadHistoryView.as_view(), name='user-upload-history'),
+    path('upload/reprocess/<uuid:upload_id>/', UploadReprocessView.as_view(), name='upload-reprocess'),
+]
+
 # =========================================================================
 # 📝 NOTA FINAL
 # =========================================================================
 # Este archivo está organizado en secciones claras:
-# 1. URLs tradicionales (ya existentes, no modificadas)
+# 1. URLs tradicionales (ya existentes)
 # 2. URLs de upload directo (nuevo sistema)
 # 3. URLs de administración y monitoreo
 # 4. URLs de compatibilidad
-# 5. Definiciones de vistas auxiliares
+# 5. URLs adicionales para historial y reprocesamiento
 #
-# ✅ CAMBIOS REALIZADOS:
-# - Línea 17: Import de confirm_download_view
-# - Línea 162-164: Nueva ruta /songs/download/confirm/
+#  NUEVAS RUTAS AGREGADAS:
+# - /songs/download/confirm/         → confirmación de descarga
+# - /songs/<id>/download-count/      → incrementar contador de descargas
+# - /upload/history/                 → historial de uploads del usuario
+# - /upload/reprocess/<id>/          → reprocesar upload fallido
+# - /songs/trending/                 → canciones en tendencia
+# - /songs/top-downloads/            → top descargas
+# - /songs/top-plays/                → top reproducciones
+# - /songs/top-likes/                → top likes
+# - /songs/recent/                   → canciones recientes
+# - /genres/                         → lista de géneros
+# - /genres/<genre>/songs/           → canciones por género

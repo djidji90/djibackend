@@ -103,3 +103,4 @@ wheel==0.45.1
 whitenoise==6.5.0
 zope.event==6.1
 zope.interface==8.2
+qrcode[pil]==7.4.2 

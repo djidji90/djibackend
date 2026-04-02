@@ -1,11 +1,21 @@
+# users/serializers.py
+"""
+Serializers para la app de usuarios.
+"""
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import CustomUser, UserVisit
 
+
 class RegisterSerializer(serializers.ModelSerializer):
+    """
+    Serializer para registro de nuevos usuarios.
+    """
     password = serializers.CharField(
-        write_only=True, required=True, validators=[validate_password]
+        write_only=True, 
+        required=True, 
+        validators=[validate_password]
     )
     password2 = serializers.CharField(write_only=True, required=True)
 
@@ -21,16 +31,21 @@ class RegisterSerializer(serializers.ModelSerializer):
             "city",
             "neighborhood",
             "phone",
+            "country",  # ← NUEVO CAMPO
         ]
 
     def validate(self, attrs):
         # Verificar que las contraseñas coincidan
         if attrs["password"] != attrs["password2"]:
-            raise serializers.ValidationError({"password": "Las contraseñas no coinciden."})
+            raise serializers.ValidationError(
+                {"password": "Las contraseñas no coinciden."}
+            )
 
-        # Validar que el email es obligatorio (aunque ya es unique en el modelo)
+        # Validar que el email es obligatorio
         if not attrs.get("email"):
-            raise serializers.ValidationError({"email": "El correo electrónico es obligatorio."})
+            raise serializers.ValidationError(
+                {"email": "El correo electrónico es obligatorio."}
+            )
 
         return attrs
 
@@ -47,6 +62,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         refresh = RefreshToken.for_user(instance)
         return {
             "user": {
+                "id": instance.id,
                 "username": instance.username,
                 "email": instance.email,
                 "first_name": instance.first_name,
@@ -54,6 +70,9 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "city": instance.city,
                 "neighborhood": instance.neighborhood,
                 "phone": instance.phone,
+                "country": instance.country,  # ← NUEVO
+                "is_verified": instance.is_verified,  # ← NUEVO
+                "default_currency": instance.default_currency,  # ← NUEVO
             },
             "tokens": {
                 "refresh": str(refresh),
@@ -61,9 +80,182 @@ class RegisterSerializer(serializers.ModelSerializer):
             },
         }
 
+
+class UserSerializer(serializers.ModelSerializer):
+    """
+    Serializer básico de usuario.
+    """
+    full_name = serializers.SerializerMethodField()
+    default_currency = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
+            'phone', 'city', 'neighborhood', 'country', 'default_currency',
+            'is_verified', 'can_withdraw', 'verified_at', 'is_active',
+            'date_joined', 'last_login'
+        ]
+        read_only_fields = ['id', 'is_verified', 'verified_at', 'date_joined', 'last_login']
+    
+    def get_full_name(self, obj):
+        return obj.full_name
+    
+    def get_default_currency(self, obj):
+        return obj.default_currency
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer para perfil de usuario (detallado).
+    """
+    full_name = serializers.SerializerMethodField()
+    wallet_balance = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'username', 'email', 'full_name', 'first_name', 'last_name',
+            'phone', 'city', 'neighborhood', 'country', 'default_currency',
+            'is_verified', 'can_withdraw', 'wallet_balance',
+            'is_active', 'date_joined'
+        ]
+        read_only_fields = ['id', 'is_verified', 'date_joined']
+    
+    def get_full_name(self, obj):
+        return obj.full_name
+    
+    def get_wallet_balance(self, obj):
+        try:
+            from wallet.models import Wallet
+            wallet = Wallet.objects.get(user=obj)
+            return {
+                'available': float(wallet.available_balance),
+                'pending': float(wallet.pending_balance),
+                'currency': wallet.currency
+            }
+        except:
+            return None
+
+
+class UserLoginSerializer(serializers.Serializer):
+    """
+    Serializer para login de usuarios.
+    """
+    username = serializers.CharField()
+    password = serializers.CharField(
+        style={'input_type': 'password'}, 
+        write_only=True
+    )
+    
+    def validate(self, data):
+        from django.contrib.auth import authenticate
+        
+        username = data.get('username')
+        password = data.get('password')
+        
+        if username and password:
+            user = authenticate(username=username, password=password)
+            if not user:
+                raise serializers.ValidationError("Credenciales inválidas")
+            if not user.is_active:
+                raise serializers.ValidationError("Usuario desactivado")
+        else:
+            raise serializers.ValidationError(
+                "Debe proporcionar username y password"
+            )
+        
+        data['user'] = user
+        return data
+    
+    def to_representation(self, instance):
+        """Devolver tokens JWT en login"""
+        user = instance['user']
+        refresh = RefreshToken.for_user(user)
+        
+        return {
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "city": user.city,
+                "neighborhood": user.neighborhood,
+                "phone": user.phone,
+                "country": user.country,
+                "is_verified": user.is_verified,
+                "default_currency": user.default_currency,
+            },
+            "tokens": {
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+            },
+        }
+
+
 class UserVisitSerializer(serializers.ModelSerializer):
+    """
+    Serializer para visitas de usuarios.
+    """
     class Meta:
         model = UserVisit
         fields = '__all__'
+        read_only_fields = ['id', 'fecha_visita']
 
 
+class UserVerificationSerializer(serializers.Serializer):
+    """
+    Serializer para verificación de usuario (admin).
+    """
+    user_id = serializers.IntegerField()
+    verified = serializers.BooleanField()
+    
+    def validate_user_id(self, value):
+        try:
+            user = CustomUser.objects.get(id=value)
+            self.context['user'] = user
+        except CustomUser.DoesNotExist:
+            raise serializers.ValidationError("Usuario no encontrado")
+        return value
+    
+    def create(self, validated_data):
+        user = self.context['user']
+        
+        if validated_data['verified']:
+            user.verify()
+        else:
+            user.unverify()
+        
+        return user
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """
+    Serializer para cambio de contraseña.
+    """
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(
+        required=True, 
+        validators=[validate_password]
+    )
+    new_password2 = serializers.CharField(required=True)
+    
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['new_password2']:
+            raise serializers.ValidationError(
+                {"new_password": "Las contraseñas nuevas no coinciden."}
+            )
+        return attrs
+    
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Contraseña actual incorrecta.")
+        return value
+    
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save()
+        return user

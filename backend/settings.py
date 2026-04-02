@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import dj_database_url
 from kombu import Queue
-
+from celery.schedules import crontab
 # ================================
 # CONFIGURACIÓN BASE
 # ================================
@@ -179,6 +179,9 @@ INSTALLED_APPS = [
     'musica',
     'api2',
     'django_filters',
+    'wallet',
+    'notifications',
+    'artist_dashboard',
     
     # Librerías externas
     "django_celery_beat",
@@ -192,6 +195,43 @@ INSTALLED_APPS = [
     'django_extensions',
 ]
 
+
+
+# ========== NOTIFICACIONES ==========
+# Email Configuration (opcional)
+EMAIL_ENABLED = bool(os.environ.get('EMAIL_HOST_USER', False))
+
+if EMAIL_ENABLED:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+    EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
+    EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
+    EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+    DEFAULT_FROM_EMAIL = f'Djidi Music <{EMAIL_HOST_USER}>'
+
+# Push Configuration (opcional)
+FIREBASE_CREDENTIALS_PATH = os.environ.get('FIREBASE_CREDENTIALS_PATH', '')
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
+VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
+VAPID_EMAIL = os.environ.get('VAPID_EMAIL', '')
+
+# ========== DASHBOARD ARTISTA ==========
+# Celery Beat schedule - ✅ Corregido: crontab importado correctamente
+CELERY_BEAT_SCHEDULE = {
+    'update-artist-stats-daily': {
+        'task': 'artist_dashboard.tasks.update_all_artist_stats',
+        'schedule': crontab(hour=2, minute=0),  # 2 AM diario
+    },
+    'release-expired-holds': {
+        'task': 'wallet.tasks.release_expired_holds',
+        'schedule': crontab(hour=0, minute=0),  # Medianoche
+    },
+    'process-pending-commissions': {
+        'task': 'wallet.tasks.process_pending_commissions',
+        'schedule': crontab(hour='*/6', minute=0),  # Cada 6 horas
+    },
+}
 # ================================
 # MIDDLEWARE OPTIMIZADO
 # ================================
@@ -416,6 +456,12 @@ REST_FRAMEWORK = {
     'UNAUTHENTICATED_TOKEN': None,
 }
 
+# ✅ Después de definir REST_FRAMEWORK, puedes actualizarlo si es necesario
+# Agregar throttles adicionales específicos para notificaciones y dashboard
+REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'].update({
+    'notifications': '60/minute',
+    'dashboard': '30/minute',
+})
 # ================================
 # JWT CONFIGURACIÓN
 # ================================

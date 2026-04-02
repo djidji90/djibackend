@@ -8,6 +8,9 @@ import os
 import uuid
 from django.db import transaction
 from django.utils import timezone
+import logging
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -50,6 +53,8 @@ class UserSerializer(serializers.ModelSerializer):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.username
 
 
+# api2/serializers.py - SongSerializer CORREGIDO
+
 class SongSerializer(serializers.ModelSerializer):
     # Campos del modelo
     file_url = serializers.SerializerMethodField()
@@ -65,6 +70,13 @@ class SongSerializer(serializers.ModelSerializer):
     # Información de ownership
     uploaded_by = UserSerializer(read_only=True)
     is_owner = serializers.SerializerMethodField()
+    
+    # 🆕 NUEVOS CAMPOS PARA WALLET
+    category = serializers.CharField(read_only=True)
+    price_display = serializers.SerializerMethodField()
+    artist_share_display = serializers.SerializerMethodField()
+    is_purchasable = serializers.BooleanField(read_only=True)
+    sales_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Song
@@ -74,11 +86,16 @@ class SongSerializer(serializers.ModelSerializer):
             'likes_count', 'plays_count', 'downloads_count', 
             'comments_count', 'comments',
             'uploaded_by', 'is_owner', 'is_public',
+            # 🆕 NUEVOS CAMPOS
+            'category', 'price_display', 'artist_share_display',
+            'is_purchasable', 'sales_count',
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'file_key', 'image_key', 'likes_count', 'plays_count', 
-            'downloads_count', 'uploaded_by', 'created_at', 'updated_at'
+            'downloads_count', 'uploaded_by', 'created_at', 'updated_at',
+            'category', 'price_display', 'artist_share_display',
+            'is_purchasable', 'sales_count'
         ]
 
     def get_file_url(self, obj) -> Optional[str]:
@@ -103,11 +120,39 @@ class SongSerializer(serializers.ModelSerializer):
         return CommentSerializer(comments, many=True, context=self.context).data
 
     def get_is_owner(self, obj) -> bool:
-        """Verificar si el usuario actual es el propietario"""
+        """
+        Verificar si el usuario actual es el propietario.
+        Maneja casos donde request o request.user pueden ser None.
+        """
         request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            return obj.uploaded_by == request.user
+        
+        # Verificar que request existe
+        if not request:
+            return False
+        
+        # Obtener user de forma segura
+        user = getattr(request, 'user', None)
+        
+        # Verificar que user existe y está autenticado
+        if user and hasattr(user, 'is_authenticated') and user.is_authenticated:
+            return obj.uploaded_by == user
+        
         return False
+
+    # 🆕 NUEVOS MÉTODOS PARA WALLET
+    def get_price_display(self, obj):
+        """Mostrar precio formateado"""
+        if hasattr(obj, 'formatted_price'):
+            return obj.formatted_price
+        return f"{obj.price:,.0f} XAF" if hasattr(obj, 'price') else "0 XAF"
+    price_display.short_description = 'Precio'
+    
+    def get_artist_share_display(self, obj):
+        """Mostrar lo que recibe el artista"""
+        if hasattr(obj, 'artist_share'):
+            return f"{obj.artist_share:,.0f} XAF (80%)"
+        return "0 XAF"
+    artist_share_display.short_description = 'Artista recibe'
 
     def validate_duration(self, value):
         """Validar formato de duración (MM:SS)"""
@@ -1337,6 +1382,128 @@ class UploadQuotaSerializer(serializers.ModelSerializer):
             data['next_reset_seconds'] = int(delta.total_seconds())
         
         return data
+    
+
+# api2/serializers.py - AGREGAR AL FINAL DEL ARCHIVO
+
+# api2/serializers.py - SongDetailSerializer CORREGIDO
+
+class SongDetailSerializer(SongSerializer):
+    """
+    Serializer detallado para SongDetailView.
+    Incluye estadísticas de ventas y ganancias del artista.
+    """
+    purchase_stats = serializers.SerializerMethodField()
+    artist_earnings = serializers.SerializerMethodField()
+    can_purchase = serializers.SerializerMethodField()
+    
+    class Meta(SongSerializer.Meta):
+        fields = SongSerializer.Meta.fields + [
+            'purchase_stats', 
+            'artist_earnings', 
+            'can_purchase'
+        ]
+    
+    def _get_current_user(self):
+        """
+        Helper para obtener el usuario actual de forma segura.
+        Maneja casos donde request o request.user pueden ser None.
+        """
+        request = self.context.get('request')
+        
+        if not request:
+            return None
+        
+        user = getattr(request, 'user', None)
+        
+        if not user or not hasattr(user, 'is_authenticated') or not user.is_authenticated:
+            return None
+        
+        return user
+    
+    def get_purchase_stats(self, obj):
+        """
+        Estadísticas de compra (solo para el dueño o admin)
+        """
+        user = self._get_current_user()
+        
+        if not user:
+            return None
+        
+        is_owner = obj.uploaded_by == user
+        is_staff = getattr(user, 'is_staff', False)
+        
+        if is_owner or is_staff:
+            return {
+                'sales_count': obj.sales_count,
+                'total_revenue': float(obj.total_revenue),
+                'last_purchased_at': obj.last_purchased_at.isoformat() if obj.last_purchased_at else None,
+                'artist_share_per_sale': float(obj.artist_share),
+                'platform_share_per_sale': float(obj.platform_share),
+                'price_per_unit': float(obj.price),
+                'formatted_price': obj.formatted_price
+            }
+        
+        return None
+    
+    def get_artist_earnings(self, obj):
+        """
+        Ganancias totales del artista (solo para el dueño o admin)
+        """
+        user = self._get_current_user()
+        
+        if not user:
+            return None
+        
+        is_owner = obj.uploaded_by == user
+        is_staff = getattr(user, 'is_staff', False)
+        
+        if (is_owner or is_staff) and obj.uploaded_by:
+            try:
+                from wallet.services import WalletService
+                earnings = WalletService.get_artist_earnings(obj.uploaded_by.id)
+                return {
+                    'pending': earnings['pending'],
+                    'released': earnings['released'],
+                    'total': earnings['total'],
+                    'upcoming': earnings['upcoming'][:5] if earnings.get('upcoming') else []
+                }
+            except Exception as e:
+                logger.error(f"Error obteniendo earnings para artista {obj.uploaded_by.id}: {e}")
+                return None
+        
+        return None
+    
+    def get_can_purchase(self, obj):
+        """
+        Verificar si el usuario actual puede comprar esta canción
+        """
+        user = self._get_current_user()
+        
+        if not user:
+            return False
+        
+        # No puede comprar su propia canción
+        if obj.uploaded_by == user:
+            return False
+        
+        # Verificar si ya la compró
+        try:
+            from wallet.models import Transaction
+            has_purchased = Transaction.objects.filter(
+                wallet__user=user,
+                transaction_type='purchase',
+                metadata__song_id=obj.id,
+                status='completed'
+            ).exists()
+            
+            if has_purchased:
+                return False
+        except Exception:
+            pass
+        
+        # Verificar que esté disponible para compra
+        return obj.can_be_purchased
 
 
 class BatchUploadSerializer(serializers.Serializer):

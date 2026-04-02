@@ -97,15 +97,20 @@ class UserProfileAdminForm(forms.ModelForm):
 # 🎵 SONG ADMIN - CORREGIDO
 # ================================
 
+# musica/admin.py - SECCIÓN SONG ADMIN CORREGIDA
+
 @admin.register(Song)
 class SongAdmin(admin.ModelAdmin):
     form = SongAdminForm
     list_display = [
         'title', 'artist', 'genre', 'uploaded_by',
+        'category',                       # ✅ NUEVO
+        'price_display',                  # ✅ NUEVO
         'has_audio', 'has_image', 
-        'downloads_count',                  # Tu campo original
-        'confirmed_downloads',               # Nuevo
-        'pending_downloads',                 # Nuevo
+        'downloads_count',
+        'confirmed_downloads',
+        'pending_downloads',
+        'is_purchasable',                 # ✅ NUEVO
         'is_public', 'created_at',
         'quick_actions'
     ]
@@ -114,7 +119,9 @@ class SongAdmin(admin.ModelAdmin):
         'genre', 
         'created_at', 
         'is_public', 
-        'uploaded_by'
+        'uploaded_by',
+        'category',                       # ✅ NUEVO
+        'is_purchasable',                 # ✅ NUEVO
     ]
     
     search_fields = [
@@ -124,30 +131,50 @@ class SongAdmin(admin.ModelAdmin):
         'uploaded_by__username'
     ]
     
+    # ✅ CORREGIDO: Agregar campos de wallet a readonly_fields
     readonly_fields = [
         'file_key', 
         'image_key', 
         'likes_count', 
         'plays_count',
-        'downloads_count',                    # Tu campo original
-        'confirmed_downloads_detail',          # Nuevo
-        'pending_downloads_detail',            # Nuevo
+        'downloads_count',
+        'confirmed_downloads_detail',
+        'pending_downloads_detail',
         'audio_url', 
         'image_url', 
         'created_at', 
-        'updated_at'
+        'updated_at',
+        # ✅ NUEVOS CAMPOS DE WALLET
+        'sales_count',
+        'total_revenue',
+        'last_purchased_at',
+        'price_display',
+        'artist_share_display',
     ]
+    
+    # ✅ SI USAS list_editable, debe estar en list_display
+    # list_editable = ('is_public', 'is_purchasable', 'category')  # Opcional
     
     actions = [
         'verify_r2_files', 
         'generate_presigned_urls', 
         'export_to_csv',
-        'fix_downloads_count'                  # Nueva acción
+        'fix_downloads_count',
+        # ✅ NUEVAS ACCIONES
+        'mark_as_purchasable',
+        'mark_as_not_purchasable',
+        'set_category_standard',
     ]
 
     fieldsets = (
         ('Información Básica', {
             'fields': ('title', 'artist', 'genre', 'duration', 'uploaded_by', 'is_public')
+        }),
+        # ✅ NUEVA SECCIÓN DE MONETIZACIÓN
+        ('Monetización (Precios definidos por plataforma)', {
+            'fields': ('category', 'is_purchasable', 'price_display', 'artist_share_display',
+                       'sales_count', 'total_revenue', 'last_purchased_at'),
+            'description': '💰 Los precios son fijos según categoría: Estándar=500 XAF, Éxito=750 XAF, Premium=1000 XAF, Clásico=300 XAF'
         }),
         ('Archivos - SUBIR AQUÍ', {
             'fields': ('audio_file', 'image_file'),
@@ -180,10 +207,9 @@ class SongAdmin(admin.ModelAdmin):
         }),
     )
 
-    # ========== MÉTODOS EXISTENTES (sin cambios) ==========
+    # ========== MÉTODOS EXISTENTES ==========
     
     def has_audio(self, obj):
-        """Verifica si el archivo de audio existe en R2"""
         if not obj.file_key:
             return False
         try:
@@ -195,7 +221,6 @@ class SongAdmin(admin.ModelAdmin):
     has_audio.short_description = '🎵 Audio en R2'
 
     def has_image(self, obj):
-        """Verifica si la imagen existe en R2"""
         if not obj.image_key:
             return False
         try:
@@ -207,7 +232,6 @@ class SongAdmin(admin.ModelAdmin):
     has_image.short_description = '🖼️ Imagen en R2'
 
     def audio_url(self, obj):
-        """Genera URL temporal para el audio"""
         if obj.file_key:
             try:
                 if check_file_exists(obj.file_key):
@@ -221,7 +245,6 @@ class SongAdmin(admin.ModelAdmin):
     audio_url.short_description = 'URL Audio'
 
     def image_url(self, obj):
-        """Genera URL temporal para la imagen"""
         if obj.image_key:
             try:
                 if check_file_exists(obj.image_key):
@@ -235,18 +258,18 @@ class SongAdmin(admin.ModelAdmin):
     image_url.short_description = 'URL Imagen'
 
     def quick_actions(self, obj):
-        """Botones de acción rápida"""
         buttons = []
-
-        # Botón para editar
+        
+        # ✅ CORREGIDO: Usa el nombre correcto de la app
+        # Si tu app se llama 'api2', usa 'api2'
+        # Si tu app se llama 'musica', usa 'musica'
         edit_url = reverse('admin:api2_song_change', args=[obj.id])
         buttons.append(f'<a href="{edit_url}" class="button" title="Editar">✏️</a>')
 
-        # Botón para ver/escuchar si existe
         if obj.file_key:
             try:
                 if check_file_exists(obj.file_key):
-                    url = generate_presigned_url(obj.file_key, expiration=300)  # 5 minutos
+                    url = generate_presigned_url(obj.file_key, expiration=300)
                     buttons.append(f'<a href="{url}" target="_blank" class="button" title="Escuchar">🎵</a>')
             except:
                 pass
@@ -255,32 +278,39 @@ class SongAdmin(admin.ModelAdmin):
     quick_actions.short_description = 'Acciones'
     quick_actions.allow_tags = True
 
+    # ========== NUEVOS MÉTODOS DE PRECIO ==========
+    
+    def price_display(self, obj):
+        """Mostrar precio según categoría"""
+        if hasattr(obj, 'formatted_price'):
+            return obj.formatted_price
+        return f"{obj.price:,.0f} XAF" if hasattr(obj, 'price') else "0 XAF"
+    price_display.short_description = 'Precio'
+    
+    def artist_share_display(self, obj):
+        """Mostrar lo que recibe el artista"""
+        if hasattr(obj, 'artist_share'):
+            return f"{obj.artist_share:,.0f} XAF (80%)"
+        return "0 XAF"
+    artist_share_display.short_description = 'Artista recibe'
+
     # ========== NUEVOS MÉTODOS PARA DESCARGAS ==========
     
     def confirmed_downloads(self, obj):
-        """Número de descargas confirmadas"""
         from api2.models import Download
         count = Download.objects.filter(song=obj, is_confirmed=True).count()
-        return format_html(
-            '<span style="color: green;">✅ {}</span>',
-            count
-        )
+        return format_html('<span style="color: green;">✅ {}</span>', count)
     confirmed_downloads.short_description = 'Confirmadas'
     
     def pending_downloads(self, obj):
-        """Número de descargas pendientes de confirmación"""
         from api2.models import Download
         count = Download.objects.filter(song=obj, is_confirmed=False).count()
         if count > 0:
-            return format_html(
-                '<span style="color: orange;">⏳ {}</span>',
-                count
-            )
+            return format_html('<span style="color: orange;">⏳ {}</span>', count)
         return count
     pending_downloads.short_description = 'Pendientes'
     
     def confirmed_downloads_detail(self, obj):
-        """Detalle de descargas confirmadas"""
         from api2.models import Download
         downloads = Download.objects.filter(
             song=obj, 
@@ -292,15 +322,11 @@ class SongAdmin(admin.ModelAdmin):
         
         items = []
         for d in downloads:
-            items.append(
-                f"• {d.user.username} - {d.downloaded_at.strftime('%Y-%m-%d %H:%M')}"
-            )
-        
+            items.append(f"• {d.user.username} - {d.downloaded_at.strftime('%Y-%m-%d %H:%M')}")
         return format_html('<br>'.join(items))
     confirmed_downloads_detail.short_description = 'Últimas confirmadas'
     
     def pending_downloads_detail(self, obj):
-        """Detalle de descargas pendientes"""
         from api2.models import Download
         downloads = Download.objects.filter(
             song=obj, 
@@ -312,27 +338,15 @@ class SongAdmin(admin.ModelAdmin):
         
         items = []
         for d in downloads:
-            items.append(
-                f"• {d.user.username} - {d.downloaded_at.strftime('%Y-%m-%d %H:%M')}"
-            )
-        
-        return format_html(
-            '<span style="color: orange;">⏳</span> ' + '<br>'.join(items)
-        )
+            items.append(f"• {d.user.username} - {d.downloaded_at.strftime('%Y-%m-%d %H:%M')}")
+        return format_html('<span style="color: orange;">⏳</span> ' + '<br>'.join(items))
     pending_downloads_detail.short_description = 'Pendientes'
 
-    # ========== MÉTODOS EXISTENTES DE GUARDADO ==========
-    # (Mantén aquí todos tus métodos save_model, delete_model, etc. igual que antes)
-    
-    # ========== NUEVA ACCIÓN ==========
+    # ========== NUEVAS ACCIONES ==========
     
     @admin.action(description="🔧 Corregir contador de descargas")
     def fix_downloads_count(self, request, queryset):
-        """
-        Corrige el contador de descargas basado en las confirmadas
-        """
         from django.db import transaction
-        from django.db.models import Count
         from api2.models import Download
         
         with transaction.atomic():
@@ -341,18 +355,15 @@ class SongAdmin(admin.ModelAdmin):
             
             for song in queryset:
                 try:
-                    # Contar solo confirmadas
                     real_count = Download.objects.filter(
                         song=song, 
                         is_confirmed=True
                     ).count()
                     
-                    # Actualizar si es diferente
                     if song.downloads_count != real_count:
                         song.downloads_count = real_count
                         song.save(update_fields=['downloads_count'])
                         fixed += 1
-                        
                         logger.info(f"Corregida canción {song.id}: {song.downloads_count} → {real_count}")
                 except Exception as e:
                     errors += 1
@@ -361,12 +372,23 @@ class SongAdmin(admin.ModelAdmin):
             message = f"✅ {fixed} canciones corregidas"
             if errors:
                 message += f", ❌ {errors} errores"
-            
             self.message_user(request, message, level='SUCCESS' if errors == 0 else 'WARNING')
-
-# ================================
-# 📅 MUSICEVENT ADMIN - COMPLETO Y CORREGIDO
-# ================================
+    
+    # ✅ NUEVAS ACCIONES DE WALLET
+    @admin.action(description="✅ Marcar como disponibles para compra")
+    def mark_as_purchasable(self, request, queryset):
+        updated = queryset.update(is_purchasable=True)
+        self.message_user(request, f'{updated} canciones marcadas como disponibles para compra.')
+    
+    @admin.action(description="❌ Marcar como NO disponibles para compra")
+    def mark_as_not_purchasable(self, request, queryset):
+        updated = queryset.update(is_purchasable=False)
+        self.message_user(request, f'{updated} canciones marcadas como NO disponibles.')
+    
+    @admin.action(description="🏷️ Establecer categoría estándar")
+    def set_category_standard(self, request, queryset):
+        updated = queryset.update(category='standard')
+        self.message_user(request, f'{updated} canciones establecidas como estándar.')
 
 @admin.register(MusicEvent)
 class MusicEventAdmin(admin.ModelAdmin):
