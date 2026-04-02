@@ -179,8 +179,8 @@ INSTALLED_APPS = [
     'musica',
     'api2',
     'django_filters',
-    'wallet',
-    'notifications',
+    # 'wallet',
+   #  'notifications',
     'artist_dashboard',
     
     # Librerías externas
