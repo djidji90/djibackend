@@ -1,9 +1,12 @@
+# wallet/validators.py - VERSIÓN CORREGIDA
 """
 Validadores personalizados para el sistema wallet.
 """
 from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
+from django.db.models import Sum
 from .constants import LIMITS
 
 
@@ -39,15 +42,24 @@ def validate_min_deposit(value):
         )
 
 
-def validate_max_balance(value, current_balance):
+def validate_max_balance(value, wallet_balance=None):
     """Validar que no se exceda el balance máximo"""
     try:
-        total = Decimal(str(current_balance)) + Decimal(str(value))
-        if total > LIMITS['MAX_BALANCE']:
-            raise ValidationError(
-                _(f'El balance máximo es {LIMITS["MAX_BALANCE"]} XAF'),
-                code='max_balance'
-            )
+        amount = Decimal(str(value))
+        if wallet_balance is None:
+            # Solo validar el monto individual
+            if amount > LIMITS['MAX_BALANCE']:
+                raise ValidationError(
+                    _(f'El monto excede el balance máximo de {LIMITS["MAX_BALANCE"]} XAF'),
+                    code='max_balance'
+                )
+        else:
+            total = Decimal(str(wallet_balance)) + amount
+            if total > LIMITS['MAX_BALANCE']:
+                raise ValidationError(
+                    _(f'El balance máximo es {LIMITS["MAX_BALANCE"]} XAF'),
+                    code='max_balance'
+                )
     except (InvalidOperation, TypeError, ValueError):
         raise ValidationError(
             _('Monto inválido'),
@@ -74,20 +86,22 @@ def validate_wallet_status(wallet):
         )
 
 
+# wallet/validators.py - CORREGIR LA FUNCIÓN validate_daily_limit
+
 def validate_daily_limit(wallet, amount, transaction_type):
-    """Validar límites diarios"""
+    """Validar límites diarios con ventana de 24h REAL"""
     from django.utils import timezone
     from django.db.models import Sum
-    from .models import Transaction  # ✅ IMPORT LOCAL (evita circular import)
-
+    from .models import Transaction  # ✅ ESTA LÍNEA YA DEBE EXISTIR, PERO VERIFICA
+    
     try:
-        today = timezone.now().date()
-
-        # Calcular total del día
-        daily_total = Transaction.objects.filter(
+        # Ventana de 24 horas REAL
+        last_24h = timezone.now() - timezone.timedelta(hours=24)
+        
+        daily_total = Transaction.objects.filter(  # ✅ Transaction debe estar importado
             wallet=wallet,
             transaction_type=transaction_type,
-            created_at__date=today,
+            created_at__gte=last_24h,
             status='completed'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 

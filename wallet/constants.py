@@ -46,7 +46,7 @@ SONG_CATEGORIES = [
 
 # Diccionario para acceso rápido
 SONG_PRICE_MAP = {cat[0]: cat[2] for cat in SONG_CATEGORIES}
-SONG_CATEGORY_CHOICES = [(cat[0], cat[1]) for cat in SONG_CATEGORIES]  # ✅ Para dict()
+SONG_CATEGORY_CHOICES = [(cat[0], cat[1]) for cat in SONG_CATEGORIES]
 
 # --- MONEDAS SOPORTADAS ---
 CURRENCIES = [
@@ -102,6 +102,9 @@ LIMITS = {
     'MIN_DEPOSIT': Decimal('100.00'),
     'MAX_PENDING_BALANCE': Decimal('500000.00'),
     'HOLD_DAYS': 7,
+    'MAX_DEPOSIT': Decimal('500000.00'),
+    'MAX_DAILY_LIMIT': Decimal('500000.00'),
+    'MAX_WITHDRAWAL': Decimal('500000.00'),
 }
 
 # --- COMISIONES ---

@@ -1,69 +1,143 @@
-# wallet/views.py
-"""
-Vistas para las APIs del wallet.
-"""
+# wallet/views.py - SECCIÓN DE IMPORTS CORREGIDA
+
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from django.shortcuts import get_object_or_404
-from django.db.models import Q
+from django.db.models import Q, Avg, Count
 from django.utils import timezone
+from django.core.cache import cache
+from decimal import Decimal
 import logging
 
-from .models import Wallet, Transaction, Hold, DepositCode
-from .services import WalletService
+from .models import Wallet, Transaction, Hold, DepositCode, Agent, PhysicalLocation
+from .models import Office, OfficeStaff, OfficeWithdrawal, ArtistMuniAccount
+
+from .services import WalletService, OfficeWithdrawalService
+
 from .serializers import (
     # Core serializers
     WalletSerializer,
     WalletCreateSerializer,
     WalletBalanceSerializer,
     
+    # Office withdrawal serializers
+    OfficeWithdrawalSerializer,
+    OfficeWithdrawalHistorySerializer,
+
     # Transaction serializers
     TransactionSerializer,
     DepositSerializer,
     PurchaseSerializer,
     RefundSerializer,
-    
+
     # Hold serializers
     HoldSerializer,
     HoldReleaseSerializer,
-    
+
     # Deposit code serializers
     DepositCodeSerializer,
     DepositCodeCreateSerializer,
     DepositCodeRedeemSerializer,
-    
+
     # Response serializers
-    BalanceInfoSerializer,
+    WalletBalanceResponseSerializer,
     ArtistEarningsSerializer,
     TransactionListSerializer,
-    
+
     # Admin serializers
     WalletAdminSerializer,
     TransactionAdminSerializer,
+
+    # Agent serializers
+    AgentSerializer,
+    AgentCreateSerializer,
+    PhysicalLocationSerializer,
+    AgentDepositSerializer,
+    AgentGenerateCodeSerializer,
+    AgentSearchUserSerializer,
+    RedeemCodeSerializer,
+    AgentEarningsSerializer,
 )
-from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
-from decimal import Decimal
-from .permissions import IsWalletOwner, IsArtist, IsAgent, IsAdminOrReadOnly, CanWithdrawFunds
+
+from .permissions import (
+    IsWalletOwner, IsArtist, IsAgent, IsAdminOrReadOnly, 
+    CanWithdrawFunds, IsAgentOrAdmin
+)
 from .pagination import WalletPagination, TransactionPagination
 from .filters import TransactionFilter, HoldFilter, DepositCodeFilter
-logger = logging.getLogger(__name__)
+from .throttles import (
+    WalletOperationThrottle,
+    SensitiveOperationThrottle,
+    WithdrawalThrottle,
+    DepositThrottle
+)
+from .exceptions import WalletBaseException
+from .utils import generate_qr_for_code, calculate_agent_commission
+from django.contrib.auth import get_user_model
 
+logger = logging.getLogger(__name__)
+User = get_user_model()
+
+# ============================================
+# UTILITY FUNCTIONS
+# ============================================
+
+def _get_client_ip(request):
+    """Obtener IP real del cliente"""
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0]
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip
+
+
+def _get_idempotency_key(request, prefix, *args):
+    """Obtener o generar clave de idempotencia"""
+    key = request.headers.get('X-Idempotency-Key')
+    if not key:
+        key = WalletService._generate_idempotency_key(prefix, *args)
+    return key
+
+
+def _validate_content_type(request):
+    """Validar Content-Type"""
+    if request.content_type != 'application/json':
+        return Response(
+            {'error': 'Content-Type must be application/json'},
+            status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+        )
+    return None
+
+
+# ============================================
+# CORE WALLET VIEWS
+# ============================================
 
 class WalletBalanceView(APIView):
     """
     GET /api/wallet/balance/
     Obtener balance del wallet del usuario autenticado.
+    ✅ Con cache de 60 segundos
     """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        wallet = WalletService.get_user_wallet(request.user.id)
-        balance_info = wallet.get_balance_info(
-            language=request.GET.get('lang', 'es')
+        cache_key = f"wallet_balance:{request.user.id}"
+        balance_data = cache.get(cache_key)
+        
+        if not balance_data:
+            wallet = WalletService.get_user_wallet(request.user.id)
+            balance_data = wallet.get_balance_data()
+            cache.set(cache_key, balance_data, timeout=60)
+        
+        language = request.GET.get('lang', 'es')
+        serializer = WalletBalanceResponseSerializer(
+            balance_data,
+            context={'language': language}
         )
-        serializer = WalletBalanceSerializer(balance_info)
         return Response(serializer.data)
 
 
@@ -76,7 +150,7 @@ class TransactionHistoryView(generics.ListAPIView):
     serializer_class = TransactionSerializer
     pagination_class = TransactionPagination
     filterset_class = TransactionFilter
-    
+
     def get_queryset(self):
         wallet = WalletService.get_user_wallet(self.request.user.id)
         return Transaction.objects.filter(wallet=wallet).select_related('wallet__user')
@@ -88,9 +162,9 @@ class TransactionDetailView(generics.RetrieveAPIView):
     Detalle de una transacción específica.
     """
     permission_classes = [IsAuthenticated, IsWalletOwner]
-    serializer_class = TransactionSerializer  # Using TransactionSerializer instead of TransactionDetailSerializer
+    serializer_class = TransactionSerializer
     lookup_field = 'reference'
-    
+
     def get_queryset(self):
         wallet = WalletService.get_user_wallet(self.request.user.id)
         return Transaction.objects.filter(wallet=wallet)
@@ -100,35 +174,56 @@ class PurchaseSongView(APIView):
     """
     POST /api/wallet/songs/<int:song_id>/purchase/
     Comprar una canción.
+    ✅ Con idempotencia
+    ✅ Con throttling
+    ✅ Con auditoría (IP/UA)
     """
     permission_classes = [IsAuthenticated]
-    
+    throttle_classes = [SensitiveOperationThrottle]
+
     def post(self, request, song_id):
+        # Validar Content-Type
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+
         serializer = PurchaseSerializer(
             data={'song_id': song_id, **request.data},
             context={'request': request}
         )
-        
+
         if serializer.is_valid():
-            # Get price from the song
-            from api2.models import Song
+            # Generar clave de idempotencia
+            idempotency_key = _get_idempotency_key(
+                request, 'purchase', request.user.id, song_id
+            )
+            
             try:
+                from api2.models import Song
                 song = Song.objects.get(id=song_id)
-                price = song.price if hasattr(song, 'price') else None
+                price = serializer.validated_data.get('price')
                 
+                if not price:
+                    price = song.price if hasattr(song, 'price') else None
+
                 if not price or price <= 0:
                     return Response(
                         {'error': 'Esta canción no tiene precio válido'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                
-                # Realizar compra
+
                 transaction, hold = WalletService.purchase_song(
                     user_id=request.user.id,
                     song_id=song_id,
-                    price=price
+                    price=price,
+                    idempotency_key=idempotency_key,
+                    ip_address=_get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
                 )
-                
+
+                # Invalidar cache de balance
+                cache.delete(f"wallet_balance:{request.user.id}")
+
                 return Response({
                     'success': True,
                     'reference': transaction.reference,
@@ -137,68 +232,84 @@ class PurchaseSongView(APIView):
                     'hold_id': hold.id if hold else None,
                     'message': f"Compra de '{song.title}' realizada con éxito"
                 }, status=status.HTTP_200_OK)
-                
-            except Exception as e:
+
+            except WalletBaseException as e:
                 return Response(
-                    {'error': str(e)},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {'error': e.detail, 'code': e.code},
+                    status=e.status_code
                 )
-        
+            except Exception as e:
+                logger.error(f"PurchaseSongView error: {e}", extra={
+                    'user_id': request.user.id,
+                    'song_id': song_id,
+                    'path': request.path
+                })
+                return Response(
+                    {'error': 'Error interno al procesar la compra'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class DepositView(APIView):
+class UserDepositView(APIView):
     """
     POST /api/wallet/deposit/
-    Realizar un depósito (recarga) - SOLO AGENTES.
+    Depósito para usuarios normales.
+    ✅ Los usuarios normales solo pueden usar códigos de recarga
     """
-    permission_classes = [IsAuthenticated, IsAgent]
-    
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [DepositThrottle]
+
     def post(self, request):
-        wallet = WalletService.get_user_wallet(request.user.id)
-        
-        serializer = DepositSerializer(
-            data=request.data,
-            context={'wallet_id': wallet.id, 'request': request}
+        return Response(
+            {
+                'error': 'use_redeem_endpoint',
+                'message': 'Para recargar saldo, usa /api/wallet/redeem/ con un código de recarga',
+                'redeem_endpoint': '/api/wallet/redeem/'
+            },
+            status=status.HTTP_400_BAD_REQUEST
         )
-        
-        if serializer.is_valid():
-            transaction = WalletService.deposit(
-                wallet_id=wallet.id,
-                amount=serializer.validated_data['amount'],
-                description=serializer.validated_data.get('description', ''),
-                created_by_id=request.user.id,
-                metadata=serializer.validated_data.get('metadata', {})
-            )
-            return Response({
-                'reference': transaction.reference,
-                'amount': float(transaction.amount),
-                'new_balance': float(transaction.wallet.available_balance),
-                'description': transaction.description
-            }, status=status.HTTP_201_CREATED)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RedeemCodeView(APIView):
     """
     POST /api/wallet/redeem/
     Canjear un código de recarga.
+    ✅ Con idempotencia
+    ✅ Con throttling
+    ✅ Con auditoría
     """
     permission_classes = [IsAuthenticated]
-    
+    throttle_classes = [SensitiveOperationThrottle]
+
     def post(self, request):
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+
         serializer = DepositCodeRedeemSerializer(
             data=request.data,
             context={'request': request}
         )
-        
+
         if serializer.is_valid():
+            idempotency_key = _get_idempotency_key(
+                request, 'redeem', request.user.id, serializer.validated_data['code']
+            )
+            
             try:
                 transaction = WalletService.redeem_code(
                     code=serializer.validated_data['code'],
-                    user_id=request.user.id
+                    user_id=request.user.id,
+                    idempotency_key=idempotency_key,
+                    ip_address=_get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
                 )
+                
+                # Invalidar cache de balance
+                cache.delete(f"wallet_balance:{request.user.id}")
+                
                 return Response({
                     'success': True,
                     'reference': transaction.reference,
@@ -206,12 +317,23 @@ class RedeemCodeView(APIView):
                     'new_balance': float(transaction.wallet.available_balance),
                     'message': f"Código canjeado con éxito. Se añadieron {transaction.amount} {transaction.wallet.currency}"
                 }, status=status.HTTP_200_OK)
-            except Exception as e:
+                
+            except WalletBaseException as e:
                 return Response(
-                    {'error': str(e)},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {'error': e.detail, 'code': e.code},
+                    status=e.status_code
                 )
-        
+            except Exception as e:
+                logger.error(f"RedeemCodeView error: {e}", extra={
+                    'user_id': request.user.id,
+                    'code': serializer.validated_data.get('code', 'unknown'),
+                    'path': request.path
+                })
+                return Response(
+                    {'error': 'Error interno al canjear el código'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -219,11 +341,18 @@ class ArtistEarningsView(APIView):
     """
     GET /api/wallet/artist/earnings/
     Ver ganancias del artista autenticado.
+    ✅ Con cache
     """
     permission_classes = [IsAuthenticated, IsArtist]
-    
+
     def get(self, request):
-        earnings = WalletService.get_artist_earnings(request.user.id)
+        cache_key = f"artist_earnings:{request.user.id}"
+        earnings = cache.get(cache_key)
+        
+        if not earnings:
+            earnings = WalletService.get_artist_earnings(request.user.id)
+            cache.set(cache_key, earnings, timeout=300)  # 5 minutos
+        
         serializer = ArtistEarningsSerializer(earnings)
         return Response(serializer.data)
 
@@ -237,7 +366,7 @@ class ArtistHoldsView(generics.ListAPIView):
     serializer_class = HoldSerializer
     pagination_class = WalletPagination
     filterset_class = HoldFilter
-    
+
     def get_queryset(self):
         return Hold.objects.filter(
             artist=self.request.user
@@ -252,7 +381,7 @@ class UserPurchasesView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TransactionSerializer
     pagination_class = TransactionPagination
-    
+
     def get_queryset(self):
         wallet = WalletService.get_user_wallet(self.request.user.id)
         return Transaction.objects.filter(
@@ -265,33 +394,51 @@ class ReleaseHoldView(APIView):
     """
     POST /api/wallet/admin/holds/release/
     Liberar un hold (solo admin).
+    ✅ Con throttling
+    ✅ Con auditoría completa
     """
     permission_classes = [IsAuthenticated, CanWithdrawFunds]
-    
+    throttle_classes = [SensitiveOperationThrottle]
+
     def post(self, request):
-        serializer = HoldReleaseSerializer(
-            data=request.data,
-            context={'request': request}
-        )
-        
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+
+        serializer = HoldReleaseSerializer(data=request.data)
+
         if serializer.is_valid():
             try:
                 transaction = WalletService.release_hold(
                     hold_id=serializer.validated_data['hold_id'],
-                    released_by_id=request.user.id
+                    released_by_id=request.user.id,
+                    ip_address=_get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
                 )
+                
                 return Response({
                     'success': True,
                     'reference': transaction.reference,
                     'amount': float(transaction.amount),
                     'message': "Hold liberado con éxito"
                 }, status=status.HTTP_200_OK)
-            except Exception as e:
+                
+            except WalletBaseException as e:
                 return Response(
-                    {'error': str(e)},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {'error': e.detail, 'code': e.code},
+                    status=e.status_code
                 )
-        
+            except Exception as e:
+                logger.error(f"ReleaseHoldView error: {e}", extra={
+                    'user_id': request.user.id,
+                    'hold_id': serializer.validated_data.get('hold_id'),
+                    'path': request.path
+                })
+                return Response(
+                    {'error': 'Error interno al liberar el hold'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -304,10 +451,10 @@ class DepositCodeListView(generics.ListCreateAPIView):
     serializer_class = DepositCodeSerializer
     pagination_class = WalletPagination
     filterset_class = DepositCodeFilter
-    
+
     def get_queryset(self):
         return DepositCode.objects.all().select_related('created_by', 'used_by')
-    
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
@@ -322,25 +469,59 @@ class DepositCodeDetailView(generics.RetrieveUpdateAPIView):
     queryset = DepositCode.objects.all()
     lookup_field = 'pk'
 
-# wallet/views.py - AGREGAR AL FINAL
 
-# ============================================================================
-# VISTAS PARA SISTEMA DE AGENTES
-# ============================================================================
+class CodeQRView(APIView):
+    """
+    Obtener código QR para un código de recarga.
+    GET /api/wallet/codes/<code>/qr/
+    """
+    permission_classes = [IsAuthenticated]
 
-from .models import Agent, PhysicalLocation, DepositCode
-from .serializers import (
-    AgentSerializer, AgentCreateSerializer, PhysicalLocationSerializer,
-    AgentDepositSerializer, AgentGenerateCodeSerializer,
-    AgentSearchUserSerializer, AgentUserInfoSerializer,
-    RedeemCodeSerializer, CodeQRSerializer, AgentEarningsSerializer
-)
-from .permissions import IsAgent, IsAgentOrAdmin
-from .utils import generate_qr_for_code, calculate_agent_commission
-from django.contrib.auth import get_user_model
+    def get(self, request, code):
+        try:
+            deposit_code = DepositCode.objects.get(code=code.upper())
 
-User = get_user_model()
+            is_creator = request.user == deposit_code.created_by
+            is_admin = request.user.is_staff
 
+            if not (is_creator or is_admin):
+                return Response(
+                    {"error": "permission_denied", "message": "No tienes permiso para ver este código"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            qr_base64 = generate_qr_for_code(
+                deposit_code.code,
+                deposit_code.amount,
+                deposit_code.currency
+            )
+
+            return Response({
+                'code': deposit_code.code,
+                'amount': float(deposit_code.amount),
+                'currency': deposit_code.currency,
+                'expires_at': deposit_code.expires_at.isoformat(),
+                'is_used': deposit_code.is_used,
+                'qr_image': qr_base64,
+                'qr_data': f"DJIMUSIC://REDEEM?code={deposit_code.code}&amount={deposit_code.amount}&currency={deposit_code.currency}"
+            })
+
+        except DepositCode.DoesNotExist:
+            return Response(
+                {"error": "not_found", "message": "Código no encontrado"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error generating QR for code {code}: {e}")
+            return Response(
+                {"error": "internal_error", "message": "Error generando código QR"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+# ============================================
+# AGENT SYSTEM VIEWS
+# ============================================
 
 class AgentDashboardView(APIView):
     """
@@ -348,35 +529,30 @@ class AgentDashboardView(APIView):
     GET /api/wallet/agent/dashboard/
     """
     permission_classes = [IsAuthenticated, IsAgent]
-    
+
     def get(self, request):
         try:
             agent = Agent.objects.select_related('user', 'location').get(user=request.user)
-            
+
             if not agent.is_active:
                 return Response(
                     {"error": "agent_inactive", "message": "Tu cuenta de agente está inactiva"},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
-            # Estadísticas del día
+
             daily_stats = agent.get_daily_stats()
-            
-            # Últimas recargas
-            from wallet.models import Transaction
+
             recent_deposits = Transaction.objects.filter(
                 created_by=request.user,
                 transaction_type='deposit',
                 status='completed'
             ).select_related('wallet__user').order_by('-created_at')[:10]
-            
-            # Códigos generados hoy
-            from django.utils import timezone
+
             codes_today = DepositCode.objects.filter(
                 created_by=request.user,
                 created_at__date=timezone.now().date()
             ).count()
-            
+
             return Response({
                 'agent': AgentSerializer(agent).data,
                 'daily_stats': {
@@ -404,14 +580,17 @@ class AgentDashboardView(APIView):
                     'remaining': daily_stats['remaining']
                 }
             })
-            
+
         except Agent.DoesNotExist:
             return Response(
                 {"error": "not_agent", "message": "No tienes permisos de agente"},
                 status=status.HTTP_403_FORBIDDEN
             )
         except Exception as e:
-            logger.error(f"Error in AgentDashboardView: {e}")
+            logger.error(f"Error in AgentDashboardView: {e}", extra={
+                'user_id': request.user.id,
+                'path': request.path
+            })
             return Response(
                 {"error": "internal_error", "message": "Error al cargar dashboard"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -422,37 +601,70 @@ class AgentDepositView(APIView):
     """
     Realizar una recarga como agente.
     POST /api/wallet/agent/deposit/
+    ✅ Con idempotencia
+    ✅ Con throttling
+    ✅ Con auditoría
     """
     permission_classes = [IsAuthenticated, IsAgent]
-    
+    throttle_classes = [DepositThrottle]
+
     def post(self, request):
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+
         try:
             agent = Agent.objects.get(user=request.user)
-            
+
             if not agent.is_active:
                 return Response(
                     {"error": "agent_inactive", "message": "Tu cuenta de agente está inactiva"},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
+
             serializer = AgentDepositSerializer(
                 data=request.data,
                 context={'agent': agent}
             )
-            
+
             if serializer.is_valid():
+                # Generar idempotency key
+                idempotency_key = _get_idempotency_key(
+                    request, 'agent_deposit', request.user.id, 
+                    serializer.validated_data.get('user_id'), 
+                    serializer.validated_data.get('amount')
+                )
+                
+                # Añadir idempotency key al contexto
+                serializer.context['idempotency_key'] = idempotency_key
+                serializer.context['ip_address'] = _get_client_ip(request)
+                serializer.context['user_agent'] = request.META.get('HTTP_USER_AGENT', '')
+                
                 result = serializer.save()
+                
+                # Invalidar cache de balance del usuario
+                cache.delete(f"wallet_balance:{serializer.validated_data['user_id']}")
+                
                 return Response(result, status=status.HTTP_201_CREATED)
-            
+
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
+
         except Agent.DoesNotExist:
             return Response(
                 {"error": "not_agent", "message": "No tienes permisos de agente"},
                 status=status.HTTP_403_FORBIDDEN
             )
+        except WalletBaseException as e:
+            return Response(
+                {'error': e.detail, 'code': e.code},
+                status=e.status_code
+            )
         except Exception as e:
-            logger.error(f"Error in AgentDepositView: {e}")
+            logger.error(f"Error in AgentDepositView: {e}", extra={
+                'user_id': request.user.id,
+                'path': request.path,
+                'data': request.data
+            })
             return Response(
                 {"error": "internal_error", "message": "Error al procesar la recarga"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -463,30 +675,45 @@ class AgentGenerateCodeView(APIView):
     """
     Generar códigos de recarga (agentes y admin).
     POST /api/wallet/agent/generate-code/
+    ✅ Con idempotencia
+    ✅ Con throttling
     """
     permission_classes = [IsAuthenticated, IsAgentOrAdmin]
-    
+    throttle_classes = [SensitiveOperationThrottle]
+
     def post(self, request):
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+
         try:
             agent = Agent.objects.get(user=request.user)
-            
+
             if not agent.is_active:
                 return Response(
                     {"error": "agent_inactive", "message": "Tu cuenta de agente está inactiva"},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
+
             serializer = AgentGenerateCodeSerializer(
                 data=request.data,
                 context={'agent': agent}
             )
-            
+
             if serializer.is_valid():
+                # Generar idempotency key
+                idempotency_key = _get_idempotency_key(
+                    request, 'generate_codes', request.user.id,
+                    serializer.validated_data.get('amount'),
+                    serializer.validated_data.get('quantity')
+                )
+                
+                serializer.context['idempotency_key'] = idempotency_key
                 result = serializer.save()
                 return Response(result, status=status.HTTP_201_CREATED)
-            
+
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
+
         except Agent.DoesNotExist:
             # Admin puede generar códigos sin ser agente
             if request.user.is_staff:
@@ -496,16 +723,16 @@ class AgentGenerateCodeView(APIView):
                     quantity = serializer.validated_data['quantity']
                     currency = serializer.validated_data['currency']
                     expires_days = serializer.validated_data['expires_days']
-                    
+
                     import secrets
                     from django.utils import timezone
-                    
+
                     codes = []
                     for i in range(quantity):
                         code = f"{currency}{secrets.token_hex(4).upper()}"
                         while DepositCode.objects.filter(code=code).exists():
                             code = f"{currency}{secrets.token_hex(4).upper()}"
-                        
+
                         deposit_code = DepositCode.objects.create(
                             code=code,
                             amount=amount,
@@ -515,7 +742,7 @@ class AgentGenerateCodeView(APIView):
                             notes=f"Generado por admin {request.user.username}"
                         )
                         codes.append(deposit_code)
-                    
+
                     return Response({
                         'success': True,
                         'codes': [
@@ -531,13 +758,16 @@ class AgentGenerateCodeView(APIView):
                         'count': len(codes)
                     }, status=status.HTTP_201_CREATED)
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
+
             return Response(
                 {"error": "not_agent", "message": "No tienes permisos para generar códigos"},
                 status=status.HTTP_403_FORBIDDEN
             )
         except Exception as e:
-            logger.error(f"Error in AgentGenerateCodeView: {e}")
+            logger.error(f"Error in AgentGenerateCodeView: {e}", extra={
+                'user_id': request.user.id,
+                'path': request.path
+            })
             return Response(
                 {"error": "internal_error", "message": "Error al generar códigos"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -548,58 +778,68 @@ class AgentSearchUserView(APIView):
     """
     Buscar usuarios para recarga (agentes).
     GET /api/wallet/agent/search/?query=...
+    ✅ Con cache para búsquedas frecuentes
     """
     permission_classes = [IsAuthenticated, IsAgent]
-    
+
     def get(self, request):
         try:
             agent = Agent.objects.get(user=request.user)
-            
+
             if not agent.is_active:
                 return Response(
                     {"error": "agent_inactive", "message": "Tu cuenta de agente está inactiva"},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
+
             serializer = AgentSearchUserSerializer(data=request.query_params)
             if not serializer.is_valid():
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
+
             query = serializer.validated_data['query'].lower()
             
-            # Buscar usuarios por email, username o teléfono
-            users = User.objects.filter(
-                Q(email__icontains=query) |
-                Q(username__icontains=query) |
-                Q(phone__icontains=query)
-            ).exclude(id=request.user.id)[:20]  # Máximo 20 resultados
+            # Cache para búsquedas frecuentes
+            cache_key = f"user_search:{hash(query)}"
+            results = cache.get(cache_key)
             
-            results = []
-            for user in users:
-                results.append({
-                    'id': user.id,
-                    'username': user.username,
-                    'email': user.email,
-                    'full_name': user.get_full_name() or user.username,
-                    'phone': user.phone or '',
-                    'wallet_balance': float(user.wallet.available_balance) if hasattr(user, 'wallet') else 0,
-                    'is_verified': user.is_verified,
-                    'avatar_url': None  # Podrías obtener de perfil si existe
-                })
-            
+            if not results:
+                users = User.objects.filter(
+                    Q(email__icontains=query) |
+                    Q(username__icontains=query) |
+                    Q(phone__icontains=query)
+                ).exclude(id=request.user.id)[:20]
+
+                results = []
+                for user in users:
+                    results.append({
+                        'id': user.id,
+                        'username': user.username,
+                        'email': user.email,
+                        'full_name': user.get_full_name() or user.username,
+                        'phone': getattr(user, 'phone', ''),
+                        'wallet_balance': float(user.wallet.available_balance) if hasattr(user, 'wallet') else 0,
+                        'is_verified': getattr(user, 'is_verified', False),
+                        'avatar_url': None
+                    })
+                cache.set(cache_key, results, timeout=60)  # 1 minuto
+
             return Response({
                 'query': query,
                 'count': len(results),
                 'results': results
             })
-            
+
         except Agent.DoesNotExist:
             return Response(
                 {"error": "not_agent", "message": "No tienes permisos de agente"},
                 status=status.HTTP_403_FORBIDDEN
             )
         except Exception as e:
-            logger.error(f"Error in AgentSearchUserView: {e}")
+            logger.error(f"Error in AgentSearchUserView: {e}", extra={
+                'user_id': request.user.id,
+                'query': request.GET.get('query', ''),
+                'path': request.path
+            })
             return Response(
                 {"error": "internal_error", "message": "Error al buscar usuarios"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -612,24 +852,19 @@ class AgentCodesView(APIView):
     GET /api/wallet/agent/codes/
     """
     permission_classes = [IsAuthenticated, IsAgentOrAdmin]
-    
+
     def get(self, request):
         try:
-            if request.user.is_staff:
-                codes = DepositCode.objects.filter(created_by=request.user).order_by('-created_at')
-            else:
-                agent = Agent.objects.get(user=request.user)
-                codes = DepositCode.objects.filter(created_by=request.user).order_by('-created_at')
-            
-            # Paginación
+            codes = DepositCode.objects.filter(created_by=request.user).order_by('-created_at')
+
             page = int(request.GET.get('page', 1))
             page_size = min(int(request.GET.get('page_size', 20)), 100)
-            
+
             total = codes.count()
             start = (page - 1) * page_size
             end = start + page_size
             codes_page = codes[start:end]
-            
+
             return Response({
                 'codes': [
                     {
@@ -652,14 +887,12 @@ class AgentCodesView(APIView):
                     'total_pages': (total + page_size - 1) // page_size
                 }
             })
-            
-        except Agent.DoesNotExist:
-            return Response(
-                {"error": "not_agent", "message": "No tienes permisos de agente"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+
         except Exception as e:
-            logger.error(f"Error in AgentCodesView: {e}")
+            logger.error(f"Error in AgentCodesView: {e}", extra={
+                'user_id': request.user.id,
+                'path': request.path
+            })
             return Response(
                 {"error": "internal_error", "message": "Error al listar códigos"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -670,172 +903,119 @@ class AgentEarningsView(APIView):
     """
     Ver ganancias/comisiones del agente.
     GET /api/wallet/agent/earnings/
+    ✅ Con cache
     """
     permission_classes = [IsAuthenticated, IsAgent]
-    
+
     def get(self, request):
-        try:
-            agent = Agent.objects.get(user=request.user)
-            
-            from django.utils import timezone
-            from datetime import timedelta
-            from django.db.models import Sum
-            
-            today = timezone.now().date()
-            week_start = today - timedelta(days=today.weekday())
-            month_start = today.replace(day=1)
-            
-            # Calcular comisiones (simplificado - cada recarga genera 3% comisión)
-            # En producción, tendrías un modelo Commission separado
-            
-            deposits_today = Transaction.objects.filter(
-                created_by=request.user,
-                transaction_type='deposit',
-                created_at__date=today,
-                status='completed'
-            )
-            deposits_week = Transaction.objects.filter(
-                created_by=request.user,
-                transaction_type='deposit',
-                created_at__date__gte=week_start,
-                status='completed'
-            )
-            deposits_month = Transaction.objects.filter(
-                created_by=request.user,
-                transaction_type='deposit',
-                created_at__date__gte=month_start,
-                status='completed'
-            )
-            deposits_total = Transaction.objects.filter(
-                created_by=request.user,
-                transaction_type='deposit',
-                status='completed'
-            )
-            
-            def calculate_commission(deposits):
-                total_amount = deposits.aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                commission = calculate_agent_commission(total_amount)
-                return {
-                    'amount': float(total_amount),
-                    'commission': float(commission)
-                }
-            
-            recent_transactions = Transaction.objects.filter(
-                created_by=request.user,
-                transaction_type='deposit',
-                status='completed'
-            ).select_related('wallet__user').order_by('-created_at')[:20]
-            
-            return Response({
-                'today': calculate_commission(deposits_today),
-                'week': calculate_commission(deposits_week),
-                'month': calculate_commission(deposits_month),
-                'total': calculate_commission(deposits_total),
-                'recent_transactions': [
-                    {
-                        'reference': tx.reference,
-                        'amount': float(tx.amount),
-                        'commission': float(calculate_agent_commission(tx.amount)),
-                        'user': tx.wallet.user.username,
-                        'created_at': tx.created_at.isoformat()
+        cache_key = f"agent_earnings:{request.user.id}"
+        earnings_data = cache.get(cache_key)
+        
+        if not earnings_data:
+            try:
+                agent = Agent.objects.get(user=request.user)
+
+                from datetime import timedelta
+                from django.db.models import Sum
+
+                today = timezone.now().date()
+                week_start = today - timedelta(days=today.weekday())
+                month_start = today.replace(day=1)
+
+                deposits_today = Transaction.objects.filter(
+                    created_by=request.user,
+                    transaction_type='deposit',
+                    created_at__date=today,
+                    status='completed'
+                )
+                deposits_week = Transaction.objects.filter(
+                    created_by=request.user,
+                    transaction_type='deposit',
+                    created_at__date__gte=week_start,
+                    status='completed'
+                )
+                deposits_month = Transaction.objects.filter(
+                    created_by=request.user,
+                    transaction_type='deposit',
+                    created_at__date__gte=month_start,
+                    status='completed'
+                )
+                deposits_total = Transaction.objects.filter(
+                    created_by=request.user,
+                    transaction_type='deposit',
+                    status='completed'
+                )
+
+                def calculate_commission(deposits):
+                    total_amount = deposits.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+                    commission = calculate_agent_commission(total_amount)
+                    return {
+                        'amount': float(total_amount),
+                        'commission': float(commission)
                     }
-                    for tx in recent_transactions
-                ]
-            })
-            
-        except Agent.DoesNotExist:
-            return Response(
-                {"error": "not_agent", "message": "No tienes permisos de agente"},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        except Exception as e:
-            logger.error(f"Error in AgentEarningsView: {e}")
-            return Response(
-                {"error": "internal_error", "message": "Error al calcular ganancias"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 
+                recent_transactions = Transaction.objects.filter(
+                    created_by=request.user,
+                    transaction_type='deposit',
+                    status='completed'
+                ).select_related('wallet__user').order_by('-created_at')[:20]
 
-class CodeQRView(APIView):
-    """
-    Obtener código QR para un código de recarga.
-    GET /api/wallet/codes/<code>/qr/
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def get(self, request, code):
-        try:
-            deposit_code = DepositCode.objects.get(code=code.upper())
-            
-            is_creator = request.user == deposit_code.created_by
-            is_admin = request.user.is_staff
-            
-            if not (is_creator or is_admin):
+                earnings_data = {
+                    'today': calculate_commission(deposits_today),
+                    'week': calculate_commission(deposits_week),
+                    'month': calculate_commission(deposits_month),
+                    'total': calculate_commission(deposits_total),
+                    'recent_transactions': [
+                        {
+                            'reference': tx.reference,
+                            'amount': float(tx.amount),
+                            'commission': float(calculate_agent_commission(tx.amount)),
+                            'user': tx.wallet.user.username,
+                            'created_at': tx.created_at.isoformat()
+                        }
+                        for tx in recent_transactions
+                    ]
+                }
+                
+                cache.set(cache_key, earnings_data, timeout=300)  # 5 minutos
+
+            except Agent.DoesNotExist:
                 return Response(
-                    {"error": "permission_denied", "message": "No tienes permiso para ver este código"},
+                    {"error": "not_agent", "message": "No tienes permisos de agente"},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
-            qr_base64 = generate_qr_for_code(
-                deposit_code.code,
-                deposit_code.amount,
-                deposit_code.currency
-            )
-            
-            return Response({
-                'code': deposit_code.code,
-                'amount': float(deposit_code.amount),
-                'currency': deposit_code.currency,
-                'expires_at': deposit_code.expires_at.isoformat(),
-                'is_used': deposit_code.is_used,
-                'qr_image': qr_base64,
-                'qr_data': f"DJIMUSIC://REDEEM?code={deposit_code.code}&amount={deposit_code.amount}&currency={deposit_code.currency}"
-            })
-            
-        except DepositCode.DoesNotExist:
-            return Response(
-                {"error": "not_found", "message": "Código no encontrado"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            logger.error(f"Error generating QR for code {code}: {e}")
-            return Response(
-                {"error": "internal_error", "message": "Error generando código QR"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            except Exception as e:
+                logger.error(f"Error in AgentEarningsView: {e}", extra={
+                    'user_id': request.user.id,
+                    'path': request.path
+                })
+                return Response(
+                    {"error": "internal_error", "message": "Error al calcular ganancias"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
-
-class RedeemCodeView(APIView):
-    """
-    Canjear un código de recarga.
-    POST /api/wallet/codes/redeem/
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def post(self, request):
-        serializer = RedeemCodeSerializer(
-            data=request.data,
-            context={'user': request.user}
-        )
-        
-        if serializer.is_valid():
-            result = serializer.save()
-            return Response(result, status=status.HTTP_200_OK)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(earnings_data)
 
 
 class LocationsListView(APIView):
     """
     Listar ubicaciones físicas disponibles.
     GET /api/wallet/locations/
+    ✅ Con cache
     """
     permission_classes = [IsAuthenticatedOrReadOnly]
-    
+
     def get(self, request):
-        locations = PhysicalLocation.objects.filter(is_active=True)
-        serializer = PhysicalLocationSerializer(locations, many=True)
-        return Response(serializer.data)
+        cache_key = "physical_locations_active"
+        locations_data = cache.get(cache_key)
+        
+        if not locations_data:
+            locations = PhysicalLocation.objects.filter(is_active=True)
+            serializer = PhysicalLocationSerializer(locations, many=True)
+            locations_data = serializer.data
+            cache.set(cache_key, locations_data, timeout=3600)  # 1 hora
+        
+        return Response(locations_data)
 
 
 class AgentCreateView(APIView):
@@ -844,19 +1024,27 @@ class AgentCreateView(APIView):
     POST /api/wallet/admin/agents/
     """
     permission_classes = [IsAuthenticated]
-    
+
     def post(self, request):
         if not request.user.is_staff:
             return Response(
                 {"error": "permission_denied", "message": "Solo administradores pueden crear agentes"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+
         serializer = AgentCreateSerializer(data=request.data)
         if serializer.is_valid():
             agent = serializer.save()
+            
+            # Invalidar cache de agentes
+            cache.delete("agents_list")
+            
             return Response(AgentSerializer(agent).data, status=status.HTTP_201_CREATED)
-        
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -864,16 +1052,179 @@ class AgentsListView(APIView):
     """
     Listar todos los agentes (solo admin).
     GET /api/wallet/admin/agents/
+    ✅ Con cache
     """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
         if not request.user.is_staff:
             return Response(
                 {"error": "permission_denied", "message": "Solo administradores pueden ver agentes"},
                 status=status.HTTP_403_FORBIDDEN
             )
+
+        cache_key = "agents_list"
+        agents_data = cache.get(cache_key)
         
-        agents = Agent.objects.select_related('user', 'location').all()
-        serializer = AgentSerializer(agents, many=True)
-        return Response(serializer.data)
+        if not agents_data:
+            agents = Agent.objects.select_related('user', 'location').all()
+            serializer = AgentSerializer(agents, many=True)
+            agents_data = serializer.data
+            cache.set(cache_key, agents_data, timeout=300)  # 5 minutos
+        
+        return Response(agents_data)
+
+
+# ============================================
+# HEALTH CHECK VIEW (para monitoreo)
+# ============================================
+
+class WalletHealthCheckView(APIView):
+    """
+    GET /api/wallet/health/
+    Health check para monitoreo del sistema.
+    Sin autenticación para permitir monitoreo externo.
+    """
+    permission_classes = []
+    
+    def get(self, request):
+        from django.db import connection
+        from datetime import datetime
+        
+        health_status = {
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'checks': {
+                'database': 'unknown',
+                'cache': 'unknown'
+            }
+        }
+        
+        # Check database
+        try:
+            connection.ensure_connection()
+            health_status['checks']['database'] = 'ok'
+        except Exception as e:
+            health_status['status'] = 'unhealthy'
+            health_status['checks']['database'] = f'error: {str(e)}'
+        
+        # Check cache
+        try:
+            cache.set('health_check', 'ok', timeout=5)
+            if cache.get('health_check') == 'ok':
+                health_status['checks']['cache'] = 'ok'
+            else:
+                health_status['checks']['cache'] = 'error'
+        except Exception as e:
+            health_status['status'] = 'degraded'
+            health_status['checks']['cache'] = f'error: {str(e)}'
+        
+        status_code = status.HTTP_200_OK if health_status['status'] == 'healthy' else status.HTTP_503_SERVICE_UNAVAILABLE
+        
+        return Response(health_status, status=status_code)
+
+# wallet/views.py - ACTUALIZAR OfficeProcessWithdrawalView
+
+class OfficeProcessWithdrawalView(APIView):
+    """
+    Procesar retiro en oficina
+    POST /api/wallet/office/withdraw/
+    ✅ Con idempotencia (X-Idempotency-Key header)
+    ✅ Con rate limiting
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [SensitiveOperationThrottle]
+    
+    def post(self, request):
+        # Verificar personal
+        try:
+            staff = OfficeStaff.objects.get(user=request.user, is_active=True)
+        except OfficeStaff.DoesNotExist:
+            return Response(
+                {'error': 'No autorizado. Solo personal de oficina.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # ✅ Obtener o generar idempotency key del header
+        idempotency_key = request.headers.get('X-Idempotency-Key')
+        
+        serializer = OfficeWithdrawalSerializer(data=request.data)
+        if serializer.is_valid():
+            try:
+                withdrawal = OfficeWithdrawalService.process_withdrawal(
+                    artist_id=serializer.validated_data['artist_id'],
+                    amount=serializer.validated_data['amount'],
+                    office_id=staff.office_id,
+                    staff_id=staff.id,
+                    withdrawal_method=serializer.validated_data['withdrawal_method'],
+                    id_number_verified=serializer.validated_data['id_number'],
+                    id_type=serializer.validated_data.get('id_type', 'dni'),
+                    muni_phone=serializer.validated_data.get('muni_phone'),
+                    notes=serializer.validated_data.get('notes'),
+                    ip_address=_get_client_ip(request),
+                    idempotency_key=idempotency_key
+                )
+                
+                # ✅ Devolver el idempotency key para que el cliente lo use
+                response_data = {
+                    'success': True,
+                    'reference': withdrawal.reference,
+                    'amount': float(withdrawal.amount),
+                    'fee': float(withdrawal.fee),
+                    'net_amount': float(withdrawal.net_amount),
+                    'method': withdrawal.get_withdrawal_method_display(),
+                    'paid_at': withdrawal.paid_at.isoformat(),
+                    'idempotency_key': withdrawal.idempotency_key,
+                    'message': f'Retiro procesado exitosamente. El artista recibió {withdrawal.net_amount:,.0f} XAF'
+                }
+                
+                # Si fue una respuesta de idempotencia, añadir header
+                if idempotency_key and withdrawal.idempotency_key == idempotency_key:
+                    response_data['idempotent'] = True
+                
+                return Response(response_data, status=status.HTTP_201_CREATED)
+                
+            except WalletBaseException as e:
+                return Response(
+                    {'error': e.detail, 'code': e.code},
+                    status=e.status_code
+                )
+            except Exception as e:
+                logger.error(f"Office withdrawal error: {e}", extra={
+                    'staff_id': staff.id,
+                    'artist_id': request.data.get('artist_id'),
+                    'amount': request.data.get('amount')
+                })
+                return Response(
+                    {'error': 'Error interno al procesar el retiro'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class OfficeReverseWithdrawalView(APIView):
+    """
+    Reversar un retiro (solo admin)
+    POST /api/wallet/admin/office/reverse/<withdrawal_id>/
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, withdrawal_id):
+        if not request.user.is_staff:
+            return Response(
+                {'error': 'Solo administradores pueden reversar retiros'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        reason = request.data.get('reason', 'Reversado por administrador')
+        
+        try:
+            result = OfficeWithdrawalService.reverse_withdrawal(
+                withdrawal_id=withdrawal_id,
+                admin_id=request.user.id,
+                reason=reason
+            )
+            return Response(result)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

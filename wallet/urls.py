@@ -4,6 +4,7 @@ URLs para las APIs del wallet.
 """
 from django.urls import path
 from . import views
+from .health import WalletHealthCheckView  # ✅ IMPORTAR DESDE health.py
 
 urlpatterns = [
     # ============================================
@@ -12,6 +13,7 @@ urlpatterns = [
     path('balance/', views.WalletBalanceView.as_view(), name='wallet-balance'),
     path('transactions/', views.TransactionHistoryView.as_view(), name='transaction-list'),
     path('transactions/<str:reference>/', views.TransactionDetailView.as_view(), name='transaction-detail'),
+    path('health/', WalletHealthCheckView.as_view(), name='wallet-health'),
     
     # ============================================
     # COMPRAS
@@ -22,7 +24,7 @@ urlpatterns = [
     # ============================================
     # RECARGAS
     # ============================================
-    path('deposit/', views.DepositView.as_view(), name='wallet-deposit'),
+    path('deposit/', views.UserDepositView.as_view(), name='wallet-deposit'),
     path('redeem/', views.RedeemCodeView.as_view(), name='redeem-code'),
     
     # ============================================
@@ -31,7 +33,7 @@ urlpatterns = [
     path('artist/earnings/', views.ArtistEarningsView.as_view(), name='artist-earnings'),
     path('artist/holds/', views.ArtistHoldsView.as_view(), name='artist-holds'),
     
-    # ============================================
+    # ===============================   =============
     # ADMIN (HOLDS)
     # ============================================
     path('admin/holds/release/', views.ReleaseHoldView.as_view(), name='release-hold'),

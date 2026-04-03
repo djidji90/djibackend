@@ -8,13 +8,22 @@ from django.utils import timezone
 from decimal import Decimal
 import logging
 
-from .models import Wallet, Transaction, Hold, DepositCode,Agent, PhysicalLocation
+from .models import Wallet, Transaction, Hold, DepositCode,Agent, PhysicalLocation, OfficeWithdrawal
 from .constants import TRANSACTION_TYPES, TRANSACTION_STATUS, HOLD_REASONS, CURRENCIES
 from .exceptions import InsufficientFundsError, InvalidAmountError
 from .services import WalletService
 
 logger = logging.getLogger(__name__)
 
+# wallet/serializers.py - AL PRINCIPIO, CON LOS OTROS IMPORTS
+
+from .constants import (
+    TRANSACTION_TYPES, 
+    TRANSACTION_STATUS, 
+    HOLD_REASONS, 
+    CURRENCIES, 
+    WALLET_NAMES  # ✅ AÑADIR ESTA LÍNEA
+)
 
 # ==================== WALLET SERIALIZERS ====================
 
@@ -989,3 +998,175 @@ class AgentEarningsSerializer(serializers.Serializer):
     month = serializers.DictField()
     total = serializers.DictField()
     recent_transactions = serializers.ListField()
+
+# wallet/serializers.py - AÑADIR ESTE SERIALIZER (al principio o al final)
+
+class WalletBalanceResponseSerializer(serializers.Serializer):
+    """
+    Serializer para respuesta de balance con formateo.
+    El formateo se hace AQUÍ, no en el modelo.
+    """
+    available = serializers.DecimalField(max_digits=14, decimal_places=2)
+    pending = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    currency = serializers.CharField()
+    total_deposited = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_spent = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_withdrawn = serializers.DecimalField(max_digits=14, decimal_places=2)
+    
+    def to_representation(self, instance):
+        """
+        Convertir datos del modelo a respuesta formateada.
+        """
+        language = self.context.get('language', 'es')
+        names = WALLET_NAMES.get(language, WALLET_NAMES['es'])
+        
+        # Si instance es un dict (datos crudos)
+        if isinstance(instance, dict):
+            available = instance.get('available', Decimal('0'))
+            pending = instance.get('pending', Decimal('0'))
+            total = instance.get('total', Decimal('0'))
+            currency = instance.get('currency', 'XAF')
+            total_deposited = instance.get('total_deposited', Decimal('0'))
+            total_spent = instance.get('total_spent', Decimal('0'))
+            total_withdrawn = instance.get('total_withdrawn', Decimal('0'))
+        else:
+            # Si instance es un objeto Wallet
+            available = instance.available_balance
+            pending = instance.pending_balance
+            total = instance.total_balance
+            currency = instance.currency
+            total_deposited = instance.total_deposited
+            total_spent = instance.total_spent
+            total_withdrawn = instance.total_withdrawn
+        
+        def _format_value(value, currency):
+            """Formatear valor como moneda"""
+            if value is None:
+                return f"0 {currency}"
+            try:
+                val = float(value)
+                if val == int(val):
+                    return f"{int(val):,} {currency}"
+                return f"{val:,.2f} {currency}"
+            except:
+                return f"{value} {currency}"
+        
+        return {
+            'available': {
+                'value': available,
+                'formatted': _format_value(available, currency),
+                'name': names.get('available', 'Disponible')
+            },
+            'pending': {
+                'value': pending,
+                'formatted': _format_value(pending, currency),
+                'name': names.get('pending', 'Pendiente')
+            },
+            'total': {
+                'value': total,
+                'formatted': _format_value(total, currency),
+                'name': names.get('balance', 'Balance Total')
+            },
+            'currency': currency,
+            'total_deposited': total_deposited,
+            'total_spent': total_spent,
+            'total_withdrawn': total_withdrawn,
+        }
+
+# wallet/serializers.py - AÑADIR AL FINAL
+
+# ============================================================================
+# SERIALIZERS PARA SISTEMA DE RETIROS EN OFICINA
+# ============================================================================
+
+class OfficeWithdrawalSerializer(serializers.Serializer):
+    """
+    Serializer para procesar retiro en oficina
+    POST /api/wallet/office/withdraw/
+    """
+    artist_id = serializers.IntegerField(help_text="ID del artista")
+    amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal('1000'),
+        help_text="Monto a retirar (mínimo 1,000 XAF)"
+    )
+    withdrawal_method = serializers.ChoiceField(
+        choices=[('cash', 'Efectivo'), ('muni', 'Muni Dinero')],
+        help_text="Método de retiro"
+    )
+    id_number = serializers.CharField(
+        max_length=50,
+        help_text="Número de identificación (DNI, pasaporte, etc.)"
+    )
+    id_type = serializers.ChoiceField(
+        choices=[('dni', 'DNI/Cédula'), ('passport', 'Pasaporte')],
+        default='dni',
+        required=False,
+        help_text="Tipo de identificación"
+    )
+    muni_phone = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True,
+        help_text="Número de teléfono Muni (requerido si método es muni)"
+    )
+    notes = serializers.CharField(
+        max_length=500,
+        required=False,
+        allow_blank=True,
+        help_text="Notas adicionales"
+    )
+    
+    def validate_amount(self, value):
+        """Validar monto mínimo"""
+        if value < Decimal('1000'):
+            raise serializers.ValidationError("El monto mínimo de retiro es 1,000 XAF")
+        
+        from .constants import LIMITS
+        if value > Decimal('500000'):
+            raise serializers.ValidationError("El monto máximo de retiro es 500,000 XAF")
+        
+        return value
+    
+    def validate(self, data):
+        """Validar método de pago"""
+        if data.get('withdrawal_method') == 'muni' and not data.get('muni_phone'):
+            raise serializers.ValidationError({
+                'muni_phone': 'Para retiro por Muni Dinero debe proporcionar el número de teléfono'
+            })
+        return data
+
+
+class OfficeWithdrawalHistorySerializer(serializers.ModelSerializer):
+    """
+    Serializer para historial de retiros en oficina
+    """
+    artist_name = serializers.CharField(source='artist.get_full_name', read_only=True)
+    office_name = serializers.CharField(source='office.name', read_only=True)
+    staff_name = serializers.CharField(source='processed_by.user.username', read_only=True)
+    method_display = serializers.CharField(source='get_withdrawal_method_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = OfficeWithdrawal  # Este modelo debe existir
+        fields = [
+            'reference', 'amount', 'fee', 'net_amount', 
+            'method_display', 'withdrawal_method',
+            'status', 'status_display',
+            'paid_at', 'requested_at',
+            'office_name', 'staff_name', 'artist_name',
+            'notes'
+        ]
+
+
+class OfficeDashboardStatsSerializer(serializers.Serializer):
+    """
+    Serializer para estadísticas del dashboard de oficina
+    """
+    office = serializers.DictField()
+    today_stats = serializers.DictField()
+    top_artists = serializers.ListField()
+    staff_activity = serializers.ListField()
+    recent_withdrawals = serializers.ListField(required=False)

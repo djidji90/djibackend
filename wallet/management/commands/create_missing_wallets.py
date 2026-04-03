@@ -114,3 +114,9 @@ class Command(BaseCommand):
                 self.stdout.write(
                     self.style.SUCCESS("🎉 Todos los usuarios tienen wallet ahora!")
                 )
+
+
+
+            # Verificar si quedan pendientes
+            # Verificar si quedan pendientes
+            # Verificar si quedan pendientes

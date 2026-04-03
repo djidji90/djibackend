@@ -755,6 +755,55 @@ def create_database_indexes():
 if os.getenv('CREATE_INDEXES_ON_STARTUP', 'False') == 'True':
     create_database_indexes()
 
+
+# ================================
+# MONITOREO Y MÉTRICAS - PRODUCCIÓN
+# ================================
+
+# Prometheus metrics (para monitoreo)
+try:
+    import django_prometheus
+    INSTALLED_APPS.append('django_prometheus')
+    MIDDLEWARE.insert(0, 'django_prometheus.middleware.PrometheusBeforeMiddleware')
+    MIDDLEWARE.append('django_prometheus.middleware.PrometheusAfterMiddleware')
+    print("✅ Prometheus metrics activado")
+except ImportError:
+    print("⚠️ django_prometheus no instalado. Para monitoreo: pip install django-prometheus")
+
+# Sentry para errores en producción
+SENTRY_DSN = os.getenv('SENTRY_DSN', '')
+if SENTRY_DSN and not DEBUG:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
+        from sentry_sdk.integrations.celery import CeleryIntegration
+        from sentry_sdk.integrations.redis import RedisIntegration
+        
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            integrations=[
+                DjangoIntegration(),
+                CeleryIntegration(),
+                RedisIntegration(),
+            ],
+            traces_sample_rate=0.1,  # 10% de transacciones
+            send_default_pii=False,
+            environment=os.getenv('ENVIRONMENT', 'production'),
+        )
+        print("✅ Sentry configurado para monitoreo de errores")
+    except ImportError:
+        print("⚠️ sentry-sdk no instalado. Para errores: pip install sentry-sdk")
+
+# Health check endpoints
+HEALTH_CHECK = {
+    'disk_usage': True,
+    'database': True,
+    'cache': True,
+}
+
+# Endpoints públicos de monitoreo
+MONITORING_ALLOWED_IPS = os.getenv('MONITORING_ALLOWED_IPS', '127.0.0.1,10.0.0.0/8').split(',')
+
 # ================================
 # RESUMEN DE CONFIGURACIÓN
 # ================================

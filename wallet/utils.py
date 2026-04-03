@@ -1,4 +1,4 @@
-# wallet/utils.py
+# wallet/utils.py - VERSIÓN CORRECTA
 """
 Utilidades para el sistema wallet
 """
@@ -14,18 +14,10 @@ logger = logging.getLogger(__name__)
 def generate_qr_code(data, size=200):
     """
     Genera un código QR en formato base64.
-    
-    Args:
-        data: Datos a codificar (string)
-        size: Tamaño del QR en píxeles
-    
-    Returns:
-        str: Imagen QR en formato base64
     """
     try:
-        # Ajustar tamaño
         box_size = max(5, size // 20)
-        
+
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -34,36 +26,31 @@ def generate_qr_code(data, size=200):
         )
         qr.add_data(data)
         qr.make(fit=True)
-        
+
         img = qr.make_image(fill_color="black", back_color="white")
-        
-        # Redimensionar a tamaño exacto
+
         if img.size[0] != size:
             img = img.resize((size, size))
-        
+
         buffer = BytesIO()
         img.save(buffer, format="PNG")
         img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
+
         return f"data:image/png;base64,{img_base64}"
-    
+
     except Exception as e:
         logger.error(f"Error generating QR code: {e}")
         return None
 
 
 def generate_qr_for_code(code, amount, currency):
-    """
-    Genera QR con información del código.
-    """
+    """Genera QR con información del código."""
     qr_data = f"DJIMUSIC://REDEEM?code={code}&amount={amount}&currency={currency}"
     return generate_qr_code(qr_data)
 
 
 def get_qr_data_url(code, amount, currency):
-    """
-    Obtiene URL de datos del QR.
-    """
+    """Obtiene URL de datos del QR."""
     return f"DJIMUSIC://REDEEM?code={code}&amount={amount}&currency={currency}"
 
 

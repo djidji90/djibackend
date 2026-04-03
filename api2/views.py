@@ -2468,7 +2468,9 @@ class ArtistListView(APIView):
             )
 
 # Random Songs View
-@extend_schema(description="Selección aleatoria de canciones")
+# api2/views.py - RandomSongsView (VERSIÓN COMPLETA Y OPTIMIZADA)
+
+@extend_schema(description="Selección aleatoria de canciones con precios incluidos")
 class RandomSongsView(APIView):
     """
     MISMO NOMBRE, MISMA INTERFAZ, PERO OPTIMIZADA
@@ -2479,6 +2481,7 @@ class RandomSongsView(APIView):
     3. ✅ URLs presigned en batch (reduce llamadas a R2 en 95%)
     4. ✅ Cache HTTP (60 segundos)
     5. ✅ Método seguro para datasets grandes
+    6. ✅ Incluye información de precios por categoría
     
     Compatibilidad 100% con frontend:
     - Misma URL: /api2/songs/random/
@@ -2508,7 +2511,7 @@ class RandomSongsView(APIView):
             cached_response = cache.get(user_cache_key)
             
             if cached_response:
-                logger.debug(f"🎯 Cache HIT usuario {request.user.id}")
+                logger.debug(f"Cache HIT usuario {request.user.id}")
                 return Response(cached_response, status=status.HTTP_200_OK)
             
             # Query base optimizado
@@ -2520,8 +2523,7 @@ class RandomSongsView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
             
-            # ✅ REEMPLAZADO: random.sample(list(all_songs), ...) ← PELIGROSO
-            # ✅ NUEVO: Método seguro sin memory explosion
+            # Método seguro sin memory explosion
             random_songs = self._get_random_songs_safe(all_songs, num_songs)
             
             if not random_songs:
@@ -2530,27 +2532,25 @@ class RandomSongsView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
             
-            # Serializar con URLs optimizadas (batch)
+            # Serializar con URLs optimizadas y precios
             serializer_data = self._serialize_with_optimized_urls(random_songs)
             
-            # MISMA RESPUESTA QUE ANTES
+            # MISMA RESPUESTA QUE ANTES (pero con precios adicionales)
             response_data = {"random_songs": serializer_data}
             
             # Cachear para este usuario (30s)
             cache.set(user_cache_key, response_data, timeout=self.USER_CACHE_TIMEOUT)
             
-            logger.info(f"✅ RandomSongs: {len(random_songs)} canciones para usuario {request.user.id}")
+            logger.info(f"RandomSongs: {len(random_songs)} canciones para usuario {request.user.id}")
             return Response(response_data, status=status.HTTP_200_OK)
             
         except ValueError as e:
-            # MISMO ERROR QUE ANTES
             logger.error(f"Value error in random songs: {e}")
             return Response(
                 {"error": "Error en la selección de canciones"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         except Exception as e:
-            # MISMO ERROR QUE ANTES
             logger.error(f"Error in random songs: {e}")
             return Response(
                 {"error": "Error al obtener canciones aleatorias"},
@@ -2623,7 +2623,7 @@ class RandomSongsView(APIView):
             batch = list(
                 queryset.select_related('uploaded_by')
                 .exclude(id__in=selected_ids)
-                [offset:offset + (remaining * 3)]  # Tomar más de lo necesario
+                [offset:offset + (remaining * 3)]
             )
             
             if batch:
@@ -2644,10 +2644,11 @@ class RandomSongsView(APIView):
     def _serialize_with_optimized_urls(self, songs):
         """
         Serializa optimizando las llamadas a R2
-        
-        En lugar de generar una URL presigned por cada canción (15-30 llamadas),
-        genera TODAS en una sola operación batch (1-2 llamadas)
+        ✅ INCLUYE INFORMACIÓN DE PRECIOS POR CATEGORÍA
         """
+        from wallet.constants import SONG_PRICE_MAP, SONG_CATEGORY_CHOICES
+        from .r2_utils import generate_presigned_urls_batch
+        
         # 1. Recopilar todas las keys
         audio_keys = []
         image_keys = []
@@ -2659,22 +2660,21 @@ class RandomSongsView(APIView):
                 image_keys.append(song.image_key)
         
         # 2. Obtener URLs en BATCH (¡OPTIMIZACIÓN CRÍTICA!)
-        # De 15-30 llamadas individuales → 1-2 llamadas batch
         audio_urls = generate_presigned_urls_batch(audio_keys) if audio_keys else {}
         image_urls = generate_presigned_urls_batch(image_keys) if image_keys else {}
         
-        # 3. Serializar normalmente (usa tu SongSerializer existente)
+        # 3. Serializar normalmente
         serializer = SongSerializer(songs, many=True)
         data = serializer.data
         
-        # 4. Asignar URLs desde el batch (si el serializer no las incluyó)
-        # Esto es compatible: si el serializer ya las incluye, no se sobrescriben
+        # 4. Asignar URLs e información de precios
+        category_dict = dict(SONG_CATEGORY_CHOICES)
+        
         for i, song in enumerate(songs):
             song_data = data[i]
             
             # Audio URL
             if song.file_key and song.file_key in audio_urls:
-                # Solo asignar si no existe o si queremos asegurarnos
                 if 'audio_url' not in song_data or song_data.get('audio_url') is None:
                     song_data['audio_url'] = audio_urls[song.file_key]
             
@@ -2682,6 +2682,18 @@ class RandomSongsView(APIView):
             if song.image_key and song.image_key in image_urls:
                 if 'image_url' not in song_data or song_data.get('image_url') is None:
                     song_data['image_url'] = image_urls[song.image_key]
+            
+            # ✅ INFORMACIÓN DE PRECIOS
+            category = getattr(song, 'category', 'standard')
+            price = SONG_PRICE_MAP.get(category, 500)
+            
+            song_data['price'] = float(price)
+            song_data['price_display'] = f"{int(price):,} XAF"
+            song_data['category'] = category
+            song_data['category_display'] = category_dict.get(category, category)
+            song_data['artist_share'] = int(price * 0.8)
+            song_data['platform_share'] = int(price * 0.2)
+            song_data['is_purchasable'] = getattr(song, 'is_purchasable', True)
         
         return data
 # Vista adicional para eliminar canciones con limpieza en R2
@@ -3351,13 +3363,26 @@ def health_check(request):
         OpenApiParameter(name='include', description='Incluir: songs,artists,suggestions,all', required=False, type=str)
     ]
 )
+# api2/views.py - complete_search (VERSIÓN COMPLETA Y OPTIMIZADA)
+
+@extend_schema(
+    description="Búsqueda completa para frontend moderno (todo en una respuesta)",
+    parameters=[
+        OpenApiParameter(name='q', description='Texto de búsqueda', required=True, type=str),
+        OpenApiParameter(name='limit', description='Límite por categoría (default: 5, max: 10)', required=False, type=int),
+        OpenApiParameter(name='include', description='Incluir: songs,artists,suggestions,all', required=False, type=str)
+    ]
+)
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def complete_search(request):
     """
     Endpoint único para el search bar profesional
     Devuelve canciones, artistas y sugerencias en una sola respuesta
+    ✅ OPTIMIZADO: Precios centralizados desde wallet.constants
     """
+    from wallet.constants import SONG_PRICE_MAP, SONG_CATEGORY_CHOICES
+    
     query = request.GET.get('q', '').strip()
     limit = min(int(request.GET.get('limit', 5)), 10)
     include = request.GET.get('include', 'all').split(',')
@@ -3382,7 +3407,7 @@ def complete_search(request):
         query = query[:100]
 
     try:
-        from django.db.models import Count, F, Value, CharField, Case, When
+        from django.db.models import Count, F, Value, CharField, Case, When, Subquery, OuterRef
         from django.core.cache import cache
         import hashlib
         import json
@@ -3405,7 +3430,7 @@ def complete_search(request):
             "playlists": [],
         }
 
-        # 1. BUSCAR CANCIONES (INCLUYENDO CAMPOS WALLET)
+        # 1. BUSCAR CANCIONES (CON PRECIOS CENTRALIZADOS)
         if 'all' in include or 'songs' in include:
             songs = Song.objects.filter(
                 Q(title__icontains=query) | Q(artist__icontains=query) | Q(genre__icontains=query)
@@ -3420,34 +3445,32 @@ def complete_search(request):
                 )
             ).select_related('uploaded_by').values(
                 'id', 'title', 'artist', 'genre', 'duration',
-                'category',  # ← NUEVO
-                'is_purchasable',  # ← NUEVO
+                'category', 'is_purchasable', 'is_public',
                 'uploaded_by__username', 'created_at', 'likes_count',
                 'file_key'
             ).order_by('-match_relevance', '-likes_count', '-created_at')[:limit]
 
-            # Procesar canciones para incluir información de precio
+            # ✅ Procesar canciones usando SONG_PRICE_MAP centralizado
+            category_dict = dict(SONG_CATEGORY_CHOICES)
             songs_list = []
             for s in songs:
-                # Obtener precio según categoría
-                price_map = {'standard': 500, 'hit': 750, 'premium': 1000, 'classic': 300}
                 category = s.get('category', 'standard')
-                price = price_map.get(category, 500)
+                price = SONG_PRICE_MAP.get(category, 500)
                 
                 songs_list.append({
                     **s,
-                    'price': price,
-                    'price_display': f"{price} XAF",
+                    'price': float(price),
+                    'price_display': f"{int(price):,} XAF",
+                    'category_display': category_dict.get(category, category),
                     'artist_share': int(price * 0.8),
-                    'platform_share': int(price * 0.2)
+                    'platform_share': int(price * 0.2),
+                    'can_purchase': s.get('is_purchasable', True) and s.get('is_public', True)
                 })
             
             result["songs"] = songs_list
 
-        # 2. BUSCAR ARTISTAS (sin cambios)
+        # 2. BUSCAR ARTISTAS
         if 'all' in include or 'artists' in include:
-            from django.db.models import Subquery, OuterRef
-
             artists = Song.objects.filter(
                 artist__icontains=query
             ).values('artist').annotate(
@@ -3482,7 +3505,7 @@ def complete_search(request):
                 for a in artists
             ]
 
-        # 3. SUGERENCIAS (sin cambios)
+        # 3. SUGERENCIAS
         if 'all' in include or 'suggestions' in include:
             from django.test import RequestFactory
             factory = RequestFactory()
@@ -3493,12 +3516,24 @@ def complete_search(request):
             if suggestions_response.status_code == 200:
                 result["suggestions"] = suggestions_response.data.get("suggestions", [])
 
-        # 4. METADATA ENRIQUECIDA CON INFORMACIÓN DE PRECIOS
+        # 4. METADATA CON INFORMACIÓN DE PRECIOS CENTRALIZADA
         total_items = (
             len(result["songs"]) + 
             len(result["artists"]) + 
             len(result["suggestions"])
         )
+
+        # ✅ Construir price_info desde SONG_PRICE_MAP
+        category_dict = dict(SONG_CATEGORY_CHOICES)
+        price_info = {}
+        for cat, price in SONG_PRICE_MAP.items():
+            price_info[cat] = {
+                'price': float(price),
+                'display': f"{int(price):,} XAF",
+                'name': category_dict.get(cat, cat),
+                'artist_share': int(price * 0.8),
+                'platform_share': int(price * 0.2)
+            }
 
         metadata = {
             "query": query,
@@ -3512,12 +3547,11 @@ def complete_search(request):
                 "suggestions": len(result["suggestions"])
             },
             "query_length": len(query),
-            # ← NUEVO: Información de precios para frontend
-            "price_info": {
-                "standard": {"price": 500, "display": "500 XAF"},
-                "hit": {"price": 750, "display": "750 XAF"},
-                "premium": {"price": 1000, "display": "1000 XAF"},
-                "classic": {"price": 300, "display": "300 XAF"}
+            "price_info": price_info,
+            "commission_info": {
+                "artist_percentage": 80,
+                "platform_percentage": 20,
+                "note": "El artista recibe el 80% de cada compra"
             }
         }
 
@@ -3536,7 +3570,7 @@ def complete_search(request):
             "artists": [],
             "suggestions": [],
             "albums": [],
-            "playlist": [],
+            "playlists": [],
             "_metadata": {
                 "query": query,
                 "timestamp": timezone.now().isoformat(),
