@@ -182,6 +182,7 @@ INSTALLED_APPS = [
     'wallet',
      'notifications',
     'artist_dashboard',
+     'x-idempotency-key',  # ✅ AÑADIR ESTA LÍNEA
     
     # Librerías externas
     "django_celery_beat",
