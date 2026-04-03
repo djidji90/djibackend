@@ -145,6 +145,8 @@ CORS_ALLOW_HEADERS = [
     'content-range',
     'accept-ranges',
     'if-range',
+    'x-idempotency-key',
+    
    
 ]
 
