@@ -2470,6 +2470,8 @@ class ArtistListView(APIView):
 # Random Songs View
 # api2/views.py - RandomSongsView (VERSIÓN COMPLETA Y OPTIMIZADA)
 
+# api2/views.py - RandomSongsView (VERSIÓN COMPLETA CORREGIDA)
+
 @extend_schema(description="Selección aleatoria de canciones con precios incluidos")
 class RandomSongsView(APIView):
     """
@@ -2482,6 +2484,7 @@ class RandomSongsView(APIView):
     4. ✅ Cache HTTP (60 segundos)
     5. ✅ Método seguro para datasets grandes
     6. ✅ Incluye información de precios por categoría
+    7. ✅ CORREGIDO: Error de Decimal vs float en multiplicación
     
     Compatibilidad 100% con frontend:
     - Misma URL: /api2/songs/random/
@@ -2645,7 +2648,9 @@ class RandomSongsView(APIView):
         """
         Serializa optimizando las llamadas a R2
         ✅ INCLUYE INFORMACIÓN DE PRECIOS POR CATEGORÍA
+        ✅ CORREGIDO: Error de Decimal vs float
         """
+        from decimal import Decimal
         from wallet.constants import SONG_PRICE_MAP, SONG_CATEGORY_CHOICES
         from .r2_utils import generate_presigned_urls_batch
         
@@ -2670,6 +2675,10 @@ class RandomSongsView(APIView):
         # 4. Asignar URLs e información de precios
         category_dict = dict(SONG_CATEGORY_CHOICES)
         
+        # ✅ CONSTANTES COMO DECIMAL para evitar error de tipos
+        ARTIST_PERCENTAGE = Decimal('0.8')
+        PLATFORM_PERCENTAGE = Decimal('0.2')
+        
         for i, song in enumerate(songs):
             song_data = data[i]
             
@@ -2683,16 +2692,18 @@ class RandomSongsView(APIView):
                 if 'image_url' not in song_data or song_data.get('image_url') is None:
                     song_data['image_url'] = image_urls[song.image_key]
             
-            # ✅ INFORMACIÓN DE PRECIOS
+            # ✅ INFORMACIÓN DE PRECIOS - CORREGIDO
             category = getattr(song, 'category', 'standard')
-            price = SONG_PRICE_MAP.get(category, 500)
+            price = SONG_PRICE_MAP.get(category, Decimal('500'))
             
             song_data['price'] = float(price)
             song_data['price_display'] = f"{int(price):,} XAF"
             song_data['category'] = category
             song_data['category_display'] = category_dict.get(category, category)
-            song_data['artist_share'] = int(price * 0.8)
-            song_data['platform_share'] = int(price * 0.2)
+            
+            # ✅ CORREGIDO: Multiplicar Decimal con Decimal (no con float)
+            song_data['artist_share'] = int(price * ARTIST_PERCENTAGE)
+            song_data['platform_share'] = int(price * PLATFORM_PERCENTAGE)
             song_data['is_purchasable'] = getattr(song, 'is_purchasable', True)
         
         return data
