@@ -1,45 +1,38 @@
-# wallet/throttles.py - VERSIÓN COMPLETA
-"""
-Rate limiting para el sistema wallet
-"""
+# wallet/throttles.py - VERSIÓN PARA PRUEBAS (LÍMITES ALTOS)
+
 from rest_framework.throttling import UserRateThrottle, AnonRateThrottle
 
 
 class WalletOperationThrottle(UserRateThrottle):
     """
     Límite de operaciones por usuario
-    10 operaciones por minuto es razonable
     """
-    rate = '10/min'
+    rate = '100/minute'  # ← AUMENTADO (antes 10/min)
 
 
 class SensitiveOperationThrottle(UserRateThrottle):
     """
-    Para operaciones sensibles (depósitos grandes, retiros)
-    3 por minuto
+    Para operaciones sensibles (depósitos grandes, retiros, compras)
     """
-    rate = '3/min'
+    rate = '30/minute'  # ← AUMENTADO (antes 3/min)
 
 
 class WithdrawalThrottle(UserRateThrottle):
     """
     Retiros - más restrictivo
-    2 por hora
     """
-    rate = '2/hour'
+    rate = '10/hour'  # ← AUMENTADO (antes 2/hour)
 
 
 class DepositThrottle(UserRateThrottle):
     """
     Depósitos - restrictivo para evitar spam
-    5 por minuto
     """
-    rate = '5/min'
+    rate = '20/minute'  # ← AUMENTADO (antes 5/min)
 
 
 class AnonymousWalletThrottle(AnonRateThrottle):
     """
     Límite para usuarios no autenticados
-    (por ejemplo, consulta de precios)
     """
-    rate = '20/hour'
+    rate = '100/hour'  # ← AUMENTADO (antes 20/hour)
