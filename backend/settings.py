@@ -4,7 +4,9 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import dj_database_url
 from kombu import Queue
+import logging
 from celery.schedules import crontab
+logger = logging.getLogger(__name__)
 # ================================
 # CONFIGURACIÓN BASE
 # ================================

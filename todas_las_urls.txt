@@ -1,16 +1,20 @@
 SQLite en uso para desarrollo local
-R2 Configurado correctamente con optimizaciones
+✅ R2 Configurado correctamente con optimizaciones
+⚠️ django_prometheus no instalado. Para monitoreo: pip install django-prometheus
 
-╔════════════════════════════════════════════════════════════╗
-║  🎵 DJI MUSIC API - CONFIGURACIÓN COMPLETA                 ║
-╠════════════════════════════════════════════════════════════╣
-║  • Streaming optimizado con URLs firmadas                  ║
-║  • Rate limiting: 100 streams/hora por usuario             ║
-║  • Cache Redis: URLs cacheadas 30 minutos                  ║
-║  • CORS headers para streaming configurados                ║
-║  • Listo para producción                                   ║
-╚════════════════════════════════════════════════════════════╝
+ ╔════════════════════════════════════════════════════════════╗
+ ║  🎵 DJI MUSIC API - CONFIGURACIÓN COMPLETA                 ║
+ ╠════════════════════════════════════════════════════════════╣
+ ║  • Streaming optimizado con URLs firmadas                  ║
+ ║  • Rate limiting: 100 streams/hora por usuario             ║
+ ║  • Cache Redis: URLs cacheadas 30 minutos                  ║
+ ║  • CORS headers para streaming configurados                ║
+ ║  • Colas Celery: default, uploads, maintenance             ║
+ ║  • PostgreSQL: CONN_MAX_AGE=0 (conexiones efímeras)        ║
+ ║  • Listo para producción                                   ║
+ ╚════════════════════════════════════════════════════════════╝
 
+✅ Sistema de Monedero - App lista y señales registradas
 /	api2.endpoint_inspector.api_home	api-home
 /admin/	django.contrib.admin.sites.index	admin:index
 /admin/<app_label>/	django.contrib.admin.sites.app_index	admin:app_list
@@ -75,6 +79,30 @@ R2 Configurado correctamente con optimizaciones
 /admin/api2/userprofile/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:api2_userprofile_delete
 /admin/api2/userprofile/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:api2_userprofile_history
 /admin/api2/userprofile/add/	django.contrib.admin.options.add_view	admin:api2_userprofile_add
+/admin/artist_dashboard/artiststats/	django.contrib.admin.options.changelist_view	admin:artist_dashboard_artiststats_changelist
+/admin/artist_dashboard/artiststats/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/artist_dashboard/artiststats/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:artist_dashboard_artiststats_change
+/admin/artist_dashboard/artiststats/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:artist_dashboard_artiststats_delete
+/admin/artist_dashboard/artiststats/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:artist_dashboard_artiststats_history
+/admin/artist_dashboard/artiststats/add/	django.contrib.admin.options.add_view	admin:artist_dashboard_artiststats_add
+/admin/artist_dashboard/audienceinsight/	django.contrib.admin.options.changelist_view	admin:artist_dashboard_audienceinsight_changelist
+/admin/artist_dashboard/audienceinsight/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/artist_dashboard/audienceinsight/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:artist_dashboard_audienceinsight_change
+/admin/artist_dashboard/audienceinsight/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:artist_dashboard_audienceinsight_delete
+/admin/artist_dashboard/audienceinsight/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:artist_dashboard_audienceinsight_history
+/admin/artist_dashboard/audienceinsight/add/	django.contrib.admin.options.add_view	admin:artist_dashboard_audienceinsight_add
+/admin/artist_dashboard/dailystats/	django.contrib.admin.options.changelist_view	admin:artist_dashboard_dailystats_changelist
+/admin/artist_dashboard/dailystats/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/artist_dashboard/dailystats/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:artist_dashboard_dailystats_change
+/admin/artist_dashboard/dailystats/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:artist_dashboard_dailystats_delete
+/admin/artist_dashboard/dailystats/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:artist_dashboard_dailystats_history
+/admin/artist_dashboard/dailystats/add/	django.contrib.admin.options.add_view	admin:artist_dashboard_dailystats_add
+/admin/artist_dashboard/songstats/	django.contrib.admin.options.changelist_view	admin:artist_dashboard_songstats_changelist
+/admin/artist_dashboard/songstats/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/artist_dashboard/songstats/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:artist_dashboard_songstats_change
+/admin/artist_dashboard/songstats/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:artist_dashboard_songstats_delete
+/admin/artist_dashboard/songstats/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:artist_dashboard_songstats_history
+/admin/artist_dashboard/songstats/add/	django.contrib.admin.options.add_view	admin:artist_dashboard_songstats_add
 /admin/auth/group/	django.contrib.admin.options.changelist_view	admin:auth_group_changelist
 /admin/auth/group/<path:object_id>/	django.views.generic.base.RedirectView
 /admin/auth/group/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:auth_group_change
@@ -128,17 +156,36 @@ R2 Configurado correctamente con optimizaciones
 /admin/login/	django.contrib.admin.sites.login	admin:login
 /admin/logout/	django.contrib.admin.sites.logout	admin:logout
 /admin/musica/customuser/	django.contrib.admin.options.changelist_view	admin:musica_customuser_changelist
+/admin/musica/customuser/<id>/password/	django.contrib.auth.admin.user_change_password	admin:auth_user_password_change
 /admin/musica/customuser/<path:object_id>/	django.views.generic.base.RedirectView
 /admin/musica/customuser/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:musica_customuser_change
 /admin/musica/customuser/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:musica_customuser_delete
 /admin/musica/customuser/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:musica_customuser_history
-/admin/musica/customuser/add/	django.contrib.admin.options.add_view	admin:musica_customuser_add
+/admin/musica/customuser/add/	django.contrib.auth.admin.add_view	admin:musica_customuser_add
 /admin/musica/uservisit/	django.contrib.admin.options.changelist_view	admin:musica_uservisit_changelist
 /admin/musica/uservisit/<path:object_id>/	django.views.generic.base.RedirectView
 /admin/musica/uservisit/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:musica_uservisit_change
 /admin/musica/uservisit/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:musica_uservisit_delete
 /admin/musica/uservisit/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:musica_uservisit_history
 /admin/musica/uservisit/add/	django.contrib.admin.options.add_view	admin:musica_uservisit_add
+/admin/notifications/notification/	django.contrib.admin.options.changelist_view	admin:notifications_notification_changelist
+/admin/notifications/notification/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/notifications/notification/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:notifications_notification_change
+/admin/notifications/notification/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:notifications_notification_delete
+/admin/notifications/notification/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:notifications_notification_history
+/admin/notifications/notification/add/	django.contrib.admin.options.add_view	admin:notifications_notification_add
+/admin/notifications/notificationpreference/	django.contrib.admin.options.changelist_view	admin:notifications_notificationpreference_changelist
+/admin/notifications/notificationpreference/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/notifications/notificationpreference/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:notifications_notificationpreference_change
+/admin/notifications/notificationpreference/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:notifications_notificationpreference_delete
+/admin/notifications/notificationpreference/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:notifications_notificationpreference_history
+/admin/notifications/notificationpreference/add/	django.contrib.admin.options.add_view	admin:notifications_notificationpreference_add
+/admin/notifications/pushdevice/	django.contrib.admin.options.changelist_view	admin:notifications_pushdevice_changelist
+/admin/notifications/pushdevice/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/notifications/pushdevice/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:notifications_pushdevice_change
+/admin/notifications/pushdevice/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:notifications_pushdevice_delete
+/admin/notifications/pushdevice/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:notifications_pushdevice_history
+/admin/notifications/pushdevice/add/	django.contrib.admin.options.add_view	admin:notifications_pushdevice_add
 /admin/password_change/	django.contrib.admin.sites.password_change	admin:password_change
 /admin/password_change/done/	django.contrib.admin.sites.password_change_done	admin:password_change_done
 /admin/r/<path:content_type_id>/<path:object_id>/	django.contrib.contenttypes.views.shortcut	admin:view_on_site
@@ -154,6 +201,84 @@ R2 Configurado correctamente con optimizaciones
 /admin/token_blacklist/outstandingtoken/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:token_blacklist_outstandingtoken_delete
 /admin/token_blacklist/outstandingtoken/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:token_blacklist_outstandingtoken_history
 /admin/token_blacklist/outstandingtoken/add/	django.contrib.admin.options.add_view	admin:token_blacklist_outstandingtoken_add
+/admin/wallet/agent/	django.contrib.admin.options.changelist_view	admin:wallet_agent_changelist
+/admin/wallet/agent/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/agent/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_agent_change
+/admin/wallet/agent/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_agent_delete
+/admin/wallet/agent/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_agent_history
+/admin/wallet/agent/add/	django.contrib.admin.options.add_view	admin:wallet_agent_add
+/admin/wallet/artistmuniaccount/	django.contrib.admin.options.changelist_view	admin:wallet_artistmuniaccount_changelist
+/admin/wallet/artistmuniaccount/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/artistmuniaccount/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_artistmuniaccount_change
+/admin/wallet/artistmuniaccount/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_artistmuniaccount_delete
+/admin/wallet/artistmuniaccount/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_artistmuniaccount_history
+/admin/wallet/artistmuniaccount/add/	django.contrib.admin.options.add_view	admin:wallet_artistmuniaccount_add
+/admin/wallet/auditlog/	django.contrib.admin.options.changelist_view	admin:wallet_auditlog_changelist
+/admin/wallet/auditlog/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/auditlog/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_auditlog_change
+/admin/wallet/auditlog/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_auditlog_delete
+/admin/wallet/auditlog/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_auditlog_history
+/admin/wallet/auditlog/add/	django.contrib.admin.options.add_view	admin:wallet_auditlog_add
+/admin/wallet/depositcode/	django.contrib.admin.options.changelist_view	admin:wallet_depositcode_changelist
+/admin/wallet/depositcode/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/depositcode/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_depositcode_change
+/admin/wallet/depositcode/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_depositcode_delete
+/admin/wallet/depositcode/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_depositcode_history
+/admin/wallet/depositcode/add/	django.contrib.admin.options.add_view	admin:wallet_depositcode_add
+/admin/wallet/hold/	django.contrib.admin.options.changelist_view	admin:wallet_hold_changelist
+/admin/wallet/hold/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/hold/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_hold_change
+/admin/wallet/hold/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_hold_delete
+/admin/wallet/hold/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_hold_history
+/admin/wallet/hold/add/	django.contrib.admin.options.add_view	admin:wallet_hold_add
+/admin/wallet/idempotencykey/	django.contrib.admin.options.changelist_view	admin:wallet_idempotencykey_changelist
+/admin/wallet/idempotencykey/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/idempotencykey/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_idempotencykey_change
+/admin/wallet/idempotencykey/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_idempotencykey_delete
+/admin/wallet/idempotencykey/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_idempotencykey_history
+/admin/wallet/idempotencykey/add/	django.contrib.admin.options.add_view	admin:wallet_idempotencykey_add
+/admin/wallet/office/	django.contrib.admin.options.changelist_view	admin:wallet_office_changelist
+/admin/wallet/office/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/office/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_office_change
+/admin/wallet/office/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_office_delete
+/admin/wallet/office/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_office_history
+/admin/wallet/office/add/	django.contrib.admin.options.add_view	admin:wallet_office_add
+/admin/wallet/officestaff/	django.contrib.admin.options.changelist_view	admin:wallet_officestaff_changelist
+/admin/wallet/officestaff/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/officestaff/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_officestaff_change
+/admin/wallet/officestaff/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_officestaff_delete
+/admin/wallet/officestaff/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_officestaff_history
+/admin/wallet/officestaff/add/	django.contrib.admin.options.add_view	admin:wallet_officestaff_add
+/admin/wallet/officewithdrawal/	django.contrib.admin.options.changelist_view	admin:wallet_officewithdrawal_changelist
+/admin/wallet/officewithdrawal/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/officewithdrawal/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_officewithdrawal_change
+/admin/wallet/officewithdrawal/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_officewithdrawal_delete
+/admin/wallet/officewithdrawal/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_officewithdrawal_history
+/admin/wallet/officewithdrawal/add/	django.contrib.admin.options.add_view	admin:wallet_officewithdrawal_add
+/admin/wallet/physicallocation/	django.contrib.admin.options.changelist_view	admin:wallet_physicallocation_changelist
+/admin/wallet/physicallocation/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/physicallocation/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_physicallocation_change
+/admin/wallet/physicallocation/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_physicallocation_delete
+/admin/wallet/physicallocation/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_physicallocation_history
+/admin/wallet/physicallocation/add/	django.contrib.admin.options.add_view	admin:wallet_physicallocation_add
+/admin/wallet/suspiciousactivity/	django.contrib.admin.options.changelist_view	admin:wallet_suspiciousactivity_changelist
+/admin/wallet/suspiciousactivity/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/suspiciousactivity/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_suspiciousactivity_change
+/admin/wallet/suspiciousactivity/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_suspiciousactivity_delete
+/admin/wallet/suspiciousactivity/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_suspiciousactivity_history
+/admin/wallet/suspiciousactivity/add/	django.contrib.admin.options.add_view	admin:wallet_suspiciousactivity_add
+/admin/wallet/transaction/	django.contrib.admin.options.changelist_view	admin:wallet_transaction_changelist
+/admin/wallet/transaction/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/transaction/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_transaction_change
+/admin/wallet/transaction/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_transaction_delete
+/admin/wallet/transaction/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_transaction_history
+/admin/wallet/transaction/add/	django.contrib.admin.options.add_view	admin:wallet_transaction_add
+/admin/wallet/wallet/	django.contrib.admin.options.changelist_view	admin:wallet_wallet_changelist
+/admin/wallet/wallet/<path:object_id>/	django.views.generic.base.RedirectView
+/admin/wallet/wallet/<path:object_id>/change/	django.contrib.admin.options.change_view	admin:wallet_wallet_change
+/admin/wallet/wallet/<path:object_id>/delete/	django.contrib.admin.options.delete_view	admin:wallet_wallet_delete
+/admin/wallet/wallet/<path:object_id>/history/	django.contrib.admin.options.history_view	admin:wallet_wallet_history
+/admin/wallet/wallet/add/	django.contrib.admin.options.add_view	admin:wallet_wallet_add
 /api2/admin/uploads/	api2.urls.UploadAdminDashboardView	upload-admin-dashboard
 /api2/api/docs/	drf_spectacular.views.SpectacularSwaggerView	swagger-ui
 /api2/api/health/	api2.views.HealthCheckView	api-health
@@ -162,6 +287,8 @@ R2 Configurado correctamente con optimizaciones
 /api2/debug/suggestions/	api2.views.debug_suggestions	debug-suggestions
 /api2/events/	api2.views.MusicEventListView	event-list
 /api2/events/<int:pk>/	api2.views.MusicEventDetailView	event-detail
+/api2/genres/	api2.discovery_views.GenreListView	genre-list
+/api2/genres/<str:genre>/songs/	api2.discovery_views.SongsByGenreView	songs-by-genre
 /api2/health/	api2.views.health_check	health_check
 /api2/health/celery/	api2.views.CeleryStatusView	celery-status
 /api2/health/debug/	api2.views.health_check	health-debug
@@ -173,17 +300,26 @@ R2 Configurado correctamente con optimizaciones
 /api2/search/complete/	api2.views.complete_search	complete_search
 /api2/search/suggestions/	api2.views.song_suggestions	search-suggestions
 /api2/songs/	api2.views.SongListView	song-list
+/api2/songs/<int:pk>/	api2.views.SongDetailView	song-detail
 /api2/songs/<int:song_id>/check-files/	api2.views.check_song_files	check-song-files
 /api2/songs/<int:song_id>/comments/	api2.views.CommentListCreateView	song-comments
 /api2/songs/<int:song_id>/delete/	api2.views.SongDeleteView	song-delete
+/api2/songs/<int:song_id>/download-count/	api2.views.song_download_count_view	song-download-count
+/api2/songs/<int:song_id>/download-url/	api2.views.get_download_url_view	song-download-url
 /api2/songs/<int:song_id>/download/	api2.views.download_song_view	song-download
 /api2/songs/<int:song_id>/like/	api2.views.LikeSongView	song-like
 /api2/songs/<int:song_id>/likes/	api2.views.SongLikesView	song-likes
 /api2/songs/<int:song_id>/stream/	api2.views.StreamSongView	song-stream
 /api2/songs/<int:song_id>/stream/legacy/	api2.views.StreamSongViewCompat	song-stream-legacy
 /api2/songs/comments/<int:pk>/	api2.views.SongCommentsDetailView	comment-detail
+/api2/songs/download/confirm/	api2.views.confirm_download_view	song-download-confirm
 /api2/songs/random/	api2.views.RandomSongsView	random-songs
+/api2/songs/recent/	api2.discovery_views.RecentSongsView	recent-songs
 /api2/songs/search/suggestions/	api2.views.SongSearchSuggestionsView	song-search-suggestions
+/api2/songs/top-downloads/	api2.discovery_views.TopDownloadsView	top-downloads
+/api2/songs/top-likes/	api2.discovery_views.TopLikesView	top-likes
+/api2/songs/top-plays/	api2.discovery_views.TopPlaysView	top-plays
+/api2/songs/trending/	api2.discovery_views.TrendingSongsView	trending-songs
 /api2/songs/upload/	api2.views.SongUploadView	song-upload
 /api2/static/<path>	django.views.static.serve
 /api2/stats/uploads/	api2.urls.UploadStatsView	upload-stats
@@ -195,10 +331,51 @@ R2 Configurado correctamente con optimizaciones
 /api2/upload/direct/confirm/<uuid:upload_id>/	api2.views.UploadConfirmationView	direct-upload-confirm
 /api2/upload/direct/request/	api2.views.DirectUploadRequestView	direct-upload-request
 /api2/upload/direct/status/<uuid:upload_id>/	api2.views.DirectUploadStatusView	direct-upload-status
+/api2/upload/history/	api2.urls.UserUploadHistoryView	user-upload-history
 /api2/upload/quota/	api2.views.UserUploadQuotaView	user-upload-quota
+/api2/upload/reprocess/<uuid:upload_id>/	api2.urls.UploadReprocessView	upload-reprocess
+/artist/dashboard/audience/	artist_dashboard.views.AudienceInsightsView	dashboard-audience
+/artist/dashboard/export/	artist_dashboard.views.ExportDashboardView	dashboard-export
+/artist/dashboard/full/	artist_dashboard.views.FullDashboardView	dashboard-full
+/artist/dashboard/projection/	artist_dashboard.views.ProjectionView	dashboard-projection
+/artist/dashboard/sales/	artist_dashboard.views.SalesOverTimeView	dashboard-sales
+/artist/dashboard/summary/	artist_dashboard.views.DashboardSummaryView	dashboard-summary
+/artist/dashboard/top-songs/	artist_dashboard.views.TopSongsView	dashboard-top-songs
 /musica/api/token/	rest_framework_simplejwt.views.TokenObtainPairView	token_obtain_pair
 /musica/api/token/refresh/	rest_framework_simplejwt.views.TokenRefreshView	token_refresh
 /musica/api/token/verify/	rest_framework_simplejwt.views.TokenVerifyView	token_verify
 /musica/protected/	musica.views.ProtectedView	protected
 /musica/register-visit/	musica.views.RegisterUserVisit	register_visit
 /musica/register/	musica.views.RegisterView	register
+/notifications/	notifications.views.NotificationListView	notification-list
+/notifications/<uuid:pk>/	notifications.views.NotificationDetailView	notification-detail
+/notifications/devices/	notifications.views.PushDeviceView	push-device-list
+/notifications/devices/<int:pk>/	notifications.views.PushDeviceDetailView	push-device-detail
+/notifications/grouped/	notifications.views.NotificationGroupedView	notification-grouped
+/notifications/mark-read/	notifications.views.NotificationMarkReadView	notification-mark-read
+/notifications/preferences/	notifications.views.NotificationPreferencesView	notification-preferences
+/notifications/preferences/update/	notifications.views.NotificationPreferenceUpdateView	notification-preference-update
+/notifications/unread-count/	notifications.views.UnreadCountView	notification-unread-count
+/wallet/admin/agents/	wallet.views.AgentsListView	admin-agents
+/wallet/admin/agents/create/	wallet.views.AgentCreateView	admin-agent-create
+/wallet/admin/holds/release/	wallet.views.ReleaseHoldView	release-hold
+/wallet/agent/codes/	wallet.views.AgentCodesView	agent-codes
+/wallet/agent/dashboard/	wallet.views.AgentDashboardView	agent-dashboard
+/wallet/agent/deposit/	wallet.views.AgentDepositView	agent-deposit
+/wallet/agent/earnings/	wallet.views.AgentEarningsView	agent-earnings
+/wallet/agent/generate-code/	wallet.views.AgentGenerateCodeView	agent-generate-code
+/wallet/agent/search/	wallet.views.AgentSearchUserView	agent-search
+/wallet/artist/earnings/	wallet.views.ArtistEarningsView	artist-earnings
+/wallet/artist/holds/	wallet.views.ArtistHoldsView	artist-holds
+/wallet/balance/	wallet.views.WalletBalanceView	wallet-balance
+/wallet/codes/	wallet.views.DepositCodeListView	code-list
+/wallet/codes/<int:pk>/	wallet.views.DepositCodeDetailView	code-detail
+/wallet/codes/<str:code>/qr/	wallet.views.CodeQRView	code-qr
+/wallet/deposit/	wallet.views.UserDepositView	wallet-deposit
+/wallet/health/	wallet.health.WalletHealthCheckView	wallet-health
+/wallet/locations/	wallet.views.LocationsListView	locations
+/wallet/purchases/	wallet.views.UserPurchasesView	user-purchases
+/wallet/redeem/	wallet.views.RedeemCodeView	redeem-code
+/wallet/songs/<int:song_id>/purchase/	wallet.views.PurchaseSongView	purchase-song
+/wallet/transactions/	wallet.views.TransactionHistoryView	transaction-list
+/wallet/transactions/<str:reference>/	wallet.views.TransactionDetailView	transaction-detail

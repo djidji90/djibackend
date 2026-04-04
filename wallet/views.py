@@ -170,16 +170,60 @@ class TransactionDetailView(generics.RetrieveAPIView):
         return Transaction.objects.filter(wallet=wallet)
 
 
+# wallet/views.py - PurchaseSongView CORREGIDO
+
 class PurchaseSongView(APIView):
     """
     POST /api/wallet/songs/<int:song_id>/purchase/
     Comprar una canción.
     ✅ Con idempotencia
-    ✅ Con throttling
+    ✅ Con throttling SOLO para POST
     ✅ Con auditoría (IP/UA)
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [SensitiveOperationThrottle]
+    
+    def get_throttles(self):
+        """
+        Aplicar throttle SOLO al método POST.
+        GET no tiene límite para evitar consumir el rate limit
+        """
+        if self.request.method == 'POST':
+            return [SensitiveOperationThrottle()]
+        return []  # Sin throttle para GET
+
+    def get(self, request, song_id):
+        """
+        GET opcional - Verificar estado de compra de una canción
+        Útil para frontend sin consumir throttle
+        """
+        try:
+            from api2.models import Song
+            from wallet.models import Transaction
+            
+            song = Song.objects.get(id=song_id)
+            
+            # Verificar si el usuario ya compró esta canción
+            has_purchased = Transaction.objects.filter(
+                wallet__user=request.user,
+                transaction_type='purchase',
+                metadata__song_id=song_id,
+                status='completed'
+            ).exists()
+            
+            return Response({
+                'song_id': song_id,
+                'title': song.title,
+                'has_purchased': has_purchased,
+                'price': float(song.price) if hasattr(song, 'price') else None,
+                'is_purchasable': getattr(song, 'is_purchasable', True)
+            })
+            
+        except Exception as e:
+            logger.error(f"PurchaseSongView GET error: {e}")
+            return Response(
+                {'error': 'Error al verificar estado de compra'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def post(self, request, song_id):
         # Validar Content-Type
@@ -251,6 +295,93 @@ class PurchaseSongView(APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+# wallet/views.py - AÑADIR DESPUÉS DE AgentEarningsView (antes de LocationsListView)
+
+class OfficeSearchArtistView(APIView):
+    """
+    Buscar artista por email o teléfono (para personal de oficina)
+    GET /api/wallet/office/search/?q=...
+    
+    ✅ Busca por email, teléfono o username
+    ✅ Retorna información del artista y su wallet
+    ✅ Solo accesible por personal de oficina autenticado
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # ============================================
+        # 1. VERIFICAR PERMISOS (solo personal de oficina)
+        # ============================================
+        try:
+            staff = OfficeStaff.objects.select_related('office').get(
+                user=request.user, 
+                is_active=True
+            )
+        except OfficeStaff.DoesNotExist:
+            return Response(
+                {
+                    'error': 'unauthorized',
+                    'message': 'No autorizado. Solo personal de oficina puede realizar búsquedas.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # ============================================
+        # 2. VALIDAR PARÁMETROS DE BÚSQUEDA
+        # ============================================
+        query = request.GET.get('q', '').strip()
+        
+        if not query:
+            return Response(
+                {
+                    'error': 'missing_query',
+                    'message': 'Se requiere un término de búsqueda (email, teléfono o username)'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if len(query) < 3:
+            return Response(
+                {
+                    'error': 'query_too_short',
+                    'message': 'La búsqueda requiere al menos 3 caracteres'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # ============================================
+        # 3. BUSCAR ARTISTA
+        # ============================================
+        result = OfficeWithdrawalService.search_artist(query)
+        
+        # ============================================
+        # 4. AÑADIR METADATOS DE OFICINA (para contexto)
+        # ============================================
+        if result.get('found'):
+            result['office_info'] = {
+                'id': staff.office.id,
+                'name': staff.office.name,
+                'city': staff.office.city,
+                'address': staff.office.address,
+                'phone': staff.office.phone
+            }
+            result['staff_info'] = {
+                'id': staff.id,
+                'name': staff.user.get_full_name() or staff.user.username,
+                'employee_id': staff.employee_id
+            }
+        
+        # ============================================
+        # 5. LOG DE BÚSQUEDA (para auditoría)
+        # ============================================
+        logger.info(
+            f"Office search performed - "
+            f"Staff: {request.user.id} ({staff.employee_id}), "
+            f"Query: {query}, "
+            f"Found: {result.get('found', False)}"
+        )
+        
+        return Response(result)
 
 class UserDepositView(APIView):
     """
