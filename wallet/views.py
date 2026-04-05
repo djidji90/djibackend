@@ -172,24 +172,45 @@ class TransactionDetailView(generics.RetrieveAPIView):
 
 # wallet/views.py - PurchaseSongView CORREGIDO
 
+# wallet/views.py - PurchaseSongView (VERSIÓN SIN THROTTLE)
+
+# ============================================
+# IMPORTS NECESARIOS
+# ============================================
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+from django.core.cache import cache
+import logging
+
+from .serializers import PurchaseSerializer
+from .services import WalletService
+from .exceptions import WalletBaseException
+from .utils import _validate_content_type, _get_idempotency_key, _get_client_ip
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================
+# PURCHASE SONG VIEW (SIN THROTTLE)
+# ============================================
+
 class PurchaseSongView(APIView):
     """
     POST /api/wallet/songs/<int:song_id>/purchase/
     Comprar una canción.
     ✅ Con idempotencia
-    ✅ Con throttling SOLO para POST
+    ✅ THROTTLE DESHABILITADO PARA PRUEBAS
     ✅ Con auditoría (IP/UA)
     """
     permission_classes = [IsAuthenticated]
     
     def get_throttles(self):
         """
-        Aplicar throttle SOLO al método POST.
-        GET no tiene límite para evitar consumir el rate limit
+        🔥 THROTTLE DESHABILITADO COMPLETAMENTE PARA PRUEBAS
         """
-        if self.request.method == 'POST':
-            return [SensitiveOperationThrottle()]
-        return []  # Sin throttle para GET
+        return []  # Sin throttle para todas las operaciones
 
     def get(self, request, song_id):
         """
