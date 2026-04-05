@@ -201,16 +201,19 @@ class PurchaseSongView(APIView):
     POST /api/wallet/songs/<int:song_id>/purchase/
     Comprar una canción.
     ✅ Con idempotencia
-    ✅ THROTTLE DESHABILITADO PARA PRUEBAS
+    ✅ Con throttling SOLO para POST
     ✅ Con auditoría (IP/UA)
     """
     permission_classes = [IsAuthenticated]
     
     def get_throttles(self):
         """
-        🔥 THROTTLE DESHABILITADO COMPLETAMENTE PARA PRUEBAS
+        Aplicar throttle SOLO al método POST.
+        GET no tiene límite para evitar consumir el rate limit
         """
-        return []  # Sin throttle para todas las operaciones
+        if self.request.method == 'POST':
+            return [SensitiveOperationThrottle()]
+        return []  # Sin throttle para GET
 
     def get(self, request, song_id):
         """
