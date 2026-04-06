@@ -744,13 +744,33 @@ class AgentGenerateCodeView(APIView):
                 
                 logger.info(f"Codes generated: by={request.user.id}, quantity={serializer.validated_data.get('quantity')}, amount={serializer.validated_data.get('amount')}")
                 
-                # ✅ SIMPLEMENTE DEVOLVER result (ya está en el formato correcto)
-                return Response(result, status=status.HTTP_201_CREATED)
+                # ✅ FORZAR CONVERSIÓN DE DECIMAL A FLOAT
+                # Asegurar que la respuesta sea 100% JSON serializable
+                safe_result = {
+                    'success': True,
+                    'codes': [
+                        {
+                            'code': str(c.get('code', '')),
+                            'amount': float(c.get('amount', 0)),  # ← CLAVE: convertir a float
+                            'currency': str(c.get('currency', 'XAF')),
+                            'expires_at': str(c.get('expires_at', '')),
+                            'qr_url': str(c.get('qr_url', ''))
+                        }
+                        for c in result.get('codes', [])
+                    ],
+                    'count': int(result.get('count', 0)),
+                    'generated_by': {
+                        'id': int(result.get('generated_by', {}).get('id', 0)),
+                        'username': str(result.get('generated_by', {}).get('username', ''))
+                    } if result.get('generated_by') else None
+                }
+                
+                return Response(safe_result, status=status.HTTP_201_CREATED)
 
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         except Agent.DoesNotExist:
-            # Código para admin (sin cambios)
+            # Código para admin (ya funciona)
             if request.user.is_staff:
                 serializer = AgentGenerateCodeSerializer(data=request.data)
                 if serializer.is_valid():
