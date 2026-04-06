@@ -189,6 +189,8 @@ class UserDepositView(APIView):
         )
 
 
+# wallet/views.py
+
 class RedeemCodeView(APIView):
     """
     POST /api/wallet/redeem/
@@ -202,9 +204,10 @@ class RedeemCodeView(APIView):
         if content_type_error:
             return content_type_error
 
+        # ✅ PASAR EL USUARIO EN EL CONTEXTO
         serializer = DepositCodeRedeemSerializer(
             data=request.data,
-            context={'request': request}
+            context={'request': request, 'user': request.user}
         )
 
         if serializer.is_valid():
@@ -213,22 +216,18 @@ class RedeemCodeView(APIView):
             )
             
             try:
-                transaction = WalletService.redeem_code(
-                    code=serializer.validated_data['code'],
-                    user_id=request.user.id,
-                    idempotency_key=idempotency_key,
-                    ip_address=_get_client_ip(request),
-                    user_agent=request.META.get('HTTP_USER_AGENT', '')
-                )
+                # ✅ USAR EL SERIALIZER PARA CREAR
+                # El serializer.create() manejará todo: validación, depósito, marcar usado
+                result = serializer.save()
                 
                 cache.delete(f"wallet_balance:{request.user.id}")
                 
                 return Response({
                     'success': True,
-                    'reference': transaction.reference,
-                    'amount': float(transaction.amount),
-                    'new_balance': float(transaction.wallet.available_balance),
-                    'message': f"Código canjeado con éxito. Se añadieron {transaction.amount} {transaction.wallet.currency}"
+                    'reference': result['transaction_reference'],
+                    'amount': result['amount'],
+                    'new_balance': result['new_balance'],
+                    'message': f"Código canjeado con éxito. Se añadieron {result['amount']} XAF"
                 }, status=status.HTTP_200_OK)
                 
             except WalletBaseException as e:
@@ -237,12 +236,9 @@ class RedeemCodeView(APIView):
                     status=e.status_code
                 )
             except Exception as e:
-                logger.error(f"RedeemCodeView error: {e}", extra={
-                    'user_id': request.user.id,
-                    'code': serializer.validated_data.get('code', 'unknown'),
-                })
+                logger.error(f"RedeemCodeView error: {e}", exc_info=True)
                 return Response(
-                    {'error': 'Error interno al canjear el código'},
+                    {'error': f'Error interno: {str(e)}'},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
