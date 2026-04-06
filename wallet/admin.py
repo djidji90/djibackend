@@ -779,11 +779,15 @@ class PhysicalLocationAdmin(admin.ModelAdmin):
 
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
-    """Administración de agentes"""
+    """Administración de agentes - CON ESTADÍSTICAS COMPLETAS"""
 
     list_display = [
-        'id', 'user_link', 'location_link', 'total_deposits_made',
-        'total_amount_deposited_display', 'daily_deposit_limit_display',
+        'id', 'user_link', 'location_link', 
+        'total_deposits_made',
+        'total_amount_deposited_display',
+        'total_codes_generated',      # 🆕 Códigos generados
+        'total_codes_used',           # 🆕 Códigos usados
+        'total_codes_value_display',  # 🆕 Valor total de códigos
         'is_active', 'verified', 'created_at'
     ]
     list_filter = ['is_active', 'verified', 'created_at']
@@ -791,17 +795,22 @@ class AgentAdmin(admin.ModelAdmin):
     readonly_fields = [
         'created_at', 'updated_at', 'total_deposits_made',
         'total_amount_deposited', 'user_link', 'location_link',
-        'daily_stats_display'
+        'daily_stats_display', 'total_codes_generated',
+        'total_codes_used', 'total_codes_value_display'
     ]
     fieldsets = (
         ('Información del Agente', {
-            'fields': ('user', 'location')  # ✅ Usar campos reales
+            'fields': ('user', 'location')
         }),
         ('Límites Operativos', {
             'fields': ('daily_deposit_limit', 'max_deposit_per_transaction')
         }),
-        ('Estadísticas', {
+        ('Estadísticas de Depósitos Directos', {
             'fields': ('total_deposits_made', 'total_amount_deposited'),
+            'classes': ('collapse',)
+        }),
+        ('📊 Estadísticas de Códigos', {  # 🆕 Nueva sección
+            'fields': ('total_codes_generated', 'total_codes_used', 'total_codes_value_display'),
             'classes': ('collapse',)
         }),
         ('Estado', {
@@ -859,6 +868,36 @@ class AgentAdmin(admin.ModelAdmin):
     total_amount_deposited_display.short_description = 'Total Depositado'
     total_amount_deposited_display.admin_order_field = 'total_amount_deposited'
 
+    # ============================================
+    # 🆕 NUEVOS MÉTODOS PARA ESTADÍSTICAS DE CÓDIGOS
+    # ============================================
+    
+    def total_codes_generated(self, obj):
+        """Total de códigos generados por el agente"""
+        from .models import DepositCode
+        count = DepositCode.objects.filter(created_by=obj.user).count()
+        return count
+    total_codes_generated.short_description = '📦 Códigos generados'
+    
+    def total_codes_used(self, obj):
+        """Total de códigos canjeados (usados por usuarios)"""
+        from .models import DepositCode
+        count = DepositCode.objects.filter(created_by=obj.user, is_used=True).count()
+        return count
+    total_codes_used.short_description = '✅ Códigos usados'
+    
+    def total_codes_value_display(self, obj):
+        """Valor total de todos los códigos generados"""
+        from django.db.models import Sum
+        from decimal import Decimal
+        from .models import DepositCode
+        
+        total = DepositCode.objects.filter(created_by=obj.user).aggregate(
+            total=Sum('amount')
+        )['total'] or Decimal('0')
+        return f"{float(total):,.2f} XAF"
+    total_codes_value_display.short_description = '💰 Valor total códigos'
+
     def daily_stats_display(self, obj):
         """Mostrar estadísticas del día"""
         stats = obj.get_daily_stats()
@@ -893,7 +932,6 @@ class AgentAdmin(admin.ModelAdmin):
     def deactivate_agents(self, request, queryset):
         updated = queryset.update(is_active=False)
         self.message_user(request, f'{updated} agentes desactivados')
-
 # wallet/admin.py - AÑADIR AL FINAL (después de AgentAdmin)
 
 # ============================================================================
