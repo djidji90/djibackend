@@ -568,7 +568,7 @@ class CodeQRView(APIView):
 class AgentDashboardView(APIView):
     """
     GET /api/wallet/agent/dashboard/
-    Dashboard del agente.
+    Dashboard del agente - Muestra TODA su actividad (códigos + depósitos)
     """
     permission_classes = [IsAuthenticated, IsAgent]
     throttle_classes = [WalletOperationThrottle]
@@ -585,11 +585,62 @@ class AgentDashboardView(APIView):
 
             daily_stats = agent.get_daily_stats()
 
+            # ============================================
+            # DEPÓSITOS DIRECTOS (recargas a usuarios)
+            # ============================================
             recent_deposits = Transaction.objects.filter(
                 created_by=request.user,
                 transaction_type='deposit',
                 status='completed'
             ).select_related('wallet__user').order_by('-created_at')[:10]
+
+            # ============================================
+            # CÓDIGOS GENERADOS POR EL AGENTE
+            # ============================================
+            codes_generated = DepositCode.objects.filter(
+                created_by=request.user
+            ).order_by('-created_at')
+            
+            # ============================================
+            # ESTADÍSTICAS COMPLETAS DEL AGENTE
+            # ============================================
+            total_codes_value = codes_generated.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            used_codes = codes_generated.filter(is_used=True)
+            
+            # ============================================
+            # ACTIVIDADES COMBINADAS (para feed)
+            # ============================================
+            recent_activities = []
+            
+            # Añadir códigos generados (últimos 5)
+            for code in codes_generated[:5]:
+                recent_activities.append({
+                    'type': 'code_generated',
+                    'code': code.code,
+                    'amount': float(code.amount),
+                    'currency': code.currency,
+                    'status': 'usado' if code.is_used else 'activo',
+                    'used_by': code.used_by.email if code.used_by else None,
+                    'used_by_name': code.used_by.get_full_name() if code.used_by else None,
+                    'created_at': code.created_at.isoformat(),
+                    'expires_at': code.expires_at.isoformat()
+                })
+            
+            # Añadir depósitos directos (últimos 5)
+            for deposit in recent_deposits[:5]:
+                recent_activities.append({
+                    'type': 'deposit_made',
+                    'user': deposit.wallet.user.username,
+                    'user_email': deposit.wallet.user.email,
+                    'user_name': deposit.wallet.user.get_full_name(),
+                    'amount': float(deposit.amount),
+                    'reference': deposit.reference,
+                    'created_at': deposit.created_at.isoformat()
+                })
+            
+            # Ordenar por fecha (más reciente primero)
+            recent_activities.sort(key=lambda x: x['created_at'], reverse=True)
+            recent_activities = recent_activities[:10]
 
             codes_today = DepositCode.objects.filter(
                 created_by=request.user,
@@ -598,6 +649,8 @@ class AgentDashboardView(APIView):
 
             return Response({
                 'agent': AgentSerializer(agent).data,
+                
+                # Estadísticas diarias (depósitos)
                 'daily_stats': {
                     'deposits_count': daily_stats['count'],
                     'deposits_total': daily_stats['total'],
@@ -605,6 +658,8 @@ class AgentDashboardView(APIView):
                     'codes_generated_today': codes_today,
                     'limit_reached': daily_stats['limit_reached']
                 },
+                
+                # Depósitos recientes (compatibilidad con frontend existente)
                 'recent_deposits': [
                     {
                         'reference': tx.reference,
@@ -616,6 +671,21 @@ class AgentDashboardView(APIView):
                     }
                     for tx in recent_deposits
                 ],
+                
+                # 🆕 NUEVO: Actividad completa del agente
+                'recent_activities': recent_activities,
+                
+                # 🆕 NUEVO: Estadísticas globales del agente
+                'stats': {
+                    'total_codes_generated': codes_generated.count(),
+                    'total_codes_used': used_codes.count(),
+                    'total_codes_value': float(total_codes_value),
+                    'total_deposits_made': recent_deposits.count(),
+                    'total_amount_deposited': float(agent.total_amount_deposited),
+                    'codes_usage_rate': round((used_codes.count() / codes_generated.count() * 100) if codes_generated.count() > 0 else 0, 2)
+                },
+                
+                # Límites del agente
                 'limits': {
                     'daily_limit': float(agent.daily_deposit_limit),
                     'per_transaction': float(agent.max_deposit_per_transaction),
@@ -630,7 +700,7 @@ class AgentDashboardView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
         except Exception as e:
-            logger.error(f"Error in AgentDashboardView: {e}")
+            logger.error(f"Error in AgentDashboardView: {e}", exc_info=True)
             return Response(
                 {"error": "internal_error", "message": "Error al cargar dashboard"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
