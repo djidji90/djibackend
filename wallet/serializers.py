@@ -8,7 +8,7 @@ from django.utils import timezone
 from decimal import Decimal
 import logging
 
-from .models import Wallet, Transaction, Hold, DepositCode,Agent, PhysicalLocation, OfficeWithdrawal
+from .models import Wallet, Transaction, Hold, DepositCode,Agent, PhysicalLocation, OfficeWithdrawal 
 from .constants import TRANSACTION_TYPES, TRANSACTION_STATUS, HOLD_REASONS, CURRENCIES
 from .exceptions import InsufficientFundsError, InvalidAmountError
 from .services import WalletService
@@ -137,7 +137,46 @@ class WalletBalanceSerializer(serializers.Serializer):
 
 # ==================== TRANSACTION SERIALIZERS ====================
 
-
+class TransactionSerializer(serializers.ModelSerializer):
+    """
+    Serializer para transacciones.
+    """
+    wallet_id = serializers.IntegerField(source='wallet.id', read_only=True)
+    amount_abs = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        read_only=True,
+        source='absolute_amount'
+    )
+    formatted_amount = serializers.CharField(read_only=True)
+    transaction_type_display = serializers.CharField(
+        source='get_transaction_type_display',
+        read_only=True
+    )
+    status_display = serializers.CharField(
+        source='get_status_display',
+        read_only=True
+    )
+    created_by_email = serializers.EmailField(
+        source='created_by.email',
+        read_only=True
+    )
+    
+    class Meta:
+        model = Transaction
+        fields = [
+            'id', 'reference', 'wallet_id',
+            'amount', 'amount_abs', 'formatted_amount',
+            'balance_before', 'balance_after',
+            'transaction_type', 'transaction_type_display',
+            'status', 'status_display',
+            'metadata', 'description',
+            'created_by', 'created_by_email',
+            'created_at'
+        ]
+        # ✅ ELIMINAR read_only_fields = '__all__'
+        # O usar lista vacía:
+        read_only_fields = []
 
 class DepositSerializer(serializers.Serializer):
     """
