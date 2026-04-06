@@ -36,6 +36,7 @@ from .serializers import (
     OfficeWithdrawalHistorySerializer,
     TransactionSerializer,
     DepositSerializer,
+    DepositCodeOutputSerializer,
     PurchaseSerializer,
     RefundSerializer,
     HoldSerializer,
@@ -703,10 +704,14 @@ class AgentDepositView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+# wallet/views.py
+
 class AgentGenerateCodeView(APIView):
     """
     POST /api/wallet/agent/generate-code/
     Generar códigos de recarga (agentes y admin).
+    ✅ Siguiendo buenas prácticas de DRF
+    ✅ Sin errores de Decimal
     """
     permission_classes = [IsAuthenticated, IsAgentOrAdmin]
     throttle_classes = [SensitiveOperationThrottle]
@@ -726,52 +731,52 @@ class AgentGenerateCodeView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
 
+            # ============================================
+            # PASO 1: Validar datos de entrada
+            # ============================================
             serializer = AgentGenerateCodeSerializer(
                 data=request.data,
                 context={'agent': agent}
             )
 
-            if serializer.is_valid():
-                idempotency_key = _get_idempotency_key(
-                    request, 'generate_codes', request.user.id,
-                    serializer.validated_data.get('amount'),
-                    serializer.validated_data.get('quantity')
-                )
-                
-                serializer.context['idempotency_key'] = idempotency_key
-                result = serializer.save()
-                
-                logger.info(f"Codes generated: by={request.user.id}, quantity={serializer.validated_data.get('quantity')}, amount={serializer.validated_data.get('amount')}")
-                
-                # ✅ Convertir Decimal a float para JSON
-                codes_list = result.get('codes', [])
-                safe_codes = []
-                for code in codes_list:
-                    safe_codes.append({
-                        'code': str(code.get('code', '')),
-                        'amount': float(code.get('amount', 0)),
-                        'currency': str(code.get('currency', 'XAF')),
-                        'expires_at': str(code.get('expires_at', '')),
-                        'qr_url': str(code.get('qr_url', ''))
-                    })
-                
-                safe_result = {
-                    'success': bool(result.get('success', True)),
-                    'codes': safe_codes,
-                    'count': int(result.get('count', 0))
-                }
-                
-                if result.get('generated_by'):
-                    safe_result['generated_by'] = {
-                        'id': int(result['generated_by'].get('id', 0)),
-                        'username': str(result['generated_by'].get('username', ''))
-                    }
-                
-                return Response(safe_result, status=status.HTTP_201_CREATED)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            # ============================================
+            # PASO 2: Crear los códigos (retorna lista de modelos)
+            # ============================================
+            codes = serializer.save()
+            
+            logger.info(
+                f"Codes generated: by={request.user.id}, "
+                f"quantity={len(codes)}, "
+                f"amount={serializer.validated_data.get('amount')}"
+            )
+
+            # ============================================
+            # PASO 3: Formatear respuesta con OutputSerializer
+            # DRF maneja Decimal, DateTime automáticamente
+            # ============================================
+            output_serializer = DepositCodeOutputSerializer(
+                codes,
+                many=True,
+                context={'request': request}
+            )
+
+            return Response({
+                'success': True,
+                'codes': output_serializer.data,
+                'count': len(codes),
+                'generated_by': {
+                    'id': agent.id,
+                    'username': agent.user.username
+                }
+            }, status=status.HTTP_201_CREATED)
 
         except Agent.DoesNotExist:
+            # ============================================
+            # Código para ADMIN (usuarios staff sin perfil de agente)
+            # ============================================
             if request.user.is_staff:
                 serializer = AgentGenerateCodeSerializer(data=request.data)
                 if serializer.is_valid():
@@ -780,6 +785,9 @@ class AgentGenerateCodeView(APIView):
                     currency = serializer.validated_data['currency']
                     expires_days = serializer.validated_data['expires_days']
 
+                    from datetime import timedelta
+                    import secrets
+                    
                     codes = []
                     for _ in range(quantity):
                         code = f"{currency}{secrets.token_hex(4).upper()}"
@@ -798,18 +806,15 @@ class AgentGenerateCodeView(APIView):
 
                     logger.info(f"Admin codes generated: by={request.user.id}, quantity={quantity}")
                     
+                    output_serializer = DepositCodeOutputSerializer(
+                        codes,
+                        many=True,
+                        context={'request': request}
+                    )
+                    
                     return Response({
                         'success': True,
-                        'codes': [
-                            {
-                                'code': c.code,
-                                'amount': float(c.amount),
-                                'currency': c.currency,
-                                'expires_at': c.expires_at.isoformat(),
-                                'qr_url': f"/api/wallet/codes/{c.code}/qr/"
-                            }
-                            for c in codes
-                        ],
+                        'codes': output_serializer.data,
                         'count': len(codes)
                     }, status=status.HTTP_201_CREATED)
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -821,7 +826,7 @@ class AgentGenerateCodeView(APIView):
         except Exception as e:
             logger.error(f"Error in AgentGenerateCodeView: {e}")
             return Response(
-                {"error": "internal_error", "message": f"Error: {str(e)}"},
+                {"error": "internal_error", "message": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 class AgentSearchUserView(APIView):

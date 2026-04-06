@@ -821,10 +821,12 @@ class AgentDepositSerializer(serializers.Serializer):
         }
 
 
+# wallet/serializers.py
+
 class AgentGenerateCodeSerializer(serializers.Serializer):
     """
     Serializer para generar códigos de recarga.
-    POST /api/wallet/agent/generate-code/
+    SOLO valida datos y crea modelos - NO construye respuestas.
     """
     amount = serializers.DecimalField(
         max_digits=12,
@@ -857,6 +859,10 @@ class AgentGenerateCodeSerializer(serializers.Serializer):
         return value
     
     def create(self, validated_data):
+        """
+        ✅ RETORNA LISTA DE MODELOS, NO UN DICT
+        DRF manejará la serialización automáticamente después
+        """
         agent = self.context['agent']
         amount = validated_data['amount']
         quantity = validated_data['quantity']
@@ -865,10 +871,11 @@ class AgentGenerateCodeSerializer(serializers.Serializer):
         
         from wallet.models import DepositCode
         import secrets
+        from datetime import timedelta
         from django.utils import timezone
         
         codes = []
-        for i in range(quantity):
+        for _ in range(quantity):
             code = f"{currency}{secrets.token_hex(4).upper()}"
             while DepositCode.objects.filter(code=code).exists():
                 code = f"{currency}{secrets.token_hex(4).upper()}"
@@ -878,30 +885,30 @@ class AgentGenerateCodeSerializer(serializers.Serializer):
                 amount=amount,
                 currency=currency,
                 created_by=agent.user,
-                expires_at=timezone.now() + timezone.timedelta(days=expires_days),
+                expires_at=timezone.now() + timedelta(days=expires_days),
                 notes=f"Generado por agente {agent.user.username}"
             )
             codes.append(deposit_code)
         
-        return {
-            'success': True,
-            'codes': [
-                {
-                    'code': c.code,
-                    'amount': float(c.amount),
-                    'currency': c.currency,
-                    'expires_at': c.expires_at.isoformat(),
-                    'qr_url': f"/api/wallet/codes/{c.code}/qr/"
-                }
-                for c in codes
-            ],
-            'count': len(codes),
-            'generated_by': {
-                'id': agent.id,
-                'username': agent.user.username
-            }
-        }
+        # ✅ RETORNA LOS MODELOS, NO UN DICT
+        return codes
+    
+# wallet/serializers.py - AÑADIR AL FINAL
 
+class DepositCodeOutputSerializer(serializers.ModelSerializer):
+    """
+    Serializer para formatear la respuesta de códigos generados.
+    DRF maneja automáticamente Decimal, DateTime, etc. → NO MÁS ERRORES JSON
+    """
+    qr_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = DepositCode
+        fields = ['code', 'amount', 'currency', 'expires_at', 'qr_url']
+    
+    def get_qr_url(self, obj):
+        """Genera URL para el código QR"""
+        return f"/api/wallet/codes/{obj.code}/qr/"
 
 class AgentSearchUserSerializer(serializers.Serializer):
     """Serializer para búsqueda de usuarios por agente"""
