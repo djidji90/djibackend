@@ -191,6 +191,11 @@ class UserDepositView(APIView):
 
 # wallet/views.py
 
+# wallet/views.py
+
+# ✅ IMPORTAR EL SERIALIZER CORRECTO
+from .serializers import RedeemCodeSerializer  # ← Este tiene create()
+
 class RedeemCodeView(APIView):
     """
     POST /api/wallet/redeem/
@@ -204,8 +209,8 @@ class RedeemCodeView(APIView):
         if content_type_error:
             return content_type_error
 
-        # ✅ PASAR EL USUARIO EN EL CONTEXTO
-        serializer = DepositCodeRedeemSerializer(
+        # ✅ USAR RedeemCodeSerializer (NO DepositCodeRedeemSerializer)
+        serializer = RedeemCodeSerializer(
             data=request.data,
             context={'request': request, 'user': request.user}
         )
@@ -216,8 +221,7 @@ class RedeemCodeView(APIView):
             )
             
             try:
-                # ✅ USAR EL SERIALIZER PARA CREAR
-                # El serializer.create() manejará todo: validación, depósito, marcar usado
+                # ✅ serializer.save() llama a create() que hace todo
                 result = serializer.save()
                 
                 cache.delete(f"wallet_balance:{request.user.id}")
@@ -243,7 +247,6 @@ class RedeemCodeView(APIView):
                 )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 # ============================================
 # PURCHASE VIEWS
