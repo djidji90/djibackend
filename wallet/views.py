@@ -740,11 +740,39 @@ class AgentGenerateCodeView(APIView):
                 )
                 
                 serializer.context['idempotency_key'] = idempotency_key
-                result = serializer.save()
+                result = serializer.save()  # result contiene los códigos generados
                 
                 logger.info(f"Codes generated: by={request.user.id}, quantity={serializer.validated_data.get('quantity')}, amount={serializer.validated_data.get('amount')}")
                 
-                return Response(result, status=status.HTTP_201_CREATED)
+                # ✅ CORREGIDO - Asegurar que Decimal se convierta a float
+                # Si result es una lista de códigos
+                if isinstance(result, list):
+                    response_data = {
+                        'success': True,
+                        'codes': [
+                            {
+                                'code': c.get('code') if isinstance(c, dict) else c.code,
+                                'amount': float(c.get('amount') if isinstance(c, dict) else c.amount),
+                                'currency': c.get('currency') if isinstance(c, dict) else c.currency,
+                                'expires_at': c.get('expires_at') if isinstance(c, dict) else c.expires_at.isoformat(),
+                                'qr_url': c.get('qr_url') if isinstance(c, dict) else f"/api/wallet/codes/{c.code}/qr/"
+                            }
+                            for c in result
+                        ],
+                        'count': len(result)
+                    }
+                else:
+                    # Si result es un diccionario único
+                    response_data = {
+                        'success': True,
+                        'code': result.get('code') if isinstance(result, dict) else result.code,
+                        'amount': float(result.get('amount') if isinstance(result, dict) else result.amount),
+                        'currency': result.get('currency') if isinstance(result, dict) else result.currency,
+                        'expires_at': result.get('expires_at') if isinstance(result, dict) else result.expires_at.isoformat(),
+                        'qr_url': result.get('qr_url') if isinstance(result, dict) else f"/api/wallet/codes/{result.code}/qr/"
+                    }
+                
+                return Response(response_data, status=status.HTTP_201_CREATED)
 
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -775,6 +803,7 @@ class AgentGenerateCodeView(APIView):
 
                     logger.info(f"Admin codes generated: by={request.user.id}, quantity={quantity}")
                     
+                    # ✅ Esta parte ya está correcta (tiene float(c.amount))
                     return Response({
                         'success': True,
                         'codes': [
