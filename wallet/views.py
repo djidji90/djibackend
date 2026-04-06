@@ -898,10 +898,16 @@ class AgentGenerateCodeView(APIView):
                 {"error": "internal_error", "message": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+# wallet/views.py - AgentSearchUserView MEJORADO
+
 class AgentSearchUserView(APIView):
     """
     GET /api/wallet/agent/search/?query=...
     Buscar usuarios para recarga (agentes).
+    ✅ Búsqueda case-insensitive
+    ✅ Paginación
+    ✅ Orden por relevancia
+    ✅ Manejo de usuarios sin wallet
     """
     permission_classes = [IsAuthenticated, IsAgent]
     throttle_classes = [WalletOperationThrottle]
@@ -920,37 +926,108 @@ class AgentSearchUserView(APIView):
             if not serializer.is_valid():
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            query = serializer.validated_data['query'].lower()
+            query = serializer.validated_data['query'].strip()
             
-            cache_key = f"user_search:{hash(query)}"
-            results = cache.get(cache_key)
+            # Parámetros de paginación
+            page = int(request.GET.get('page', 1))
+            page_size = min(int(request.GET.get('page_size', 10)), 50)
+            offset = (page - 1) * page_size
             
-            if not results:
-                users = User.objects.filter(
-                    Q(email__icontains=query) |
-                    Q(username__icontains=query) |
-                    Q(phone__icontains=query)
-                ).exclude(id=request.user.id)[:20]
-
-                results = []
-                for user in users:
-                    results.append({
-                        'id': user.id,
-                        'username': user.username,
-                        'email': user.email,
-                        'full_name': user.get_full_name() or user.username,
-                        'phone': getattr(user, 'phone', ''),
-                        'wallet_balance': float(user.wallet.available_balance) if hasattr(user, 'wallet') else 0,
-                        'is_verified': getattr(user, 'is_verified', False),
-                        'avatar_url': None
-                    })
-                cache.set(cache_key, results, timeout=60)
-
-            return Response({
+            # Cache por query + página
+            cache_key = f"user_search:{query.lower()}:page{page}"
+            cached_result = cache.get(cache_key)
+            
+            if cached_result:
+                return Response(cached_result)
+            
+            # ============================================
+            # BÚSQUEDA AVANZADA
+            # ============================================
+            from django.db.models import Q, Value, CharField, Case, When
+            from django.db.models.functions import Concat
+            
+            # Búsqueda case-insensitive
+            search_terms = query.lower().split()
+            
+            # Construir filtros
+            q_objects = Q()
+            for term in search_terms:
+                q_objects |= Q(email__icontains=term)
+                q_objects |= Q(username__icontains=term)
+                q_objects |= Q(first_name__icontains=term)
+                q_objects |= Q(last_name__icontains=term)
+                q_objects |= Q(phone__icontains=term)
+            
+            # Excluir al agente mismo
+            users = User.objects.filter(q_objects).exclude(id=request.user.id)
+            
+            # ============================================
+            # ORDEN POR RELEVANCIA
+            # ============================================
+            relevance = Case(
+                When(email__iexact=query, then=Value(100)),
+                When(username__iexact=query, then=Value(90)),
+                When(email__istartswith=query, then=Value(80)),
+                When(username__istartswith=query, then=Value(70)),
+                When(email__icontains=query, then=Value(50)),
+                When(username__icontains=query, then=Value(40)),
+                default=Value(10),
+                output_field=CharField(),
+            )
+            
+            users = users.annotate(relevance=relevance).order_by('-relevance', 'username')
+            
+            total = users.count()
+            
+            # Paginación
+            users_page = users[offset:offset + page_size]
+            
+            # ============================================
+            # CONSTRUIR RESULTADOS
+            # ============================================
+            results = []
+            for user in users_page.select_related('wallet'):
+                # Manejar usuarios sin wallet (crear una si no existe)
+                if not hasattr(user, 'wallet'):
+                    from wallet.services import WalletService
+                    try:
+                        wallet = WalletService.get_user_wallet(user.id)
+                        wallet_balance = float(wallet.available_balance)
+                    except Exception:
+                        wallet_balance = 0
+                else:
+                    wallet_balance = float(user.wallet.available_balance)
+                
+                results.append({
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'full_name': user.get_full_name() or user.username,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'phone': getattr(user, 'phone', ''),
+                    'wallet_balance': wallet_balance,
+                    'wallet_balance_formatted': f"{wallet_balance:,.0f} XAF",
+                    'is_verified': getattr(user, 'is_verified', False),
+                    'is_active': user.is_active,
+                    'avatar_url': None,
+                    'relevance_score': user.relevance if hasattr(user, 'relevance') else 0
+                })
+            
+            response_data = {
+                'success': True,
                 'query': query,
-                'count': len(results),
+                'count': total,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total + page_size - 1) // page_size if total > 0 else 1,
                 'results': results
-            })
+            }
+            
+            # Cache por 5 minutos
+            cache.set(cache_key, response_data, timeout=300)
+            
+            return Response(response_data)
 
         except Agent.DoesNotExist:
             return Response(
@@ -958,9 +1035,9 @@ class AgentSearchUserView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
         except Exception as e:
-            logger.error(f"Error in AgentSearchUserView: {e}")
+            logger.error(f"Error in AgentSearchUserView: {e}", exc_info=True)
             return Response(
-                {"error": "internal_error", "message": "Error al buscar usuarios"},
+                {"error": "internal_error", "message": f"Error: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
