@@ -703,8 +703,127 @@ class AgentDepositView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+class AgentGenerateCodeView(APIView):
+    """
+    POST /api/wallet/agent/generate-code/
+    Generar códigos de recarga (agentes y admin).
+    """
+    permission_classes = [IsAuthenticated, IsAgentOrAdmin]
+    throttle_classes = [SensitiveOperationThrottle]
 
+    @transaction.atomic
+    def post(self, request):
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
 
+        try:
+            agent = Agent.objects.get(user=request.user)
+
+            if not agent.is_active:
+                return Response(
+                    {"error": "agent_inactive", "message": "Tu cuenta de agente está inactiva"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            serializer = AgentGenerateCodeSerializer(
+                data=request.data,
+                context={'agent': agent}
+            )
+
+            if serializer.is_valid():
+                idempotency_key = _get_idempotency_key(
+                    request, 'generate_codes', request.user.id,
+                    serializer.validated_data.get('amount'),
+                    serializer.validated_data.get('quantity')
+                )
+                
+                serializer.context['idempotency_key'] = idempotency_key
+                result = serializer.save()
+                
+                logger.info(f"Codes generated: by={request.user.id}, quantity={serializer.validated_data.get('quantity')}, amount={serializer.validated_data.get('amount')}")
+                
+                # ✅ Convertir Decimal a float para JSON
+                codes_list = result.get('codes', [])
+                safe_codes = []
+                for code in codes_list:
+                    safe_codes.append({
+                        'code': str(code.get('code', '')),
+                        'amount': float(code.get('amount', 0)),
+                        'currency': str(code.get('currency', 'XAF')),
+                        'expires_at': str(code.get('expires_at', '')),
+                        'qr_url': str(code.get('qr_url', ''))
+                    })
+                
+                safe_result = {
+                    'success': bool(result.get('success', True)),
+                    'codes': safe_codes,
+                    'count': int(result.get('count', 0))
+                }
+                
+                if result.get('generated_by'):
+                    safe_result['generated_by'] = {
+                        'id': int(result['generated_by'].get('id', 0)),
+                        'username': str(result['generated_by'].get('username', ''))
+                    }
+                
+                return Response(safe_result, status=status.HTTP_201_CREATED)
+
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        except Agent.DoesNotExist:
+            if request.user.is_staff:
+                serializer = AgentGenerateCodeSerializer(data=request.data)
+                if serializer.is_valid():
+                    amount = serializer.validated_data['amount']
+                    quantity = serializer.validated_data['quantity']
+                    currency = serializer.validated_data['currency']
+                    expires_days = serializer.validated_data['expires_days']
+
+                    codes = []
+                    for _ in range(quantity):
+                        code = f"{currency}{secrets.token_hex(4).upper()}"
+                        while DepositCode.objects.filter(code=code).exists():
+                            code = f"{currency}{secrets.token_hex(4).upper()}"
+
+                        deposit_code = DepositCode.objects.create(
+                            code=code,
+                            amount=amount,
+                            currency=currency,
+                            created_by=request.user,
+                            expires_at=timezone.now() + timedelta(days=expires_days),
+                            notes=f"Generado por admin {request.user.username}"
+                        )
+                        codes.append(deposit_code)
+
+                    logger.info(f"Admin codes generated: by={request.user.id}, quantity={quantity}")
+                    
+                    return Response({
+                        'success': True,
+                        'codes': [
+                            {
+                                'code': c.code,
+                                'amount': float(c.amount),
+                                'currency': c.currency,
+                                'expires_at': c.expires_at.isoformat(),
+                                'qr_url': f"/api/wallet/codes/{c.code}/qr/"
+                            }
+                            for c in codes
+                        ],
+                        'count': len(codes)
+                    }, status=status.HTTP_201_CREATED)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response(
+                {"error": "not_agent", "message": "No tienes permisos para generar códigos"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        except Exception as e:
+            logger.error(f"Error in AgentGenerateCodeView: {e}")
+            return Response(
+                {"error": "internal_error", "message": f"Error: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 class AgentSearchUserView(APIView):
     """
     GET /api/wallet/agent/search/?query=...
