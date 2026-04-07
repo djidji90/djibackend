@@ -42,6 +42,34 @@ class CustomUser(AbstractUser):
         verbose_name='Teléfono'
     )
     
+    # 🆕 NUEVOS CAMPOS PARA REGISTRO (COINCIDEN CON EL FRONTEND)
+    GENDER_CHOICES = [
+        ('M', 'Masculino'),
+        ('F', 'Femenino'),
+        ('O', 'Otro'),
+    ]
+    gender = models.CharField(
+        max_length=1,
+        choices=GENDER_CHOICES,
+        blank=True,
+        null=True,
+        verbose_name='Género'
+    )
+    birth_date = models.DateField(
+        blank=True,
+        null=True,
+        verbose_name='Fecha de nacimiento'
+    )
+    terms_accepted = models.BooleanField(
+        default=False,
+        verbose_name='Términos aceptados'
+    )
+    terms_accepted_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name='Fecha de aceptación de términos'
+    )
+    
     # --- VERIFICACIÓN Y ROLES ---
     is_verified = models.BooleanField(
         default=False,
@@ -111,6 +139,12 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return self.email
 
+    def save(self, *args, **kwargs):
+        """Auto-setear fecha de aceptación de términos"""
+        if self.terms_accepted and not self.terms_accepted_at:
+            self.terms_accepted_at = timezone.now()
+        super().save(*args, **kwargs)
+
     # --- PROPIEDADES ÚTILES ---
     @property
     def full_name(self):
@@ -148,8 +182,6 @@ class CustomUser(AbstractUser):
         self.save(update_fields=['is_verified', 'can_withdraw'])
 
 
-# users/models.py - VERSIÓN CORREGIDA
-
 class UserVisit(models.Model):
     """
     Registro de visitas de usuarios para analytics.
@@ -163,7 +195,7 @@ class UserVisit(models.Model):
         verbose_name='Usuario'
     )
     ip = models.GenericIPAddressField(
-        default='0.0.0.0.0',  # ← CORREGIDO: usar default=
+        default='0.0.0.0',  # ✅ CORREGIDO: 4 octetos
         verbose_name='Dirección IP'
     )
     ciudad = models.CharField(

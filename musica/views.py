@@ -75,7 +75,7 @@ class RegisterView(generics.CreateAPIView):
         
         if serializer.is_valid():
             try:
-                # Crear usuario
+                # Crear usuario (ahora incluye gender, birth_date, terms_accepted)
                 user = serializer.save()
                 
                 # Generar tokens JWT
@@ -104,7 +104,7 @@ class RegisterView(generics.CreateAPIView):
                         fecha_visita=now()
                     )
 
-                # Construir respuesta con datos del usuario
+                # Construir respuesta con datos del usuario (incluyendo nuevos campos)
                 user_data = {
                     "id": user.id,
                     "username": user.username,
@@ -115,6 +115,9 @@ class RegisterView(generics.CreateAPIView):
                     "neighborhood": user.neighborhood,
                     "phone": user.phone,
                     "country": user.country,
+                    "gender": user.gender,                    # 🆕 NUEVO
+                    "birth_date": user.birth_date,            # 🆕 NUEVO
+                    "terms_accepted": user.terms_accepted,    # 🆕 NUEVO
                     "is_verified": user.is_verified,
                     "can_withdraw": user.can_withdraw,
                     "default_currency": user.default_currency,
@@ -177,7 +180,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             fecha_visita=now()
         )
         
-        # Agregar datos del usuario a la respuesta (incluyendo campos de wallet)
+        # Agregar datos del usuario a la respuesta (incluyendo nuevos campos)
         data['user'] = {
             'id': user.id,
             'username': user.username,
@@ -188,6 +191,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'neighborhood': user.neighborhood,
             'phone': user.phone,
             'country': user.country,
+            'gender': user.gender,                    # 🆕 NUEVO
+            'birth_date': user.birth_date,            # 🆕 NUEVO
+            'terms_accepted': user.terms_accepted,    # 🆕 NUEVO
             'is_verified': user.is_verified,
             'can_withdraw': user.can_withdraw,
             'verified_at': user.verified_at.isoformat() if user.verified_at else None,
@@ -240,7 +246,11 @@ class UserProfileView(APIView):
     def patch(self, request):
         """Actualizar parcialmente el perfil del usuario"""
         user = request.user
-        allowed_fields = ['first_name', 'last_name', 'city', 'neighborhood', 'phone', 'country']
+        # 🆕 Agregados nuevos campos a los permitidos
+        allowed_fields = [
+            'first_name', 'last_name', 'city', 'neighborhood', 
+            'phone', 'country', 'gender', 'birth_date'
+        ]
         
         updated = False
         for field in allowed_fields:
@@ -265,6 +275,7 @@ class UserDetailView(APIView):
         try:
             user = CustomUser.objects.get(id=user_id)
             serializer = UserSerializer(user, context={'request': request})
+            # Los nuevos campos se incluirán automáticamente desde el serializer
             return Response(serializer.data, status=status.HTTP_200_OK)
         except CustomUser.DoesNotExist:
             return Response(
@@ -411,6 +422,9 @@ class ProtectedView(APIView):
                     "username": request.user.username,
                     "email": request.user.email,
                     "country": request.user.country,
+                    "gender": request.user.gender,                    # 🆕 NUEVO
+                    "birth_date": request.user.birth_date,            # 🆕 NUEVO
+                    "terms_accepted": request.user.terms_accepted,    # 🆕 NUEVO
                     "default_currency": request.user.default_currency
                 }
             },

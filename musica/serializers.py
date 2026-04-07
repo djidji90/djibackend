@@ -5,12 +5,15 @@ Serializers para la app de usuarios.
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import CustomUser, UserVisit
+from django.utils import timezone
+
+# ✅ IMPORTACIONES CORREGIDAS
+from .models import CustomUser, UserVisit  # ← Esto faltaba
 
 
 class RegisterSerializer(serializers.ModelSerializer):
     """
-    Serializer para registro de nuevos usuarios.
+    Serializer para registro de nuevos usuarios con todos los campos del frontend.
     """
     password = serializers.CharField(
         write_only=True, 
@@ -31,7 +34,10 @@ class RegisterSerializer(serializers.ModelSerializer):
             "city",
             "neighborhood",
             "phone",
-            "country",  # ← NUEVO CAMPO
+            "country",
+            "gender",          # 🆕 NUEVO
+            "birth_date",      # 🆕 NUEVO
+            "terms_accepted",  # 🆕 NUEVO
         ]
 
     def validate(self, attrs):
@@ -47,18 +53,47 @@ class RegisterSerializer(serializers.ModelSerializer):
                 {"email": "El correo electrónico es obligatorio."}
             )
 
+        # 🆕 Validar términos aceptados
+        if not attrs.get("terms_accepted"):
+            raise serializers.ValidationError(
+                {"terms_accepted": "Debes aceptar los términos y condiciones."}
+            )
+
+        # 🆕 Validar fecha de nacimiento
+        birth_date = attrs.get("birth_date")
+        if birth_date and birth_date > timezone.now().date():
+            raise serializers.ValidationError(
+                {"birth_date": "La fecha de nacimiento no puede ser futura."}
+            )
+
+        # 🆕 Validar género
+        gender = attrs.get("gender")
+        if gender and gender not in ['M', 'F', 'O']:
+            raise serializers.ValidationError(
+                {"gender": "Género inválido. Debe ser M, F u O."}
+            )
+
         return attrs
 
     def create(self, validated_data):
         # Eliminar la confirmación de contraseña
         validated_data.pop("password2")
         
+        # Asegurar que terms_accepted sea booleano
+        validated_data['terms_accepted'] = bool(validated_data.get('terms_accepted', False))
+        
         # Crear el usuario con los datos validados
         user = CustomUser.objects.create_user(**validated_data)
+        
+        # Si se aceptaron términos, guardar la fecha
+        if user.terms_accepted:
+            user.terms_accepted_at = timezone.now()
+            user.save(update_fields=['terms_accepted_at'])
+        
         return user
 
     def to_representation(self, instance):
-        """Personaliza la respuesta para incluir los tokens JWT."""
+        """Personaliza la respuesta para incluir los tokens JWT y datos completos."""
         refresh = RefreshToken.for_user(instance)
         return {
             "user": {
@@ -70,9 +105,12 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "city": instance.city,
                 "neighborhood": instance.neighborhood,
                 "phone": instance.phone,
-                "country": instance.country,  # ← NUEVO
-                "is_verified": instance.is_verified,  # ← NUEVO
-                "default_currency": instance.default_currency,  # ← NUEVO
+                "country": instance.country,
+                "gender": instance.gender,                    # 🆕 NUEVO
+                "birth_date": instance.birth_date,            # 🆕 NUEVO
+                "terms_accepted": instance.terms_accepted,    # 🆕 NUEVO
+                "is_verified": instance.is_verified,
+                "default_currency": instance.default_currency,
             },
             "tokens": {
                 "refresh": str(refresh),
@@ -83,7 +121,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     """
-    Serializer básico de usuario.
+    Serializer básico de usuario con campos extendidos.
     """
     full_name = serializers.SerializerMethodField()
     default_currency = serializers.SerializerMethodField()
@@ -92,9 +130,9 @@ class UserSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
-            'phone', 'city', 'neighborhood', 'country', 'default_currency',
-            'is_verified', 'can_withdraw', 'verified_at', 'is_active',
-            'date_joined', 'last_login'
+            'phone', 'city', 'neighborhood', 'country', 'gender', 'birth_date',
+            'terms_accepted', 'default_currency', 'is_verified', 'can_withdraw', 
+            'verified_at', 'is_active', 'date_joined', 'last_login'
         ]
         read_only_fields = ['id', 'is_verified', 'verified_at', 'date_joined', 'last_login']
     
@@ -107,7 +145,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     """
-    Serializer para perfil de usuario (detallado).
+    Serializer para perfil de usuario (detallado) con campos extendidos.
     """
     full_name = serializers.SerializerMethodField()
     wallet_balance = serializers.SerializerMethodField()
@@ -116,9 +154,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = [
             'id', 'username', 'email', 'full_name', 'first_name', 'last_name',
-            'phone', 'city', 'neighborhood', 'country', 'default_currency',
-            'is_verified', 'can_withdraw', 'wallet_balance',
-            'is_active', 'date_joined'
+            'phone', 'city', 'neighborhood', 'country', 'gender', 'birth_date',
+            'terms_accepted', 'default_currency', 'is_verified', 'can_withdraw', 
+            'wallet_balance', 'is_active', 'date_joined'
         ]
         read_only_fields = ['id', 'is_verified', 'date_joined']
     
@@ -169,7 +207,7 @@ class UserLoginSerializer(serializers.Serializer):
         return data
     
     def to_representation(self, instance):
-        """Devolver tokens JWT en login"""
+        """Devolver tokens JWT en login con todos los campos"""
         user = instance['user']
         refresh = RefreshToken.for_user(user)
         
@@ -184,6 +222,9 @@ class UserLoginSerializer(serializers.Serializer):
                 "neighborhood": user.neighborhood,
                 "phone": user.phone,
                 "country": user.country,
+                "gender": user.gender,                    # 🆕 NUEVO
+                "birth_date": user.birth_date,            # 🆕 NUEVO
+                "terms_accepted": user.terms_accepted,    # 🆕 NUEVO
                 "is_verified": user.is_verified,
                 "default_currency": user.default_currency,
             },
