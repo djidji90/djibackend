@@ -8,7 +8,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils import timezone
 
 # ✅ IMPORTACIONES CORREGIDAS
-from .models import CustomUser, UserVisit  # ← Esto faltaba
+from .models import CustomUser, UserVisit
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -35,9 +35,9 @@ class RegisterSerializer(serializers.ModelSerializer):
             "neighborhood",
             "phone",
             "country",
-            "gender",          # 🆕 NUEVO
-            "birth_date",      # 🆕 NUEVO
-            "terms_accepted",  # 🆕 NUEVO
+            "gender",
+            "birth_date",
+            "terms_accepted",
         ]
 
     def validate(self, attrs):
@@ -59,21 +59,101 @@ class RegisterSerializer(serializers.ModelSerializer):
                 {"terms_accepted": "Debes aceptar los términos y condiciones."}
             )
 
-        # 🆕 Validar fecha de nacimiento
+        # 🆕 Validar fecha de nacimiento (solo si se proporciona)
         birth_date = attrs.get("birth_date")
         if birth_date and birth_date > timezone.now().date():
             raise serializers.ValidationError(
                 {"birth_date": "La fecha de nacimiento no puede ser futura."}
             )
 
-        # 🆕 Validar género
+        # 🆕 Validar género (solo si se proporciona)
         gender = attrs.get("gender")
         if gender and gender not in ['M', 'F', 'O']:
             raise serializers.ValidationError(
                 {"gender": "Género inválido. Debe ser M, F u O."}
             )
 
+        # ✅ El país ya no se valida, puede ser cualquier texto
+        # La conversión a código se hará en create()
+
         return attrs
+
+    def get_country_code(self, country_name):
+        """
+        Convierte el nombre del país a código interno para lógica de negocio.
+        """
+        if not country_name:
+            return None
+            
+        country_map = {
+            # Guinea Ecuatorial y variantes
+            'guinea ecuatorial': 'GQ',
+            'guinea ecuatorial (malabo)': 'GQ',
+            'guinea': 'GQ',
+            'gq': 'GQ',
+            
+            # España y variantes
+            'españa': 'ES',
+            'espana': 'ES',
+            'spain': 'ES',
+            'es': 'ES',
+            
+            # Francia
+            'francia': 'FR',
+            'france': 'FR',
+            'fr': 'FR',
+            
+            # Estados Unidos
+            'estados unidos': 'US',
+            'eeuu': 'US',
+            'usa': 'US',
+            'united states': 'US',
+            'us': 'US',
+            
+            # Italia
+            'italia': 'IT',
+            'italy': 'IT',
+            'it': 'IT',
+            
+            # Portugal
+            'portugal': 'PT',
+            'pt': 'PT',
+            
+            # Camerún
+            'camerún': 'CM',
+            'cameroon': 'CM',
+            'cm': 'CM',
+            
+            # Gabón
+            'gabón': 'GA',
+            'gabon': 'GA',
+            'ga': 'GA',
+            
+            # Congo
+            'congo': 'CG',
+            'cg': 'CG',
+            
+            # Reino Unido
+            'reino unido': 'GB',
+            'uk': 'GB',
+            'united kingdom': 'GB',
+            'gb': 'GB',
+            
+            # Alemania
+            'alemania': 'DE',
+            'germany': 'DE',
+            'de': 'DE',
+        }
+        
+        country_lower = country_name.lower().strip()
+        
+        # Buscar coincidencia exacta o parcial
+        for key, code in country_map.items():
+            if key in country_lower or country_lower == key:
+                return code
+        
+        # Si no se encuentra, devolver OTHER
+        return 'OTHER'
 
     def create(self, validated_data):
         # Eliminar la confirmación de contraseña
@@ -81,6 +161,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         
         # Asegurar que terms_accepted sea booleano
         validated_data['terms_accepted'] = bool(validated_data.get('terms_accepted', False))
+        
+        # 🆕 Convertir país a código interno (para lógica de negocio)
+        country_name = validated_data.get('country')
+        if country_name:
+            # Guardar el código internamente (si el modelo tiene country_code)
+            # Si no, puedes almacenarlo en otro campo o simplemente ignorarlo
+            country_code = self.get_country_code(country_name)
+            # Si tu modelo tiene campo country_code, descomenta la siguiente línea:
+            # validated_data['country_code'] = country_code
         
         # Crear el usuario con los datos validados
         user = CustomUser.objects.create_user(**validated_data)
@@ -105,12 +194,12 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "city": instance.city,
                 "neighborhood": instance.neighborhood,
                 "phone": instance.phone,
-                "country": instance.country,
-                "gender": instance.gender,                    # 🆕 NUEVO
-                "birth_date": instance.birth_date,            # 🆕 NUEVO
-                "terms_accepted": instance.terms_accepted,    # 🆕 NUEVO
+                "country": instance.country,  # Texto original
+                "gender": instance.gender,
+                "birth_date": instance.birth_date,
+                "terms_accepted": instance.terms_accepted,
                 "is_verified": instance.is_verified,
-                "default_currency": instance.default_currency,
+                "default_currency": instance.default_currency,  # Usa el código interno
             },
             "tokens": {
                 "refresh": str(refresh),
@@ -222,9 +311,9 @@ class UserLoginSerializer(serializers.Serializer):
                 "neighborhood": user.neighborhood,
                 "phone": user.phone,
                 "country": user.country,
-                "gender": user.gender,                    # 🆕 NUEVO
-                "birth_date": user.birth_date,            # 🆕 NUEVO
-                "terms_accepted": user.terms_accepted,    # 🆕 NUEVO
+                "gender": user.gender,
+                "birth_date": user.birth_date,
+                "terms_accepted": user.terms_accepted,
                 "is_verified": user.is_verified,
                 "default_currency": user.default_currency,
             },

@@ -42,7 +42,7 @@ class CustomUser(AbstractUser):
         verbose_name='Teléfono'
     )
     
-    # 🆕 NUEVOS CAMPOS PARA REGISTRO (COINCIDEN CON EL FRONTEND)
+    # 🆕 NUEVOS CAMPOS PARA REGISTRO
     GENDER_CHOICES = [
         ('M', 'Masculino'),
         ('F', 'Femenino'),
@@ -78,25 +78,13 @@ class CustomUser(AbstractUser):
     )
     
     # --- CAMPOS PARA WALLET ---
+    # ✅ MODIFICADO: ahora es texto libre, sin choices
     country = models.CharField(
-        max_length=5,
-        default='GQ',
-        choices=[
-            ('GQ', 'Guinea Ecuatorial'),
-            ('ES', 'España'),
-            ('FR', 'Francia'),
-            ('US', 'Estados Unidos'),
-            ('IT', 'Italia'),
-            ('PT', 'Portugal'),
-            ('CM', 'Camerún'),
-            ('GA', 'Gabón'),
-            ('CG', 'Congo'),
-            ('GB', 'Reino Unido'),
-            ('DE', 'Alemania'),
-            ('OTHER', 'Otro'),
-        ],
+        max_length=100,
+        blank=True,
+        null=True,
         verbose_name='País',
-        help_text='País de residencia (determina la moneda)'
+        help_text='País de residencia (ej: Guinea Ecuatorial, España, etc.)'
     )
     
     can_withdraw = models.BooleanField(
@@ -132,7 +120,6 @@ class CustomUser(AbstractUser):
         indexes = [
             models.Index(fields=['email']),
             models.Index(fields=['phone']),
-            models.Index(fields=['country']),
             models.Index(fields=['is_verified']),
         ]
 
@@ -153,14 +140,34 @@ class CustomUser(AbstractUser):
 
     @property
     def default_currency(self):
-        """Moneda por defecto según país"""
-        currency_map = {
-            'GQ': 'XAF', 'CM': 'XAF', 'GA': 'XAF', 'CG': 'XAF',
-            'ES': 'EUR', 'FR': 'EUR', 'IT': 'EUR', 'PT': 'EUR', 'DE': 'EUR',
-            'US': 'USD', 'GB': 'USD',
-            'OTHER': 'XAF',
-        }
-        return currency_map.get(self.country, 'XAF')
+        """Moneda por defecto según país (detección por texto)"""
+        country_lower = (self.country or "").lower()
+        
+        # Detección de países que usan Euro
+        euro_countries = ['españa', 'es', 'spain', 'francia', 'france', 
+                          'italia', 'italy', 'alemania', 'germany', 
+                          'portugal', 'belgica', 'belgium', 'paises bajos', 
+                          'netherlands', 'austria', 'grecia', 'greece',
+                          'irlanda', 'ireland', 'finlandia', 'finland']
+        
+        # Detección de países que usan Dólar
+        usd_countries = ['estados unidos', 'usa', 'us', 'united states', 
+                         'america', 'eeuu', 'ee.uu.']
+        
+        # Detección de países que usan Franco CFA (XAF)
+        xaf_countries = ['guinea ecuatorial', 'guinea', 'ecuatorial', 'gq',
+                         'camerún', 'cameroon', 'cm', 'gabón', 'gabon', 'ga',
+                         'congo', 'cg', 'chad', 'td', 'republica centroafricana',
+                         'república centroafricana', 'cf']
+        
+        if any(country in country_lower for country in euro_countries):
+            return 'EUR'
+        elif any(country in country_lower for country in usd_countries):
+            return 'USD'
+        elif any(country in country_lower for country in xaf_countries):
+            return 'XAF'
+        else:
+            return 'XAF'  # Por defecto Franco CFA
 
     @property
     def can_receive_payments(self):
@@ -195,7 +202,7 @@ class UserVisit(models.Model):
         verbose_name='Usuario'
     )
     ip = models.GenericIPAddressField(
-        default='0.0.0.0',  # ✅ CORREGIDO: 4 octetos
+        default='0.0.0.0',
         verbose_name='Dirección IP'
     )
     ciudad = models.CharField(
