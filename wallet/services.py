@@ -27,9 +27,11 @@ from .exceptions import (
     PurchaseFailedError, CurrencyMismatchError, LimitExceededError,
     DuplicateTransactionError, ConcurrentModificationError, InconsistentStateError,
     UnauthorizedWalletActionError
+
 )
 from .constants import COMMISSIONS, LIMITS, ERROR_CODES
 from .validators import validate_positive_amount, validate_max_balance
+
 
 logger = logging.getLogger(__name__)
 

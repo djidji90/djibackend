@@ -3,7 +3,8 @@
 import os
 import sys
 
-
+import warnings
+warnings.filterwarnings("ignore", category=ResourceWarning)
 def main():
     """Run administrative tasks."""
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
