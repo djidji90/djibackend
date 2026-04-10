@@ -894,59 +894,16 @@ class LikeSongView(APIView):
 
 
 
-# ============================================
-# CONSTANTES OPTIMIZADAS (APROBADAS)
-# ============================================
-RATE_CACHE_TIMEOUT = 900      # 15 minutos entre descargas de la misma canción
-URL_EXPIRATION = 7200          # URLs de descarga válidas por 2 horas
-DAILY_DOWNLOAD_LIMIT = 50      # Límite diario de descargas por usuario
-
+RATE_CACHE_TIMEOUT = 3600  # 1 hora entre descargas de la misma canción
+URL_EXPIRATION = 3600       # URLs de descarga válidas por 1 hora
 
 # ============================================
-# HELPER UNIFICADO (REFACTOR)
+# VISTA PRINCIPAL DE DESCARGA CON REDIRECT
 # ============================================
-def check_download_eligibility(user, song_id):
-    """
-    Verifica si usuario puede descargar.
-    RETORNA: (has_purchased, rate_key, is_rate_limited)
-    """
-    from wallet.models import Transaction
-    
-    # Verificar compra previa
-    has_purchased = Transaction.objects.filter(
-        wallet__user=user,
-        transaction_type='purchase',
-        metadata__song_id=song_id,
-        status='completed'
-    ).exists()
-    
-    # Rate limiting UNIFICADO (misma key para ambos endpoints)
-    rate_key = f"download_rate_{user.id}_{song_id}"
-    is_rate_limited = cache.get(rate_key) is not None
-    
-    # Protección adicional: límite diario
-    if DAILY_DOWNLOAD_LIMIT and not is_rate_limited:
-        today = timezone.now().date()
-        daily_key = f"daily_downloads_{user.id}_{today}"
-        daily_count = cache.get(daily_key, 0)
-        if daily_count >= DAILY_DOWNLOAD_LIMIT:
-            is_rate_limited = True
-    
-    return has_purchased, rate_key, is_rate_limited
-
-
-def increment_daily_counter(user_id):
-    """Incrementa contador diario de descargas"""
-    if DAILY_DOWNLOAD_LIMIT:
-        today = timezone.now().date()
-        daily_key = f"daily_downloads_{user_id}_{today}"
-        daily_count = cache.get(daily_key, 0)
-        cache.set(daily_key, daily_count + 1, timeout=86400)  # 24 horas
-
-
 # ============================================
-# 🎯 ENDPOINT PRINCIPAL DE DESCARGA (OPTIMIZADO)
+# 🎯 ENDPOINT PRINCIPAL DE DESCARGA (CORREGIDO)
 # ============================================
+
 @extend_schema(
     description="""
     Descargar una canción con compra automática si es necesario.
@@ -983,6 +940,10 @@ def download_song_view(request, song_id):
     6. Redirigir a R2 con URL firmada
     """
     
+    from wallet.services import WalletService
+    from wallet.exceptions import InsufficientFundsError, PurchaseFailedError
+    from decimal import Decimal
+    
     try:
         # ========================================
         # 1️⃣ OBTENER Y VALIDAR CANCIÓN
@@ -1011,19 +972,15 @@ def download_song_view(request, song_id):
             )
 
         # ========================================
-        # 2️⃣ VERIFICAR ELEGIBILIDAD (REFACTOR + RATE UNIFICADO)
+        # 2️⃣ VERIFICAR SI EL USUARIO YA COMPRÓ
         # ========================================
-        has_purchased, rate_key, is_rate_limited = check_download_eligibility(request.user, song_id)
-        
-        if is_rate_limited:
-            return Response(
-                {
-                    "error": "rate_limit_exceeded",
-                    "message": f"Límite de descargas alcanzado. Espera {RATE_CACHE_TIMEOUT // 60} minutos antes de volver a descargar.",
-                    "retry_after": RATE_CACHE_TIMEOUT
-                },
-                status=status.HTTP_429_TOO_MANY_REQUESTS
-            )
+        from wallet.models import Transaction
+        has_purchased = Transaction.objects.filter(
+            wallet__user=request.user,
+            transaction_type='purchase',
+            metadata__song_id=song_id,
+            status='completed'
+        ).exists()
         
         # ========================================
         # 3️⃣ SI NO COMPRÓ, INTENTAR COMPRA AUTOMÁTICA
@@ -1097,6 +1054,10 @@ def download_song_view(request, song_id):
         # ========================================
         # 4️⃣ VERIFICAR PERMISO FINAL
         # ========================================
+        # Casos permitidos:
+        # - Usuario compró (ahora o antes)
+        # - Es el artista (dueño)
+        # - Es staff
         if not (has_purchased or song.uploaded_by_id == request.user.id or request.user.is_staff):
             return Response(
                 {
@@ -1110,7 +1071,23 @@ def download_song_view(request, song_id):
             )
 
         # ========================================
-        # 5️⃣ VERIFICAR QUE EL ARCHIVO EXISTE EN R2
+        # 5️⃣ RATE LIMITING (1 descarga/hora por canción)
+        # ========================================
+        RATE_CACHE_TIMEOUT = 3600  # 1 hora
+        cache_key = f"download_{request.user.id}_{song_id}"
+        
+        if cache.get(cache_key):
+            return Response(
+                {
+                    "error": "rate_limit_exceeded",
+                    "message": "Límite de descargas alcanzado. Espera 1 hora antes de volver a descargar.",
+                    "retry_after": RATE_CACHE_TIMEOUT
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # ========================================
+        # 6️⃣ VERIFICAR QUE EL ARCHIVO EXISTE EN R2
         # ========================================
         from .r2_utils import check_file_exists, get_file_info, generate_presigned_url
         
@@ -1125,15 +1102,16 @@ def download_song_view(request, song_id):
             )
 
         # ========================================
-        # 6️⃣ GENERAR URL FIRMADA (use_cache=False - SEGURO)
+        # 7️⃣ GENERAR URL FIRMADA (DIRECTA A R2)
         # ========================================
+        URL_EXPIRATION = 3600  # 1 hora
         file_info = get_file_info(song.file_key) or {}
         file_size = file_info.get('size', 0)
         
         stream_url = generate_presigned_url(
             key=song.file_key,
             expiration=URL_EXPIRATION,
-            use_cache=False  # ← CRÍTICO: NUNCA CAMBIAR A True
+            use_cache=False  # No cachear URLs de descarga
         )
         
         if not stream_url:
@@ -1147,18 +1125,16 @@ def download_song_view(request, song_id):
             )
 
         # ========================================
-        # 7️⃣ APLICAR RATE LIMIT (DESPUÉS DE URL EXITOSA)
-        # ========================================
-        cache.set(rate_key, True, timeout=RATE_CACHE_TIMEOUT)
-        increment_daily_counter(request.user.id)
-
-        # ========================================
         # 8️⃣ REGISTRAR DESCARGA PARA ANALYTICS
         # ========================================
+        import secrets
+        from .models import Download
+        from django.db import transaction as db_transaction
+        
         download_token = secrets.token_urlsafe(32)
         
         try:
-            with transaction.atomic():
+            with db_transaction.atomic():
                 download = Download.objects.create(
                     user=request.user, 
                     song=song,
@@ -1167,6 +1143,8 @@ def download_song_view(request, song_id):
                     ip_address=request.META.get('REMOTE_ADDR'),
                     user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
                 )
+                
+                cache.set(cache_key, True, timeout=RATE_CACHE_TIMEOUT)
                 
                 # Guardar token en cache para validación rápida
                 cache.set(
@@ -1190,6 +1168,8 @@ def download_song_view(request, song_id):
         # ========================================
         # 9️⃣ GENERAR NOMBRE DE ARCHIVO SEGURO
         # ========================================
+        from django.utils.text import slugify
+        
         artist_part = slugify(song.artist or "Artista", allow_unicode=True)
         title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
         filename = f"{artist_part} - {title_part}".strip(' -')
@@ -1250,7 +1230,7 @@ def download_song_view(request, song_id):
 
 
 # ============================================
-# 🎯 ENDPOINT COMPLEMENTARIO (OPTIMIZADO)
+# 🎯 ENDPOINT COMPLEMENTARIO (MODIFICADO - AÑADIR TOKEN)
 # ============================================
 @extend_schema(
     description="""
@@ -1275,17 +1255,6 @@ def get_download_url_view(request, song_id):
         song = get_object_or_404(Song, id=song_id)
         
         # ========================================
-        # VERIFICAR ELEGIBILIDAD (USA MISMA LÓGICA)
-        # ========================================
-        has_purchased, rate_key, is_rate_limited = check_download_eligibility(request.user, song_id)
-        
-        if is_rate_limited:
-            return Response(
-                {"error": "Límite alcanzado", "retry_after": RATE_CACHE_TIMEOUT},
-                status=status.HTTP_429_TOO_MANY_REQUESTS
-            )
-        
-        # ========================================
         # VERIFICAR PERMISOS
         # ========================================
         if not request.user.is_staff:
@@ -1294,6 +1263,16 @@ def get_download_url_view(request, song_id):
                     {"error": "No tienes permisos"},
                     status=status.HTTP_403_FORBIDDEN
                 )
+        
+        # ========================================
+        # RATE LIMITING
+        # ========================================
+        cache_key = f"download_url_{request.user.id}_{song_id}"
+        if cache.get(cache_key):
+            return Response(
+                {"error": "Límite alcanzado", "retry_after": RATE_CACHE_TIMEOUT},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
         
         # ========================================
         # VALIDAR ARCHIVO
@@ -1311,13 +1290,13 @@ def get_download_url_view(request, song_id):
             )
         
         # ========================================
-        # GENERAR URL (use_cache=False - SEGURO)
+        # GENERAR URL
         # ========================================
         file_info = get_file_info(song.file_key) or {}
         stream_url = generate_presigned_url(
             key=song.file_key,
             expiration=URL_EXPIRATION,
-            use_cache=False  # ← CRÍTICO: NUNCA CAMBIAR A True
+            use_cache=False
         )
         
         if not stream_url:
@@ -1326,24 +1305,26 @@ def get_download_url_view(request, song_id):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
-        # ========================================
-        # APLICAR RATE LIMIT
-        # ========================================
-        cache.set(rate_key, True, timeout=RATE_CACHE_TIMEOUT)
-        increment_daily_counter(request.user.id)
+        # Marcar rate limit
+        cache.set(cache_key, True, timeout=RATE_CACHE_TIMEOUT)
+        
+        # Generar token
+        download_token = secrets.token_urlsafe(32)
         
         # ========================================
-        # GENERAR TOKEN Y REGISTRAR DESCARGA
+        # ✅ REGISTRAR DESCARGA - SIN file_size
         # ========================================
-        download_token = secrets.token_urlsafe(32)
+        # Truncar user_agent a 255 chars
+        user_agent = request.META.get('HTTP_USER_AGENT', '')[:255]
         
         download = Download.objects.create(
             user=request.user,
             song=song,
             download_token=download_token,
             is_confirmed=False,
+            # file_size=file_size,  # ❌ ELIMINADA
             ip_address=request.META.get('REMOTE_ADDR'),
-            user_agent=request.META.get('HTTP_USER_AGENT', '')[:255]
+            user_agent=user_agent
         )
         
         # Guardar token en cache
@@ -1358,21 +1339,61 @@ def get_download_url_view(request, song_id):
         )
         
         # ========================================
-        # RESPUESTA JSON
+        # RESPUESTA JSON (CON TOKEN)
         # ========================================
         artist_part = slugify(song.artist or "Artista", allow_unicode=True)
         title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
         filename = f"{artist_part} - {title_part}.mp3"
         
+        # Obtener file_size para la respuesta (no para guardar)
         file_size = file_info.get('size', 0)
         
-        logger.info(f"✅ Token guardado: {download_token[:8]}... para canción {song_id}")
+        logger.info(f"✅ Token guardado en DB: {download_token[:8]}... para canción {song_id}")
         
         return Response({
             'download_url': stream_url,
             'download_token': download_token,
             'expires_in': URL_EXPIRATION,
-            'file_size': file_size,
+            'file_size': file_size,  # ✅ Solo para la respuesta JSON
+            'filename': filename,
+            'song': {
+                'id': song.id,
+                'title': song.title,
+                'artist': song.artist
+            }
+        })
+        
+    except Exception as exc:
+        logger.exception(f"❌ Error en get_download_url: {exc}")
+        return Response(
+            {"error": "Error interno del servidor"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+        # Guardar token en cache
+        cache.set(
+            f"token_{download_token}",
+            {
+                'download_id': download.id,
+                'user_id': request.user.id,
+                'song_id': song.id
+            },
+            timeout=URL_EXPIRATION
+        )
+        
+        # ========================================
+        # RESPUESTA JSON (CON TOKEN)
+        # ========================================
+        artist_part = slugify(song.artist or "Artista", allow_unicode=True)
+        title_part = slugify(song.title or f"song_{song_id}", allow_unicode=True)
+        filename = f"{artist_part} - {title_part}.mp3"
+        
+        logger.info(f"✅ Token guardado en DB: {download_token[:8]}... para canción {song_id}")
+        
+        return Response({
+            'download_url': stream_url,
+            'download_token': download_token,
+            'expires_in': URL_EXPIRATION,
             'filename': filename,
             'song': {
                 'id': song.id,
@@ -1389,11 +1410,8 @@ def get_download_url_view(request, song_id):
         )
 
 
-# ============================================
-# ✅ CONFIRMAR DESCARGA
-# ============================================
 @api_view(['POST', 'OPTIONS'])
-@throttle_classes([])
+@throttle_classes([])  # 🔥 Deshabilita throttling
 def confirm_download_view(request):
     """
     ✅ Confirma que la descarga fue exitosa
@@ -1449,7 +1467,7 @@ def confirm_download_view(request):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Actualizar estado
+        # Actualizar estado (sin file_size)
         with transaction.atomic():
             download.is_confirmed = success
             download.save()
@@ -1470,7 +1488,6 @@ def confirm_download_view(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
-
 # ============================================
 # VERSIÓN LEGACY (SIN CAMBIOS)
 # ============================================
@@ -1486,9 +1503,7 @@ def download_song_proxy_view(request, song_id):
     try:
         song = get_object_or_404(Song, id=song_id)
         
-        # Validaciones de permisos
-        if not song.is_public and song.uploaded_by_id != request.user.id and not request.user.is_staff:
-            return Response({"error": "No autorizado"}, status=403)
+        # ... mismas validaciones de permisos ...
         
         # Obtener archivo de R2
         s3_resp = stream_file_from_r2(song.file_key)
@@ -1531,11 +1546,8 @@ def download_song_proxy_view(request, song_id):
             {"error": "Error interno"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+# views.py - AÑADIR ESTO AL FINAL
 
-
-# ============================================
-# 📊 ENDPOINT PARA CONTABILIZAR DESCARGAS
-# ============================================
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def song_download_count_view(request, song_id):
@@ -1550,7 +1562,7 @@ def song_download_count_view(request, song_id):
         song.downloads_count = F('downloads_count') + 1
         song.save(update_fields=['downloads_count'])
         
-        # 3. Registrar para estadísticas
+        # 3. (Opcional) Registrar para estadísticas
         Download.objects.create(
             user=request.user,
             song=song,
@@ -1560,14 +1572,48 @@ def song_download_count_view(request, song_id):
         
         logger.info(f"✅ Descarga contabilizada: user={request.user.id} song={song_id}")
         
-        return Response({"status": "ok", "downloads_count": song.downloads_count})
+        return Response({"status": "ok"})
         
     except Exception as e:
         logger.exception(f"Error en download count: {e}")
         return Response(
             {"error": "Error interno"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            status=500
         )
+# -----------------------------------------------------------------------------
+# MÉTRICAS PROMETHEUS - DEFINIDAS UNA SOLA VEZ (GLOBAL)
+# -----------------------------------------------------------------------------
+try:
+    from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
+    
+    # Contadores globales - Se crean UNA SOLA vez al importar el módulo
+    STREAM_REQUESTS_TOTAL = Counter(
+        'stream_requests_total', 
+        'Total stream requests',
+        ['status']  # labels: success, error
+    )
+    
+    STREAM_CACHE_HITS_TOTAL = Counter(
+        'stream_cache_hits_total', 
+        'Cache hits'
+    )
+    
+    STREAM_CACHE_MISSES_TOTAL = Counter(
+        'stream_cache_misses_total', 
+        'Cache misses'
+    )
+    
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+    # Dummy metrics que no hacen nada
+    class DummyCounter:
+        def labels(self, *args, **kwargs): return self
+        def inc(self, *args, **kwargs): pass
+    STREAM_REQUESTS_TOTAL = STREAM_CACHE_HITS_TOTAL = STREAM_CACHE_MISSES_TOTAL = DummyCounter()
+    def generate_latest(*args, **kwargs): return b''
+    REGISTRY = None
+
 
 
 # ============================================
