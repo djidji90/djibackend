@@ -435,7 +435,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '1000/hour',
-        'user': '1000000/day',
+        'user': '1000000/hour',
         'uploads': '50/hour',
         'quota': '100/minute',
         'status': '200/minute',
