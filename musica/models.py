@@ -5,6 +5,8 @@ Modelos de usuarios para Eco-Music Platform
 from django.db import models
 from django.contrib.auth.models import AbstractUser, Group, Permission
 from django.utils import timezone
+from django.utils.text import slugify
+from django.urls import reverse
 
 
 class CustomUser(AbstractUser):
@@ -99,6 +101,24 @@ class CustomUser(AbstractUser):
         verbose_name='Fecha de verificación'
     )
     
+    # --- 🆕 CAMPOS SEO (OBLIGATORIOS PARA INDEXACIÓN) ---
+    slug = models.SlugField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        blank=True,
+        help_text='Identificador único para la URL del perfil (ej: alfa-cohiba)'
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name='Última actualización'
+    )
+    is_public = models.BooleanField(
+        default=True,
+        verbose_name='Perfil público',
+        help_text='¿Perfil visible públicamente para buscadores y listados?'
+    )
+    
     # --- PERMISOS DJANGO (sobrescritos para evitar conflictos) ---
     groups = models.ManyToManyField(
         Group, 
@@ -121,16 +141,37 @@ class CustomUser(AbstractUser):
             models.Index(fields=['email']),
             models.Index(fields=['phone']),
             models.Index(fields=['is_verified']),
+            models.Index(fields=['slug']),  # 🆕 Índice para búsqueda rápida por slug
+            models.Index(fields=['is_public']),  # 🆕 Índice para filtrar perfiles públicos
         ]
 
     def __str__(self):
         return self.email
 
     def save(self, *args, **kwargs):
-        """Auto-setear fecha de aceptación de términos"""
+        """Auto-setear fecha de aceptación de términos y generar slug"""
+        # Auto-generar slug si está vacío
+        if not self.slug:
+            base_slug = slugify(self.full_name or self.username)
+            unique_slug = base_slug
+            counter = 1
+            while CustomUser.objects.filter(slug=unique_slug).exists():
+                unique_slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = unique_slug
+        
+        # Auto-fecha de términos
         if self.terms_accepted and not self.terms_accepted_at:
             self.terms_accepted_at = timezone.now()
+            
         super().save(*args, **kwargs)
+
+# musica/models.py - Dentro de class CustomUser
+
+    def get_absolute_url(self):
+        """URL canónica para SEO y Sitemaps"""
+        return reverse('musica:artist_detail_seo', kwargs={'slug': self.slug})
+    # ← CORREGIDO: musica, no users
 
     # --- PROPIEDADES ÚTILES ---
     @property
@@ -174,19 +215,32 @@ class CustomUser(AbstractUser):
         """¿Puede recibir pagos como artista?"""
         return self.is_verified and self.can_withdraw
 
+    @property
+    def is_indexable(self):
+        """
+        Determina si el perfil debe ser indexado por buscadores.
+        Requiere: perfil público, activo y con contenido mínimo.
+        """
+        return (
+            self.is_active and 
+            self.is_public and 
+            self.full_name and  # Al menos tiene nombre
+            len(self.full_name) > 2  # Nombre con contenido real
+        )
+
     # --- MÉTODOS ---
     def verify(self, verified_by=None):
         """Marcar usuario como verificado"""
         self.is_verified = True
         self.verified_at = timezone.now()
         self.can_withdraw = True
-        self.save(update_fields=['is_verified', 'verified_at', 'can_withdraw'])
+        self.save(update_fields=['is_verified', 'verified_at', 'can_withdraw', 'updated_at'])
         
     def unverify(self):
         """Quitar verificación"""
         self.is_verified = False
         self.can_withdraw = False
-        self.save(update_fields=['is_verified', 'can_withdraw'])
+        self.save(update_fields=['is_verified', 'can_withdraw', 'updated_at'])
 
 
 class UserVisit(models.Model):

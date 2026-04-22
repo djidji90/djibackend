@@ -1,7 +1,7 @@
-# users/admin.py
+# musica/admin.py
 """
 Panel de administración para la app de usuarios.
-Incluye gestión de CustomUser con campos de wallet y UserVisit.
+Incluye gestión de CustomUser con campos de wallet, SEO y UserVisit.
 """
 from django.contrib import admin
 from django.contrib.auth import get_user_model
@@ -16,9 +16,9 @@ User = get_user_model()
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
     """
-    Administración personalizada para CustomUser con campos de wallet.
+    Administración personalizada para CustomUser con campos de wallet y SEO.
     """
-    # --- LISTADO PRINCIPAL ---
+    # --- LISTADO PRINCIPAL (CORREGIDO - Incluye todos los campos editables) ---
     list_display = [
         'id', 
         'username', 
@@ -28,19 +28,23 @@ class CustomUserAdmin(UserAdmin):
         'city', 
         'neighborhood', 
         'phone',
-        'country',                    # ✅ NUEVO
-        'default_currency_display',   # ✅ NUEVO (propiedad calculada)
-        'is_verified_display',        # ✅ NUEVO (con badge)
-        'can_withdraw_display',       # ✅ NUEVO
+        'country',
+        'default_currency_display',
+        'is_verified_display',
+        'can_withdraw_display',
+        'is_public_display',
+        'is_verified',
+        'can_withdraw',
+        'is_public',
         'is_active', 
-        'is_staff', 
-         'is_verified',     # ✅ AÑADIR
-    'can_withdraw',
+        'is_staff',
     ]
+    
+    list_editable = ('is_verified', 'can_withdraw', 'is_public', 'is_active')
     
     search_fields = (
         'username', 'email', 'first_name', 'last_name', 
-        'city', 'neighborhood', 'phone', 'country'
+        'city', 'neighborhood', 'phone', 'country', 'slug'
     )
     
     list_filter = (
@@ -48,13 +52,15 @@ class CustomUserAdmin(UserAdmin):
         'is_staff', 
         'city', 
         'neighborhood',
-        'country',          # ✅ NUEVO
-        'is_verified',      # ✅ NUEVO
-        'can_withdraw',     # ✅ NUEVO
+        'country',
+        'is_verified',
+        'can_withdraw',
+        'is_public',
     )
     
-    # --- CAMPOS EDITABLES DIRECTAMENTE EN LISTADO ---
-    list_editable = ('is_verified', 'can_withdraw'  , 'is_active')
+    # --- CAMPOS EDITABLES DIRECTAMENTE EN LISTADO (CORREGIDO) ---
+    # Ahora todos estos campos están en list_display
+    list_editable = ('is_verified', 'can_withdraw', 'is_public', 'is_active')
     
     # --- ORDENACIÓN ---
     ordering = ('-is_verified', '-date_joined', 'username')
@@ -62,12 +68,26 @@ class CustomUserAdmin(UserAdmin):
     # --- CAMPOS A MOSTRAR EN EL FORMULARIO DE EDICIÓN ---
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
+        
         ('Información Personal', {
             'fields': (
                 'first_name', 'last_name', 'email', 
-                'phone', 'city', 'neighborhood', 'country'
+                'phone', 'city', 'neighborhood', 'country',
+                'gender', 'birth_date'
             )
         }),
+        
+        # 🆕 SECCIÓN SEO
+        ('SEO y Visibilidad', {
+            'fields': (
+                'slug', 
+                'is_public',
+                'updated_at',
+            ),
+            'classes': ('wide',),
+            'description': 'Configuración para buscadores. El slug define la URL pública del perfil.'
+        }),
+        
         ('Verificación y Wallet', {
             'fields': (
                 'is_verified', 
@@ -77,9 +97,11 @@ class CustomUserAdmin(UserAdmin):
             'classes': ('wide',),
             'description': 'Gestión de verificación del usuario y permisos de wallet'
         }),
+        
         ('Permisos', {
             'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions'),
         }),
+        
         ('Fechas importantes', {
             'fields': ('last_login', 'date_joined'),
             'classes': ('collapse',)
@@ -87,10 +109,17 @@ class CustomUserAdmin(UserAdmin):
     )
     
     # --- CAMPOS DE SOLO LECTURA ---
-    readonly_fields = ('verified_at', 'date_joined', 'last_login')
+    readonly_fields = ('verified_at', 'updated_at', 'date_joined', 'last_login')
     
     # --- ACCIONES PERSONALIZADAS ---
-    actions = ['verify_users', 'unverify_users', 'enable_withdraw', 'disable_withdraw']
+    actions = [
+        'verify_users', 
+        'unverify_users', 
+        'enable_withdraw', 
+        'disable_withdraw',
+        'make_public',
+        'make_private',
+    ]
     
     # ==================== MÉTODOS DE VISUALIZACIÓN ====================
     
@@ -134,6 +163,29 @@ class CustomUserAdmin(UserAdmin):
     can_withdraw_display.short_description = 'Puede retirar'
     can_withdraw_display.admin_order_field = 'can_withdraw'
     
+    def is_public_display(self, obj):
+        """Mostrar estado de visibilidad pública para SEO"""
+        if obj.is_public:
+            return format_html(
+                '<span style="color: green;">🌐 Público</span>'
+            )
+        return format_html(
+            '<span style="color: gray;">🔒 Privado</span>'
+        )
+    is_public_display.short_description = 'Visibilidad'
+    is_public_display.admin_order_field = 'is_public'
+    
+    def profile_url_display(self, obj):
+        """Mostrar URL pública del perfil"""
+        if obj.slug:
+            url = obj.get_absolute_url()
+            return format_html(
+                '<a href="{}" target="_blank">{}</a>',
+                url, url
+            )
+        return format_html('<span style="color: gray;">Sin slug</span>')
+    profile_url_display.short_description = 'URL Pública'
+    
     def get_wallet_link(self, obj):
         """Link al wallet del usuario (si existe)"""
         try:
@@ -159,15 +211,18 @@ class CustomUserAdmin(UserAdmin):
     
     def get_holds_count(self, obj):
         """Contar holds pendientes del usuario como artista"""
-        from wallet.models import Hold
-        count = Hold.objects.filter(artist=obj, is_released=False).count()
-        if count > 0:
-            url = reverse('admin:wallet_hold_changelist') + f'?artist__id={obj.id}&is_released__exact=0'
-            return format_html(
-                '<a href="{}" style="color: orange;">{} pendientes</a>',
-                url, count
-            )
-        return '0'
+        try:
+            from wallet.models import Hold
+            count = Hold.objects.filter(artist=obj, is_released=False).count()
+            if count > 0:
+                url = reverse('admin:wallet_hold_changelist') + f'?artist__id={obj.id}&is_released__exact=0'
+                return format_html(
+                    '<a href="{}" style="color: orange;">{} pendientes</a>',
+                    url, count
+                )
+            return '0'
+        except:
+            return '0'
     get_holds_count.short_description = 'Holds pendientes'
     
     # ==================== ACCIONES PERSONALIZADAS ====================
@@ -199,7 +254,7 @@ class CustomUserAdmin(UserAdmin):
         for user in queryset:
             if not user.can_withdraw:
                 user.can_withdraw = True
-                user.save(update_fields=['can_withdraw'])
+                user.save(update_fields=['can_withdraw', 'updated_at'])
                 count += 1
         self.message_user(request, f'Retiros habilitados para {count} usuarios.')
     
@@ -210,9 +265,31 @@ class CustomUserAdmin(UserAdmin):
         for user in queryset:
             if user.can_withdraw:
                 user.can_withdraw = False
-                user.save(update_fields=['can_withdraw'])
+                user.save(update_fields=['can_withdraw', 'updated_at'])
                 count += 1
         self.message_user(request, f'Retiros deshabilitados para {count} usuarios.')
+    
+    @admin.action(description='🌐 Hacer perfiles públicos (indexables)')
+    def make_public(self, request, queryset):
+        """Hacer perfiles visibles para buscadores"""
+        count = 0
+        for user in queryset:
+            if not user.is_public:
+                user.is_public = True
+                user.save(update_fields=['is_public', 'updated_at'])
+                count += 1
+        self.message_user(request, f'{count} perfiles ahora son públicos.')
+    
+    @admin.action(description='🔒 Hacer perfiles privados (no indexables)')
+    def make_private(self, request, queryset):
+        """Ocultar perfiles de buscadores"""
+        count = 0
+        for user in queryset:
+            if user.is_public:
+                user.is_public = False
+                user.save(update_fields=['is_public', 'updated_at'])
+                count += 1
+        self.message_user(request, f'{count} perfiles ahora son privados.')
     
     # ==================== MÉTODOS PARA INCLUIR EN EL FORMULARIO ====================
     
@@ -229,17 +306,32 @@ class CustomUserAdmin(UserAdmin):
                     'description': 'Información financiera del usuario'
                 }
             )
+            # Agregar sección de SEO (información adicional)
+            seo_info_section = (
+                'Información SEO', {
+                    'fields': ('profile_url_display',),
+                    'classes': ('collapse',),
+                    'description': 'URL pública del perfil para buscadores'
+                }
+            )
             # Insertar después de la sección de Verificación
             fieldsets = list(fieldsets)
-            fieldsets.insert(3, wallet_section)
+            fieldsets.insert(4, wallet_section)
+            fieldsets.insert(5, seo_info_section)
         
         return fieldsets
     
     def get_readonly_fields(self, request, obj=None):
-        """Agregar campos calculados como solo lectura"""
+        """Slug solo editable al crear, después es solo lectura"""
         readonly = super().get_readonly_fields(request, obj)
-        if obj:
-            readonly = list(readonly) + ['get_wallet_link', 'get_transactions_count', 'get_holds_count']
+        if obj:  # Si es edición (no creación)
+            readonly = list(readonly) + [
+                'slug',
+                'get_wallet_link', 
+                'get_transactions_count', 
+                'get_holds_count',
+                'profile_url_display',
+            ]
         return readonly
 
 
@@ -299,7 +391,7 @@ class UserVisitAdmin(admin.ModelAdmin):
     def user_link(self, obj):
         """Link al usuario asociado"""
         if obj.user:
-            url = reverse('admin:users_customuser_change', args=[obj.user.id])
+            url = reverse('admin:musica_customuser_change', args=[obj.user.id])
             return format_html(
                 '<a href="{}">{}</a>',
                 url, obj.user.email

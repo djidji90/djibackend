@@ -1,0 +1,183 @@
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{% block title %}DjidjiMusic{% endblock %}</title>
+        <meta name="description" content="{% block description %}Plataforma de música para artistas independientes{% endblock %}">
+        
+        <!-- Open Graph / Social Media -->
+        <meta property="og:site_name" content="DjidjiMusic">
+        <meta property="og:locale" content="es_ES">
+        {% block og_tags %}{% endblock %}
+        
+        <!-- Twitter Card -->
+        <meta name="twitter:card" content="summary">
+        <meta name="twitter:site" content="@djidjimusic">
+        
+        <!-- Canonical URL -->
+        <link rel="canonical" href="{{ request.build_absolute_uri }}">
+        
+        <!-- Mobile Optimization -->
+        <meta name="theme-color" content="#FF4D4D">
+        
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                line-height: 1.6;
+                color: #333;
+                background: #fff;
+            }
+            
+            a {
+                color: #FF4D4D;
+                text-decoration: none;
+                transition: color 0.2s;
+            }
+            
+            a:hover {
+                text-decoration: underline;
+                color: #cc0000;
+            }
+            
+            .btn-app {
+                display: inline-block;
+                background: #FF4D4D;
+                color: white !important;
+                padding: 12px 24px;
+                border-radius: 40px;
+                font-weight: bold;
+                margin: 20px 0;
+                text-decoration: none;
+                transition: background 0.2s;
+                box-shadow: 0 2px 8px rgba(255, 77, 77, 0.3);
+            }
+            
+            .btn-app:hover {
+                background: #cc0000;
+                text-decoration: none;
+            }
+            
+            .artist-card {
+                border: 1px solid #eee;
+                padding: 20px;
+                margin: 15px 0;
+                border-radius: 12px;
+                transition: box-shadow 0.2s, transform 0.2s;
+                background: #fff;
+            }
+            
+            .artist-card:hover {
+                box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+                transform: translateY(-2px);
+            }
+            
+            .badge {
+                background: #1DA1F2;
+                color: white;
+                padding: 2px 8px;
+                border-radius: 20px;
+                font-size: 12px;
+                margin-left: 8px;
+                font-weight: 500;
+            }
+            
+            .pagination {
+                margin-top: 40px;
+                display: flex;
+                gap: 10px;
+                justify-content: center;
+                flex-wrap: wrap;
+            }
+            
+            .pagination a, .pagination span {
+                padding: 8px 16px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                background: #fff;
+            }
+            
+            .pagination a:hover {
+                background: #f5f5f5;
+                text-decoration: none;
+            }
+            
+            .pagination .current {
+                background: #FF4D4D;
+                color: white;
+                border-color: #FF4D4D;
+            }
+            
+            footer {
+                margin-top: 60px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+                text-align: center;
+                color: #666;
+                font-size: 14px;
+            }
+            
+            footer a {
+                margin: 0 10px;
+            }
+            
+            h1 {
+                margin-bottom: 20px;
+                font-size: 2em;
+            }
+            
+            h2 {
+                margin: 20px 0 10px;
+            }
+            
+            h3 {
+                margin: 0 0 5px 0;
+            }
+            
+            /* Responsive */
+            @media (max-width: 600px) {
+                body {
+                    padding: 15px;
+                }
+                
+                h1 {
+                    font-size: 1.5em;
+                }
+                
+                .artist-card {
+                    padding: 15px;
+                }
+                
+                footer a {
+                    display: inline-block;
+                    margin: 5px;
+                }
+            }
+        </style>
+        
+        {% block extra_head %}{% endblock %}
+    </head>
+    <body>
+        {% block content %}{% endblock %}
+        
+        <footer>
+            <nav>
+                <a href="/artistas/">🎤 Explorar Artistas</a> | 
+                <a href="/">🏠 Inicio</a> |
+                <a href="/#/login">🔐 Acceder</a>
+            </nav>
+            <p style="margin-top: 15px;">© {% now "Y" %} DjidjiMusic - Descubre nuevo talento</p>
+        </footer>
+        
+        {% block extra_scripts %}{% endblock %}
+    </body>
+    </html>

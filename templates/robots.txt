@@ -1,0 +1,26 @@
+# robots.txt para DjidjiMusic
+# Permite indexación de contenido público, bloquea áreas privadas
+
+User-agent: *
+Allow: /
+Allow: /artistas/
+Allow: /perfil/
+
+# Bloquear áreas administrativas y API
+Disallow: /admin/
+Disallow: /api/
+Disallow: /dashboard/
+Disallow: /wallet/
+
+# Bloquear parámetros de sesión
+Disallow: /*?*session
+Disallow: /*?*token
+
+# Sitemap principal (indexado)
+Sitemap: https://www.djidjimusic.com/sitemap.xml
+
+# Host canónico
+Host: https://www.djidjimusic.com
+
+# Crawl-delay para no sobrecargar el servidor
+Crawl-delay: 2

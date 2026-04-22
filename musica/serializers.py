@@ -200,6 +200,10 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "terms_accepted": instance.terms_accepted,
                 "is_verified": instance.is_verified,
                 "default_currency": instance.default_currency,  # Usa el código interno
+                # 🆕 Campos SEO en respuesta de registro
+                "slug": instance.slug,
+                "is_public": instance.is_public,
+                "profile_url": instance.get_absolute_url(),
             },
             "tokens": {
                 "refresh": str(refresh),
@@ -214,6 +218,7 @@ class UserSerializer(serializers.ModelSerializer):
     """
     full_name = serializers.SerializerMethodField()
     default_currency = serializers.SerializerMethodField()
+    profile_url = serializers.SerializerMethodField()  # 🆕 URL pública del perfil
     
     class Meta:
         model = CustomUser
@@ -221,15 +226,21 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
             'phone', 'city', 'neighborhood', 'country', 'gender', 'birth_date',
             'terms_accepted', 'default_currency', 'is_verified', 'can_withdraw', 
-            'verified_at', 'is_active', 'date_joined', 'last_login'
+            'verified_at', 'is_active', 'date_joined', 'last_login',
+            # 🆕 Campos SEO
+            'slug', 'is_public', 'profile_url', 'updated_at'
         ]
-        read_only_fields = ['id', 'is_verified', 'verified_at', 'date_joined', 'last_login']
+        read_only_fields = ['id', 'is_verified', 'verified_at', 'date_joined', 'last_login', 'slug', 'updated_at']
     
     def get_full_name(self, obj):
         return obj.full_name
     
     def get_default_currency(self, obj):
         return obj.default_currency
+    
+    def get_profile_url(self, obj):
+        """URL pública del perfil para SEO"""
+        return obj.get_absolute_url()
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -238,6 +249,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     """
     full_name = serializers.SerializerMethodField()
     wallet_balance = serializers.SerializerMethodField()
+    profile_url = serializers.SerializerMethodField()  # 🆕 URL pública
     
     class Meta:
         model = CustomUser
@@ -245,12 +257,18 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'full_name', 'first_name', 'last_name',
             'phone', 'city', 'neighborhood', 'country', 'gender', 'birth_date',
             'terms_accepted', 'default_currency', 'is_verified', 'can_withdraw', 
-            'wallet_balance', 'is_active', 'date_joined'
+            'wallet_balance', 'is_active', 'date_joined',
+            # 🆕 Campos SEO
+            'slug', 'is_public', 'profile_url', 'updated_at'
         ]
-        read_only_fields = ['id', 'is_verified', 'date_joined']
+        read_only_fields = ['id', 'is_verified', 'date_joined', 'slug', 'updated_at']
     
     def get_full_name(self, obj):
         return obj.full_name
+    
+    def get_profile_url(self, obj):
+        """URL pública del perfil para SEO"""
+        return obj.get_absolute_url()
     
     def get_wallet_balance(self, obj):
         try:
@@ -263,6 +281,30 @@ class UserProfileSerializer(serializers.ModelSerializer):
             }
         except:
             return None
+
+
+class PublicArtistSerializer(serializers.ModelSerializer):
+    """
+    🆕 Serializer PÚBLICO para perfiles de artistas (SEO y listados).
+    NO expone datos sensibles como email, phone o wallet.
+    """
+    full_name = serializers.SerializerMethodField()
+    profile_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'username', 'slug', 'full_name', 'first_name', 'last_name',
+            'city', 'neighborhood', 'country', 'gender',
+            'is_verified', 'date_joined', 'profile_url'
+        ]
+        read_only_fields = fields
+    
+    def get_full_name(self, obj):
+        return obj.full_name
+    
+    def get_profile_url(self, obj):
+        return obj.get_absolute_url()
 
 
 class UserLoginSerializer(serializers.Serializer):
@@ -316,6 +358,10 @@ class UserLoginSerializer(serializers.Serializer):
                 "terms_accepted": user.terms_accepted,
                 "is_verified": user.is_verified,
                 "default_currency": user.default_currency,
+                # 🆕 Campos SEO en respuesta de login
+                "slug": user.slug,
+                "is_public": user.is_public,
+                "profile_url": user.get_absolute_url(),
             },
             "tokens": {
                 "refresh": str(refresh),

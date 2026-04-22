@@ -1,0 +1,57 @@
+{% extends "seo/base_seo.html" %}
+
+{% block title %}{{ page_title }}{% endblock %}
+{% block description %}{{ meta_description }}{% endblock %}
+
+{% block og_tags %}
+<meta property="og:title" content="{{ artist.full_name }}">
+<meta property="og:type" content="profile">
+<meta property="og:url" content="{{ request.build_absolute_uri }}">
+<meta property="og:description" content="{{ meta_description }}">
+{% if artist.profile_image %}
+<meta property="og:image" content="{{ request.build_absolute_uri }}{{ artist.profile_image.url }}">
+<meta property="og:image:alt" content="{{ artist.full_name }}">
+{% else %}
+<meta property="og:image" content="{{ request.build_absolute_uri }}static/img/default-artist.png">
+{% endif %}
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ artist.full_name }}">
+<meta name="twitter:description" content="{{ meta_description }}">
+{% endblock %}
+
+{% block content %}
+<script type="application/ld+json">{{ json_ld|safe }}</script>
+
+<article>
+    <header style="margin-bottom: 30px;">
+        <h1 style="margin-bottom: 5px;">{{ artist.full_name }}</h1>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            {% if artist.is_verified %}
+            <span class="badge">✓ Verificado</span>
+            {% endif %}
+            <span style="color: #666;">🎵 Artista en DjidjiMusic</span>
+        </div>
+    </header>
+    
+    <section style="background: #f9f9f9; padding: 25px; border-radius: 12px; margin-bottom: 30px;">
+        <h2 style="margin-top: 0;">Información del Artista</h2>
+        <p><strong>📍 Ubicación:</strong> {{ artist.city|default:"No especificada" }}{% if artist.country %}, {{ artist.country }}{% endif %}</p>
+        <p><strong>📅 Miembro desde:</strong> {{ artist.date_joined|date:"F Y" }}</p>
+        <p><strong>🆔 Usuario:</strong> @{{ artist.username }}</p>
+        <p><strong>🔗 URL del perfil:</strong> {{ request.build_absolute_uri }}</p>
+    </section>
+    
+    <!-- Botón para abrir la App -->
+    <div style="text-align: center;">
+        <a href="{{ spa_profile_url }}" class="btn-app">
+            🎧 Escuchar en la App de DjidjiMusic
+        </a>
+        <p style="margin-top: 10px; font-size: 14px; color: #666;">
+            Haz clic para disfrutar de la experiencia completa en nuestra PWA
+        </p>
+    </div>
+    
+    <!-- Sección de contenido adicional (si existe) -->
+    {% block artist_extra_content %}{% endblock %}
+</article>
+{% endblock %}

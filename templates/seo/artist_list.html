@@ -1,0 +1,77 @@
+{% extends "seo/base_seo.html" %}
+
+{% block title %}Artistas en DjidjiMusic | Descubre nuevo talento{% endblock %}
+{% block description %}Explora todos los artistas verificados en DjidjiMusic. Encuentra tu próximo sonido favorito.{% endblock %}
+
+{% block og_tags %}
+<meta property="og:title" content="Artistas en DjidjiMusic">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{ request.build_absolute_uri }}">
+<meta property="og:description" content="Explora todos los artistas verificados en DjidjiMusic. Encuentra tu próximo sonido favorito.">
+<meta property="og:image" content="{{ request.build_absolute_uri }}static/img/djidji-og.png">
+{% endblock %}
+
+{% block content %}
+<script type="application/ld+json">{{ json_ld|safe }}</script>
+
+<header style="margin-bottom: 30px;">
+    <h1>🎤 Artistas en DjidjiMusic</h1>
+    <p style="font-size: 1.1em; color: #555;">Explora perfiles de artistas independientes. Haz clic en cualquier nombre para ver su perfil y escuchar su música en la app.</p>
+</header>
+
+{% if artists %}
+    <p style="margin-bottom: 20px;"><strong>{{ page_obj.paginator.count }}</strong> artistas disponibles</p>
+{% endif %}
+
+<div class="artist-grid">
+    {% for artist in artists %}
+    <div class="artist-card">
+        <h3 style="margin:0 0 8px 0;">
+            <a href="{{ artist.get_absolute_url }}">{{ artist.full_name }}</a>
+            {% if artist.is_verified %}
+            <span class="badge">✓</span>
+            {% endif %}
+        </h3>
+        
+        <p style="margin:0; color:#666;">
+            {% if artist.city %}
+            📍 {{ artist.city }}{% if artist.country %}, {{ artist.country }}{% endif %}
+            {% endif %}
+        </p>
+        
+        <p style="margin:8px 0 0 0; font-size: 14px;">
+            🎵 @{{ artist.username }} · Miembro desde {{ artist.date_joined|date:"Y" }}
+        </p>
+        
+        <p style="margin:12px 0 0 0;">
+            <a href="{{ artist.get_absolute_url }}" style="font-weight: 500;">Ver perfil completo →</a>
+        </p>
+    </div>
+    {% empty %}
+    <div style="text-align: center; padding: 40px; background: #f9f9f9; border-radius: 12px;">
+        <p style="font-size: 1.2em;">No hay artistas disponibles en este momento.</p>
+        <p style="margin-top: 10px;">¡Sé el primero en registrarte!</p>
+        <a href="/#/register" class="btn-app" style="margin-top: 20px;">Registrarse como Artista</a>
+    </div>
+    {% endfor %}
+</div>
+
+{% if is_paginated %}
+<nav class="pagination" aria-label="Paginación de artistas">
+    {% if page_obj.has_previous %}
+        <a href="?page=1" aria-label="Primera página">« Primera</a>
+        <a href="?page={{ page_obj.previous_page_number }}" aria-label="Página anterior">← Anterior</a>
+    {% endif %}
+    
+    <span class="current">
+        Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}
+    </span>
+    
+    {% if page_obj.has_next %}
+        <a href="?page={{ page_obj.next_page_number }}" aria-label="Página siguiente">Siguiente →</a>
+        <a href="?page={{ page_obj.paginator.num_pages }}" aria-label="Última página">Última »</a>
+    {% endif %}
+</nav>
+{% endif %}
+
+{% endblock %}
