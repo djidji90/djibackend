@@ -10,6 +10,7 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 from musica.views_api import ArtistProfileDetailView
+
 # Vistas API existentes (autenticación, perfil, etc.)
 from musica.views import (
     RegisterView, CustomTokenObtainPairView, UserProfileView,
@@ -20,14 +21,16 @@ from musica.views import (
 # 🆕 Vistas API para frontend (JSON)
 from musica.views_api import PublicArtistListView, PublicArtistDetailView
 
-# 🆕 Vistas SEO (HTML) - Nota: views_seo está en musica/users/views_seo.py
-from musica.users.views_seo import (
+# 🆕 Vistas SEO (HTML)
+# ⚠️ CORREGIDO: import desde musica.views_seo (no desde musica.users.views_seo)
+from musica.views_seo import (
     ArtistDetailSEOView,
     ArtistListSEOView,
     custom_sitemap_view,
     custom_sitemap_index_view,
     custom_sitemap_static_view,
     custom_sitemap_artists_chunk_view,
+    redirect_legacy_profile,  # 🆕 AÑADIDO
 )
 
 app_name = 'musica'
@@ -48,19 +51,26 @@ urlpatterns = [
     path('verify/<int:user_id>/', VerifyUserView.as_view(), name='verify_user'),
     path('unverify/<int:user_id>/', UnverifyUserView.as_view(), name='unverify_user'),
     path('protected/', ProtectedView.as_view(), name='protected'),
-    
+
     # ============================================
     # 🆕 API JSON PARA FRONTEND
     # ============================================
     path('api/artistas/', PublicArtistListView.as_view(), name='api_artistas_list'),
     path('api/artistas/<slug:slug>/', PublicArtistDetailView.as_view(), name='api_artista_detail'),
     path('api/artistas/<slug:slug>/profile/', ArtistProfileDetailView.as_view(), name='api_artista_profile'),
+    
     # ============================================
     # 🆕 SEO PÚBLICO (HTML para Google)
     # ============================================
     path('artistas/', ArtistListSEOView.as_view(), name='artist_list_seo'),
+    
+    # ✅ Ruta canónica con slug (DEBE ir PRIMERO)
     path('perfil/<slug:slug>/', ArtistDetailSEOView.as_view(), name='artist_detail_seo'),
     
+    # 🆕 Redirección de URLs antiguas (DEBE ir DESPUÉS)
+    # Captura username o ID y redirige 301 al slug canónico
+    path('perfil/<str:identifier>/', redirect_legacy_profile, name='legacy_profile_redirect'),
+
     # ============================================
     # 🆕 SITEMAP
     # ============================================
@@ -68,7 +78,7 @@ urlpatterns = [
     path('sitemap-index.xml', custom_sitemap_index_view, name='sitemap_index'),
     path('sitemap-static.xml', custom_sitemap_static_view, name='sitemap_static'),
     path('sitemap-artists-<int:chunk>.xml', custom_sitemap_artists_chunk_view, name='sitemap_artists_chunk'),
-    
+
     # ============================================
     # 🆕 ROBOTS.TXT
     # ============================================
