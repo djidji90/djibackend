@@ -10,15 +10,19 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 
+# Vistas API existentes (autenticación, perfil, etc.)
 from musica.views import (
     RegisterView, CustomTokenObtainPairView, UserProfileView,
     UserDetailView, RegisterUserVisit, VerifyUserView,
     UnverifyUserView, ProtectedView, LogoutView,
 )
 
-# 🆕 Vistas SEO
+# 🆕 Vistas API para frontend (JSON)
+from musica.views_api import PublicArtistListView, PublicArtistDetailView
+
+# 🆕 Vistas SEO (HTML) - Nota: views_seo está en musica/users/views_seo.py
 from musica.users.views_seo import (
-    ArtistDetailSEOView, 
+    ArtistDetailSEOView,
     ArtistListSEOView,
     custom_sitemap_view,
     custom_sitemap_index_view,
@@ -30,7 +34,7 @@ app_name = 'musica'
 
 urlpatterns = [
     # ============================================
-    # API ENDPOINTS
+    # API ENDPOINTS (Autenticación y perfil)
     # ============================================
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
@@ -46,17 +50,21 @@ urlpatterns = [
     path('protected/', ProtectedView.as_view(), name='protected'),
     
     # ============================================
-    # 🆕 SEO PÚBLICO
+    # 🆕 API JSON PARA FRONTEND
+    # ============================================
+    path('api/artistas/', PublicArtistListView.as_view(), name='api_artistas_list'),
+    path('api/artistas/<slug:slug>/', PublicArtistDetailView.as_view(), name='api_artista_detail'),
+    
+    # ============================================
+    # 🆕 SEO PÚBLICO (HTML para Google)
     # ============================================
     path('artistas/', ArtistListSEOView.as_view(), name='artist_list_seo'),
     path('perfil/<slug:slug>/', ArtistDetailSEOView.as_view(), name='artist_detail_seo'),
     
     # ============================================
-    # 🆕 SITEMAP (VISTA PERSONALIZADA - 100% FUNCIONAL)
+    # 🆕 SITEMAP
     # ============================================
     path('sitemap.xml', custom_sitemap_view, name='sitemap'),
-    
-    # Opcional: Sitemap indexado para escalar
     path('sitemap-index.xml', custom_sitemap_index_view, name='sitemap_index'),
     path('sitemap-static.xml', custom_sitemap_static_view, name='sitemap_static'),
     path('sitemap-artists-<int:chunk>.xml', custom_sitemap_artists_chunk_view, name='sitemap_artists_chunk'),
@@ -65,7 +73,7 @@ urlpatterns = [
     # 🆕 ROBOTS.TXT
     # ============================================
     path('robots.txt', TemplateView.as_view(
-        template_name="robots.txt", 
+        template_name="robots.txt",
         content_type="text/plain"
     ), name='robots_txt'),
 ]

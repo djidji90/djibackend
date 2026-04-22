@@ -435,3 +435,63 @@ class ChangePasswordSerializer(serializers.Serializer):
         user.set_password(self.validated_data['new_password'])
         user.save()
         return user
+    
+# musica/serializers.py - AÑADIR AL FINAL
+
+class PublicArtistSerializer(serializers.ModelSerializer):
+    """
+    Serializer SEGURO para datos públicos de artistas.
+    NO expone email, phone, wallet, ni datos sensibles.
+    """
+    full_name = serializers.SerializerMethodField()
+    profile_url = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+    songs_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id',
+            'username',
+            'slug',
+            'full_name',
+            'first_name',
+            'last_name',
+            'city',
+            'neighborhood',
+            'country',
+            'is_verified',
+            'is_public',
+            'date_joined',
+            'profile_url',
+            'avatar_url',
+            'songs_count',
+        ]
+    
+    def get_full_name(self, obj):
+        """Nombre completo del artista"""
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}"
+        return obj.username
+    
+    def get_profile_url(self, obj):
+        """URL del perfil en la SPA"""
+        if obj.slug:
+            return f"/perfil/{obj.slug}/"
+        return f"/perfil/{obj.username}/"
+    
+    def get_avatar_url(self, obj):
+        """URL del avatar (si existe)"""
+        if hasattr(obj, 'profile_image') and obj.profile_image:
+            return obj.profile_image.url
+        if hasattr(obj, 'avatar') and obj.avatar:
+            return obj.avatar.url
+        return None
+    
+    def get_songs_count(self, obj):
+        """Número de canciones subidas por el artista"""
+        try:
+            from api2.models import Song
+            return Song.objects.filter(uploaded_by=obj).count()
+        except:
+            return 0
