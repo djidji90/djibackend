@@ -284,29 +284,129 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class PublicArtistSerializer(serializers.ModelSerializer):
-    """
-    🆕 Serializer PÚBLICO para perfiles de artistas (SEO y listados).
-    NO expone datos sensibles como email, phone o wallet.
-    """
+    """Serializer SEGURO para datos públicos de artistas."""
     full_name = serializers.SerializerMethodField()
     profile_url = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+    songs_count = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
         fields = [
             'id', 'username', 'slug', 'full_name', 'first_name', 'last_name',
-            'city', 'neighborhood', 'country', 'gender',
-            'is_verified', 'date_joined', 'profile_url'
+            'city', 'neighborhood', 'country', 'is_verified', 'is_public',
+            'date_joined', 'profile_url', 'avatar_url', 'songs_count',
         ]
-        read_only_fields = fields
     
     def get_full_name(self, obj):
-        return obj.full_name
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}"
+        return obj.username
     
     def get_profile_url(self, obj):
-        return obj.get_absolute_url()
+        return f"/perfil/{obj.slug or obj.username}/"
+    
+    def get_avatar_url(self, obj):
+        try:
+            profile = obj.profile
+            if profile and profile.avatar_key:
+                return f"https://cdn.djidjimusic.com/{profile.avatar_key}"
+        except:
+            pass
+        return None
+    
+    def get_songs_count(self, obj):
+        try:
+            from api2.models import Song
+            return Song.objects.filter(uploaded_by=obj, is_public=True).count()
+        except:
+            return 0
 
 
+class ArtistProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer COMPLETO para perfil de artista.
+    NO incluye bio/location/website (están en UserProfile).
+    """
+    full_name = serializers.SerializerMethodField()
+    profile_url = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+    songs = serializers.SerializerMethodField()
+    stats = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'username', 'slug', 'full_name', 'first_name', 'last_name',
+            'city', 'neighborhood', 'country',
+            'is_verified', 'is_public', 'date_joined',
+            'profile_url', 'avatar_url', 'songs', 'stats'
+        ]
+    
+    def get_full_name(self, obj):
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}"
+        return obj.username
+    
+    def get_profile_url(self, obj):
+        return f"/perfil/{obj.slug or obj.username}/"
+    
+    def get_avatar_url(self, obj):
+        try:
+            profile = obj.profile
+            if profile and profile.avatar_key:
+                return f"https://cdn.djidjimusic.com/{profile.avatar_key}"
+        except:
+            pass
+        return None
+    
+    def get_songs(self, obj):
+        try:
+            from api2.models import Song
+            
+            songs = Song.objects.filter(
+                uploaded_by=obj,
+                is_public=True
+            ).order_by('-created_at')[:50]
+            
+            return [
+                {
+                    'id': song.id,
+                    'title': song.title,
+                    'artist': song.artist,
+                    'genre': song.genre,
+                    'duration': song.duration,
+                    'plays_count': song.plays_count,
+                    'likes_count': song.likes_count,
+                    'downloads_count': song.downloads_count,
+                    'category': song.category,
+                    'price': float(song.price),
+                    'price_display': song.formatted_price,
+                    'is_purchasable': song.is_purchasable,
+                    'created_at': song.created_at.isoformat() if song.created_at else None,
+                    'file_key': song.file_key,
+                    'image_key': song.image_key,
+                }
+                for song in songs
+            ]
+        except Exception:
+            return []
+    
+    def get_stats(self, obj):
+        try:
+            from api2.models import Song, Like, PlayHistory, Download
+            
+            songs = Song.objects.filter(uploaded_by=obj)
+            song_ids = list(songs.values_list('id', flat=True))
+            
+            return {
+                'total_songs': len(song_ids),
+                'total_plays': PlayHistory.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
+                'total_likes': Like.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
+                'total_downloads': Download.objects.filter(song_id__in=song_ids, is_confirmed=True).count() if song_ids else 0,
+            }
+        except Exception:
+            return {'total_songs': 0, 'total_plays': 0, 'total_likes': 0, 'total_downloads': 0}
 class UserLoginSerializer(serializers.Serializer):
     """
     Serializer para login de usuarios.
@@ -439,134 +539,3 @@ class ChangePasswordSerializer(serializers.Serializer):
     
 # musica/serializers.py - AÑADIR AL FINAL DEL ARCHIVO
 
-class ArtistProfileSerializer(serializers.ModelSerializer):
-    """
-    Serializer COMPLETO para perfil de artista.
-    Incluye datos del artista, canciones y estadísticas.
-    """
-    full_name = serializers.SerializerMethodField()
-    profile_url = serializers.SerializerMethodField()
-    avatar_url = serializers.SerializerMethodField()
-    songs = serializers.SerializerMethodField()
-    stats = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = CustomUser
-        fields = [
-            'id', 'username', 'slug', 'full_name', 'first_name', 'last_name',
-            'city', 'neighborhood', 'country', 'bio', 'is_verified', 'is_public',
-            'date_joined', 'profile_url', 'avatar_url',
-            'songs', 'stats'
-        ]
-    
-    def get_full_name(self, obj):
-        if obj.first_name and obj.last_name:
-            return f"{obj.first_name} {obj.last_name}"
-        return obj.username
-    
-    def get_profile_url(self, obj):
-        return f"/perfil/{obj.slug or obj.username}/"
-    
-    def get_avatar_url(self, obj):
-        if hasattr(obj, 'profile_image') and obj.profile_image:
-            return obj.profile_image.url
-        if hasattr(obj, 'avatar') and obj.avatar:
-            return obj.avatar.url
-        return None
-    
-    def get_songs(self, obj):
-        """Obtener canciones públicas del artista."""
-        try:
-            from api2.models import Song
-            from api2.serializers import SongSerializer
-            
-            songs = Song.objects.filter(
-                uploaded_by=obj,
-                is_public=True
-            ).order_by('-created_at')[:50]  # Límite de 50 canciones
-            
-            return SongSerializer(songs, many=True, context=self.context).data
-        except ImportError:
-            return []
-    
-    def get_stats(self, obj):
-        """Calcular estadísticas del artista."""
-        try:
-            from api2.models import Song, Like, PlayHistory, Download
-            
-            songs = Song.objects.filter(uploaded_by=obj)
-            song_ids = list(songs.values_list('id', flat=True))
-            
-            return {
-                'total_songs': len(song_ids),
-                'total_plays': PlayHistory.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
-                'total_likes': Like.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
-                'total_downloads': Download.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
-            }
-        except ImportError:
-            return {
-                'total_songs': 0,
-                'total_plays': 0,
-                'total_likes': 0,
-                'total_downloads': 0,
-            }
-    
-# musica/serializers.py - AÑADIR AL FINAL
-
-class PublicArtistSerializer(serializers.ModelSerializer):
-    """
-    Serializer SEGURO para datos públicos de artistas.
-    NO expone email, phone, wallet, ni datos sensibles.
-    """
-    full_name = serializers.SerializerMethodField()
-    profile_url = serializers.SerializerMethodField()
-    avatar_url = serializers.SerializerMethodField()
-    songs_count = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = CustomUser
-        fields = [
-            'id',
-            'username',
-            'slug',
-            'full_name',
-            'first_name',
-            'last_name',
-            'city',
-            'neighborhood',
-            'country',
-            'is_verified',
-            'is_public',
-            'date_joined',
-            'profile_url',
-            'avatar_url',
-            'songs_count',
-        ]
-    
-    def get_full_name(self, obj):
-        """Nombre completo del artista"""
-        if obj.first_name and obj.last_name:
-            return f"{obj.first_name} {obj.last_name}"
-        return obj.username
-    
-    def get_profile_url(self, obj):
-        """URL del perfil en la SPA"""
-        if obj.slug:
-            return f"/perfil/{obj.slug}/"
-        return f"/perfil/{obj.username}/"
-    
-    def get_avatar_url(self, obj):
-        """URL del avatar (si existe)"""
-        if hasattr(obj, 'profile_image') and obj.profile_image:
-            return obj.profile_image.url
-        if hasattr(obj, 'avatar') and obj.avatar:
-            return obj.avatar.url
-        return None
-    
-    def get_songs_count(self, obj):
-        """Número de canciones subidas por el artista"""
-        try:
-            from api2.models import Song
-            return Song.objects.filter(uploaded_by=obj).count()
-        except:
-            return 0
