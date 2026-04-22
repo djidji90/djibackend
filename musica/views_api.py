@@ -8,7 +8,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.pagination import PageNumberPagination
 from .models import CustomUser
 from .serializers import PublicArtistSerializer
-
+from .serializers import ArtistProfileSerializer
 
 class StandardResultsPagination(PageNumberPagination):
     """Paginación estándar para listados."""
@@ -56,3 +56,27 @@ class PublicArtistDetailView(generics.RetrieveAPIView):
             is_active=True,
             is_public=True
         )
+        
+# musica/views_api.py - AÑADIR ESTA CLASE
+
+
+class ArtistProfileDetailView(generics.RetrieveAPIView):
+    """
+    Endpoint JSON: Perfil COMPLETO de artista.
+    URL: /musica/api/artistas/{slug}/profile/
+    
+    Devuelve:
+    - Datos del artista
+    - Lista de canciones (máximo 50)
+    - Estadísticas (total plays, likes, downloads)
+    """
+    permission_classes = [AllowAny]
+    serializer_class = ArtistProfileSerializer
+    lookup_field = 'slug'
+    lookup_url_kwarg = 'slug'
+    
+    def get_queryset(self):
+        return CustomUser.objects.filter(
+            is_active=True,
+            is_public=True
+        ).prefetch_related('songs')

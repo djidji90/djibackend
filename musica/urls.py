@@ -9,7 +9,7 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
     TokenVerifyView,
 )
-
+from musica.views_api import ArtistProfileDetailView
 # Vistas API existentes (autenticación, perfil, etc.)
 from musica.views import (
     RegisterView, CustomTokenObtainPairView, UserProfileView,
@@ -54,7 +54,7 @@ urlpatterns = [
     # ============================================
     path('api/artistas/', PublicArtistListView.as_view(), name='api_artistas_list'),
     path('api/artistas/<slug:slug>/', PublicArtistDetailView.as_view(), name='api_artista_detail'),
-    
+    path('api/artistas/<slug:slug>/profile/', ArtistProfileDetailView.as_view(), name='api_artista_profile'),
     # ============================================
     # 🆕 SEO PÚBLICO (HTML para Google)
     # ============================================
