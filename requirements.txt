@@ -38,8 +38,8 @@ eyeD3==0.9.9
 factory_boy==3.3.3
 Faker==38.2.0
 filetype==1.2.0
-gevent>=26.4.0
-greenlet==3.1.1
+gevent>=24.0.0
+greenlet==3.2.2
 gunicorn==21.2.0
 idna==3.11
 inflection==0.5.1
