@@ -23,7 +23,7 @@ from musica.views_api import PublicArtistListView, PublicArtistDetailView
 
 # 🆕 Vistas SEO (HTML)
 # ⚠️ CORREGIDO: import desde musica.views_seo (no desde musica.users.views_seo)
-from musica.views_seo import (
+from musica.users.views_seo import (
     ArtistDetailSEOView,
     ArtistListSEOView,
     custom_sitemap_view,
