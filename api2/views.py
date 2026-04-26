@@ -66,6 +66,12 @@ from rest_framework.views import APIView
 # api2/views.py - AL INICIO DEL ARCHIVO
 from wallet.constants import SONG_CATEGORIES  # Si existe en constants.py
 
+from .models import CuratedPlaylist, CuratedPlaylistSong, CuratedPlaylistSave, CuratedPlaylistAnalytics
+from .serializers import (
+    CuratedPlaylistListSerializer,
+    CuratedPlaylistDetailSerializer,
+    CuratedPlaylistSongSerializer,
+)
 # -----------------------------------------------------------------------------
 # FILTERS
 # -----------------------------------------------------------------------------
@@ -96,6 +102,12 @@ from .models import (
     MusicEvent
 )
 
+from .models import CuratedPlaylist, CuratedPlaylistSong, CuratedPlaylistSave, CuratedPlaylistAnalytics
+from .serializers import (
+    CuratedPlaylistListSerializer,
+    CuratedPlaylistDetailSerializer,
+    CuratedPlaylistSongSerializer,
+)
 # -----------------------------------------------------------------------------
 # SERIALIZERS
 # -----------------------------------------------------------------------------
@@ -4910,3 +4922,262 @@ class SongDetailView(generics.RetrieveAPIView):
             )
 
         return super().handle_exception(exc)
+    
+    
+# ============================================
+# 🎵 VISTAS PARA PLAYLISTS CURADAS
+# ============================================
+
+# api2/views.py
+class CuratedPlaylistListView(generics.ListAPIView):
+    """GET /api2/playlists/curated/"""
+    serializer_class   = CuratedPlaylistListSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    pagination_class   = None
+
+    def get_queryset(self):
+        qs = CuratedPlaylist.objects.filter(is_active=True)
+        ptype = self.request.query_params.get('type')
+        if ptype:
+            qs = qs.filter(playlist_type=ptype)
+        if self.request.query_params.get('featured') == 'true':
+            qs = qs.filter(featured=True)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        
+        # ✅ CORREGIDO: Pasar el request al contexto del serializer
+        serializer = self.get_serializer(qs, many=True, context={'request': request})
+
+        grouped = {t: [] for t in ['featured', 'temporal', 'generica', 'nicho', 'mood', 'promocional']}
+        for item in serializer.data:
+            if item.get('featured'):
+                grouped['featured'].append(item)
+            else:
+                grouped.setdefault(item.get('playlist_type', 'generica'), []).append(item)
+
+        return Response({
+            'playlists': serializer.data,
+            'grouped': grouped,
+            'total': len(serializer.data),
+            'timestamp': timezone.now().isoformat(),
+        })
+
+# api2/views.py - También optimiza el DetailView
+class CuratedPlaylistDetailView(generics.RetrieveAPIView):
+    """GET /api2/playlists/curated/<slug>/"""
+    serializer_class = CuratedPlaylistDetailSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    lookup_field = 'slug'
+
+    def get_queryset(self):
+        return CuratedPlaylist.objects.filter(is_active=True)
+
+    def get_serializer_context(self):
+        """✅ Método recomendado por Django REST Framework para pasar contexto"""
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+
+        # Registrar visualización solo si hay usuario autenticado
+        if request.user.is_authenticated:
+            try:
+                from django.db.models import F
+                from django.utils import timezone
+                
+                CuratedPlaylist.objects.filter(pk=instance.pk).update(
+                    total_streams=F('total_streams') + 1
+                )
+                today = timezone.now().date()
+                CuratedPlaylistAnalytics.objects.get_or_create(
+                    playlist=instance, date=today
+                )
+                CuratedPlaylistAnalytics.objects.filter(
+                    playlist=instance, date=today
+                ).update(total_streams=F('total_streams') + 1)
+            except Exception as e:
+                logger.error(f"Error registrando view de playlist: {e}")
+
+        serializer = self.get_serializer(instance)
+        response_data = serializer.data
+        response_data['_metadata'] = {
+            'is_outdated': instance.is_outdated,
+            'last_calculated': instance.last_calculated_at,
+            'update_frequency': instance.update_frequency,
+            'algorithm': instance.algorithm,
+            'timestamp': timezone.now().isoformat(),
+        }
+        return Response(response_data)
+
+class CuratedPlaylistStreamView(APIView):
+    """GET /api2/playlists/curated/<slug>/stream/"""
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get(self, request, slug):
+        try:
+            playlist = CuratedPlaylist.objects.get(slug=slug, is_active=True)
+        except CuratedPlaylist.DoesNotExist:
+            return Response({'error': 'not_found', 'message': 'Playlist no encontrada'}, status=404)
+
+        playlist_songs = playlist.songs_relation.select_related('song').order_by('position')
+
+        if not playlist_songs.exists():
+            return Response({
+                'playlist_id':   playlist.id,
+                'playlist_name': playlist.name,
+                'songs':         [],
+                'total_duration': 0,
+                'message':       'Esta playlist aún no tiene canciones',
+            })
+
+        # Batch presigned URLs — una sola ronda de llamadas a R2
+        audio_keys   = [ps.song.file_key for ps in playlist_songs if ps.song.file_key and ps.song.file_key != 'songs/temp_file']
+        audio_urls   = generate_presigned_urls_batch(audio_keys) if audio_keys else {}
+
+        songs_data     = []
+        total_duration = 0
+
+        for ps in playlist_songs:
+            song = ps.song
+            songs_data.append({
+                'position':  ps.position,
+                'song_id':   song.id,
+                'title':     song.title,
+                'artist':    song.artist,
+                'duration':  song.duration,
+                'genre':     song.genre,
+                'stream_url': audio_urls.get(song.file_key),
+                'image_key': song.image_key,
+            })
+            # duration puede ser "3:45" o None
+            if song.duration and ':' in str(song.duration):
+                try:
+                    m, s = str(song.duration).split(':')
+                    total_duration += int(m) * 60 + int(s)
+                except Exception:
+                    pass
+
+        # Registrar reproducción
+        if request.user.is_authenticated:
+            try:
+                CuratedPlaylist.objects.filter(pk=playlist.pk).update(
+                    total_streams=F('total_streams') + 1
+                )
+            except Exception as e:
+                logger.error(f"Error actualizando streams de playlist: {e}")
+
+        return Response({
+            'playlist_id':            playlist.id,
+            'playlist_name':          playlist.name,
+            'playlist_slug':          playlist.slug,
+            'description':            playlist.description,
+            'cover_url':              playlist.get_cover_url(request),
+            'songs':                  songs_data,
+            'total_songs':            len(songs_data),
+            'total_duration':         total_duration,
+            'total_duration_minutes': round(total_duration / 60, 1) if total_duration else 0,
+        })
+
+
+class SaveCuratedPlaylistView(APIView):
+    """
+    POST   /api2/playlists/curated/<id>/save/  → guardar
+    DELETE /api2/playlists/curated/<id>/save/  → quitar
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _get_playlist(self, playlist_id):
+        try:
+            return CuratedPlaylist.objects.get(id=playlist_id, is_active=True)
+        except CuratedPlaylist.DoesNotExist:
+            return None
+
+    def post(self, request, playlist_id):
+        playlist = self._get_playlist(playlist_id)
+        if not playlist:
+            return Response({'error': 'not_found'}, status=404)
+
+        _, created = CuratedPlaylistSave.objects.get_or_create(playlist=playlist, user=request.user)
+        if created:
+            CuratedPlaylist.objects.filter(pk=playlist.pk).update(saves_count=F('saves_count') + 1)
+            return Response({'success': True, 'action': 'saved', 'message': f"'{playlist.name}' guardada"})
+
+        return Response({'success': False, 'action': 'already_saved'}, status=400)
+
+    def delete(self, request, playlist_id):
+        try:
+            playlist = CuratedPlaylist.objects.get(id=playlist_id)
+        except CuratedPlaylist.DoesNotExist:
+            return Response({'error': 'not_found'}, status=404)
+
+        deleted, _ = CuratedPlaylistSave.objects.filter(playlist=playlist, user=request.user).delete()
+        if deleted:
+            CuratedPlaylist.objects.filter(pk=playlist.pk).update(
+                saves_count=F('saves_count') - 1
+            )
+            return Response({'success': True, 'action': 'unsaved'})
+
+        return Response({'success': False, 'action': 'not_saved'}, status=400)
+
+
+class UserSavedPlaylistsView(generics.ListAPIView):
+    """GET /api2/playlists/curated/my/saved/"""
+    serializer_class   = CuratedPlaylistListSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return CuratedPlaylist.objects.filter(
+            saves__user=self.request.user,
+            is_active=True
+        ).order_by('-saves__created_at')
+
+
+class CuratedPlaylistAnalyticsView(APIView):
+    """GET /api2/playlists/curated/<id>/analytics/  (solo staff)"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, playlist_id):
+        if not request.user.is_staff:
+            return Response({'error': 'unauthorized'}, status=403)
+
+        try:
+            playlist = CuratedPlaylist.objects.get(id=playlist_id)
+        except CuratedPlaylist.DoesNotExist:
+            return Response({'error': 'not_found'}, status=404)
+
+        from datetime import timedelta
+        start_date = timezone.now().date() - timedelta(days=30)
+        analytics  = list(CuratedPlaylistAnalytics.objects.filter(
+            playlist=playlist, date__gte=start_date
+        ).order_by('date'))
+
+        total_30d = sum(a.total_streams for a in analytics)
+        summary = {
+            'total_streams_30d':    total_30d,
+            'avg_daily_streams':    round(total_30d / max(len(analytics), 1), 1),
+            'total_unique_listeners': playlist.unique_listeners,
+            'total_saves':          playlist.saves_count,
+            'current_song_count':   playlist.song_count,
+            'last_calculated':      playlist.last_calculated_at,
+            'is_outdated':          playlist.is_outdated,
+        }
+
+        return Response({
+            'playlist': {
+                'id': playlist.id, 'name': playlist.name, 'slug': playlist.slug,
+                'playlist_type': playlist.playlist_type,
+                'update_frequency': playlist.update_frequency,
+                'algorithm': playlist.algorithm,
+            },
+            'summary': summary,
+            'daily_analytics': [
+                {'date': a.date.isoformat(), 'streams': a.total_streams,
+                 'listeners': a.unique_listeners, 'completion_rate': a.avg_completion_rate}
+                for a in analytics
+            ],
+            'timestamp': timezone.now().isoformat(),
+        })

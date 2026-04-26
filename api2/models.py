@@ -1022,3 +1022,172 @@ class UploadQuota(models.Model):
             },
             'reset_at': self.daily_uploads_reset_at.isoformat()
         }
+        
+# ============================================
+# 📀 PLAYLISTS CURADAS POR LA PLATAFORMA
+# ============================================
+
+class CuratedPlaylist(models.Model):
+
+    class PlaylistType(models.TextChoices):
+        TEMPORAL     = 'temporal',     'Temporal (actualización frecuente)'
+        GENERICA     = 'generica',     'Genérica (por género/estilo)'
+        NICHO        = 'nicho',        'Nicho (específico, localizado)'
+        MOOD         = 'mood',         'Por estado de ánimo'
+        PROMOCIONAL  = 'promocional',  'Promocional / Patrocinada'
+
+    class UpdateFrequency(models.TextChoices):
+        HOURLY  = 'hourly',  'Cada hora'
+        DAILY   = 'daily',   'Diaria'
+        WEEKLY  = 'weekly',  'Semanal'
+        MONTHLY = 'monthly', 'Mensual'
+        NEVER   = 'never',   'Nunca (manual)'
+
+    class AlgorithmType(models.TextChoices):
+        MANUAL       = 'manual',       'Selección manual por staff'
+        TRENDING     = 'trending',     'Tendencias (más populares)'
+        NEW_RELEASES = 'new_releases', 'Nuevos lanzamientos'
+        TOP_GENRE    = 'top_genre',    'Top por género'
+        HYBRID       = 'hybrid',       'Híbrido (staff + algoritmo)'
+
+    name          = models.CharField(max_length=200)
+    slug          = models.SlugField(max_length=200, unique=True)
+    description   = models.TextField(blank=True)
+    cover_image   = models.CharField(max_length=500, blank=True)
+
+    playlist_type      = models.CharField(max_length=20, choices=PlaylistType.choices, default=PlaylistType.GENERICA)
+    update_frequency   = models.CharField(max_length=20, choices=UpdateFrequency.choices, default=UpdateFrequency.WEEKLY)
+    algorithm          = models.CharField(max_length=20, choices=AlgorithmType.choices, default=AlgorithmType.MANUAL)
+
+    min_songs      = models.PositiveIntegerField(default=10)
+    max_songs      = models.PositiveIntegerField(default=50)
+    target_genres  = models.JSONField(default=list, blank=True)
+    target_country = models.CharField(max_length=5, blank=True)
+
+    is_active  = models.BooleanField(default=True)
+    priority   = models.IntegerField(default=0)
+    featured   = models.BooleanField(default=False)
+
+    last_calculated_at = models.DateTimeField(null=True, blank=True)
+    song_count         = models.PositiveIntegerField(default=0)
+    created_by         = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_curated_playlists',
+    )
+    created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    # Estadísticas cacheadas
+    total_streams    = models.PositiveIntegerField(default=0)
+    unique_listeners = models.PositiveIntegerField(default=0)
+    saves_count      = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-priority', '-created_at']
+        indexes = [
+            models.Index(fields=['is_active', 'playlist_type']),
+            models.Index(fields=['slug']),
+            models.Index(fields=['-priority']),
+            models.Index(fields=['featured', 'is_active']),
+        ]
+        verbose_name = 'Playlist curada'
+        verbose_name_plural = 'Playlists curadas'
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            from django.utils.text import slugify
+            base_slug = slugify(self.name)
+            slug = base_slug
+            counter = 1
+            while CuratedPlaylist.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+    @property
+    def is_outdated(self):
+        if self.update_frequency == self.UpdateFrequency.NEVER:
+            return False
+        if not self.last_calculated_at:
+            return True
+        from datetime import timedelta
+        delta = timezone.now() - self.last_calculated_at
+        freq_map = {
+            self.UpdateFrequency.HOURLY:  timedelta(hours=1),
+            self.UpdateFrequency.DAILY:   timedelta(days=1),
+            self.UpdateFrequency.WEEKLY:  timedelta(days=7),
+            self.UpdateFrequency.MONTHLY: timedelta(days=30),
+        }
+        return delta > freq_map.get(self.update_frequency, timedelta(days=7))
+
+    def get_cover_url(self, request=None):
+        if self.cover_image and self.cover_image.startswith('playlists/'):
+            from .r2_utils import generate_presigned_url
+            return generate_presigned_url(self.cover_image, expiration=3600)
+        return self.cover_image or None
+
+
+class CuratedPlaylistSong(models.Model):
+    playlist  = models.ForeignKey(CuratedPlaylist, on_delete=models.CASCADE, related_name='songs_relation')
+    song      = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='in_curated_playlists')
+    position  = models.PositiveIntegerField(default=0)
+    score     = models.FloatField(default=0.0)
+    added_by  = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='added_curated_songs',
+    )
+    added_at    = models.DateTimeField(auto_now_add=True)
+    valid_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['position']
+        unique_together = [['playlist', 'song']]
+        indexes = [
+            models.Index(fields=['playlist', 'position']),
+        ]
+
+    def __str__(self):
+        return f"{self.playlist.name} — {self.song.title} (#{self.position})"
+
+
+class CuratedPlaylistSave(models.Model):
+    playlist   = models.ForeignKey(CuratedPlaylist, on_delete=models.CASCADE, related_name='saves')
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_curated_playlists')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [['playlist', 'user']]
+        indexes = [
+            models.Index(fields=['user']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} saved {self.playlist.name}"
+
+
+class CuratedPlaylistAnalytics(models.Model):
+    playlist              = models.ForeignKey(CuratedPlaylist, on_delete=models.CASCADE, related_name='analytics')
+    date                  = models.DateField()
+    total_streams         = models.PositiveIntegerField(default=0)
+    unique_listeners      = models.PositiveIntegerField(default=0)
+    avg_completion_rate   = models.FloatField(default=0.0)
+    shares_count          = models.PositiveIntegerField(default=0)
+    saves_count           = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = [['playlist', 'date']]
+        ordering = ['-date']
+        indexes = [
+            models.Index(fields=['playlist', 'date']),
+        ]
+
+    def __str__(self):
+        return f"{self.playlist.name} — {self.date}"

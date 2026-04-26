@@ -237,6 +237,18 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'wallet.tasks.process_pending_commissions',
         'schedule': crontab(hour='*/6', minute=0),  # Cada 6 horas
     },
+    
+        # ✅ AÑADE ESTO AL FINAL DEL DICCIONARIO (antes del cierre }):
+    'update-curated-playlists-daily': {
+        'task': 'api2.tasks.update_curated_playlists',
+        'schedule': crontab(hour=3, minute=0),   # 3 AM diario
+    },
+    'update-curated-playlists-hourly': {
+        'task': 'api2.tasks.update_curated_playlists_hourly',
+        'schedule': crontab(minute=0),            # cada hora en punto
+    },
+    
+    
 }
 # ================================
 # MIDDLEWARE OPTIMIZADO

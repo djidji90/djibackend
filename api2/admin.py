@@ -14,10 +14,13 @@ from django.db import transaction
 from django.core.files.uploadedfile import UploadedFile
 
 from .models import (
-    Song, MusicEvent, UserProfile, Like, Download, 
-    Comment, PlayHistory, CommentReaction, UploadSession, UploadQuota
+    Song, MusicEvent, UserProfile, Like, Download,
+    Comment, PlayHistory, CommentReaction, UploadSession, UploadQuota,
+    # Playlists curadas
+    CuratedPlaylist, CuratedPlaylistSong, CuratedPlaylistSave, CuratedPlaylistAnalytics,
 )
 from .r2_utils import upload_file_to_r2, delete_file_from_r2, check_file_exists, generate_presigned_url
+
 
 logger = logging.getLogger(__name__)
 
@@ -1141,6 +1144,431 @@ class PlayHistoryAdmin(admin.ModelAdmin):
 admin.site.site_header = 'Djidi Music - Administración'
 admin.site.site_title = 'Djidi Music Admin'
 admin.site.index_title = 'Panel de Administración'
+
+
+# ============================================================
+# AGREGAR AL FINAL DE api2/admin.py (después de PlayHistoryAdmin)
+# Antes de la sección "CONFIGURACIÓN ADICIONAL"
+# ============================================================
+
+# ============================================================
+# INLINE: Canciones dentro de una playlist
+# ============================================================
+
+class CuratedPlaylistSongInline(admin.TabularInline):
+    model               = CuratedPlaylistSong
+    extra               = 0
+    min_num             = 0
+    max_num             = 100
+    ordering            = ('position',)
+    fields              = ('position', 'song', 'score', 'added_by', 'valid_until', 'added_at')
+    readonly_fields     = ('added_at',)
+    autocomplete_fields = ['song']
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('song', 'added_by')
+
+
+# ============================================================
+# INLINE: Analytics (solo lectura)
+# ============================================================
+
+class CuratedPlaylistAnalyticsInline(admin.TabularInline):
+    model           = CuratedPlaylistAnalytics
+    extra           = 0
+    max_num         = 0
+    can_delete      = False
+    ordering        = ('-date',)
+    fields          = ('date', 'total_streams', 'unique_listeners',
+                       'avg_completion_rate', 'shares_count', 'saves_count')
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+# ============================================================
+# ADMIN: CuratedPlaylist
+# ============================================================
+
+@admin.register(CuratedPlaylist)
+class CuratedPlaylistAdmin(admin.ModelAdmin):
+
+    # ----------------------------------------------------------
+    # Listado
+    # ----------------------------------------------------------
+    list_display = (
+        'name',
+        'playlist_type_badge',
+        'algorithm_badge',
+        'song_count',
+        'streams_display',
+        'saves_count',
+        'featured',
+        'is_active',
+        'outdated_badge',
+        'priority',
+    )
+    list_display_links = ('name',)
+    list_editable      = ('featured', 'is_active', 'priority')
+    list_filter        = (
+        'playlist_type',
+        'algorithm',
+        'update_frequency',
+        'is_active',
+        'featured',
+    )
+    search_fields  = ('name', 'slug', 'description')
+    ordering       = ('-priority', '-created_at')
+    list_per_page  = 25
+
+    # ----------------------------------------------------------
+    # Formulario de edición
+    # ----------------------------------------------------------
+    fieldsets = (
+        ('Información básica', {
+            'fields': ('name', 'slug', 'description', 'cover_image'),
+        }),
+        ('Configuración', {
+            'fields': (
+                ('playlist_type', 'update_frequency'),
+                ('algorithm', 'priority'),
+                ('min_songs', 'max_songs'),
+                ('target_genres', 'target_country'),
+            ),
+        }),
+        ('Visibilidad', {
+            'fields': (('is_active', 'featured'),),
+        }),
+        ('Estadísticas (solo lectura)', {
+            'classes': ('collapse',),
+            'fields': (
+                ('song_count', 'total_streams'),
+                ('unique_listeners', 'saves_count'),
+                ('last_calculated_at', 'created_by'),
+                ('created_at', 'updated_at'),
+            ),
+        }),
+    )
+
+    readonly_fields = (
+        'slug',
+        'song_count',
+        'total_streams',
+        'unique_listeners',
+        'saves_count',
+        'last_calculated_at',
+        'created_at',
+        'updated_at',
+    )
+
+    inlines = [CuratedPlaylistSongInline, CuratedPlaylistAnalyticsInline]
+
+    # ----------------------------------------------------------
+    # Acciones masivas
+    # ----------------------------------------------------------
+    actions = [
+        'activate_playlists',
+        'deactivate_playlists',
+        'mark_as_featured',
+        'unmark_featured',
+        'run_update_algorithm',
+        'reset_stats',
+    ]
+
+    @admin.action(description='✅ Activar playlists seleccionadas')
+    def activate_playlists(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f'{updated} playlist(s) activada(s).', messages.SUCCESS)
+
+    @admin.action(description='⛔ Desactivar playlists seleccionadas')
+    def deactivate_playlists(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f'{updated} playlist(s) desactivada(s).', messages.WARNING)
+
+    @admin.action(description='⭐ Marcar como destacadas')
+    def mark_as_featured(self, request, queryset):
+        updated = queryset.update(featured=True)
+        self.message_user(request, f'{updated} playlist(s) destacada(s).', messages.SUCCESS)
+
+    @admin.action(description='☆ Quitar destacado')
+    def unmark_featured(self, request, queryset):
+        updated = queryset.update(featured=False)
+        self.message_user(request, f'{updated} playlist(s) quitadas de destacadas.', messages.SUCCESS)
+
+    @admin.action(description='🔄 Ejecutar algoritmo de actualización')
+    def run_update_algorithm(self, request, queryset):
+        from django.core.management import call_command
+
+        updated = 0
+        skipped = 0
+
+        for playlist in queryset:
+            if playlist.algorithm == 'manual':
+                skipped += 1
+                continue
+            try:
+                call_command('update_playlists', slug=playlist.slug, force=True)
+                updated += 1
+            except Exception as e:
+                self.message_user(request, f'Error en "{playlist.name}": {e}', messages.ERROR)
+
+        if updated:
+            self.message_user(request, f'{updated} playlist(s) actualizadas.', messages.SUCCESS)
+        if skipped:
+            self.message_user(
+                request,
+                f'{skipped} playlist(s) manual(es) omitidas (sin algoritmo).',
+                messages.WARNING,
+            )
+
+    @admin.action(description='🗑️ Resetear estadísticas (streams, saves)')
+    def reset_stats(self, request, queryset):
+        updated = queryset.update(total_streams=0, unique_listeners=0, saves_count=0)
+        self.message_user(
+            request,
+            f'Estadísticas reseteadas en {updated} playlist(s).',
+            messages.WARNING,
+        )
+
+    # ----------------------------------------------------------
+    # Columnas personalizadas
+    # ----------------------------------------------------------
+
+    @admin.display(description='Tipo')
+    def playlist_type_badge(self, obj):
+        colors = {
+            'temporal':   '#3b82f6',
+            'generica':   '#10b981',
+            'nicho':      '#8b5cf6',
+            'mood':       '#f59e0b',
+            'promocional':'#ef4444',
+        }
+        color = colors.get(obj.playlist_type, '#6b7280')
+        label = obj.get_playlist_type_display()
+        return format_html(
+            '<span style="background:{};color:#fff;padding:2px 8px;'
+            'border-radius:12px;font-size:11px">{}</span>',
+            color, label,
+        )
+
+    @admin.display(description='Algoritmo')
+    def algorithm_badge(self, obj):
+        icons = {
+            'manual':       '✋',
+            'trending':     '🔥',
+            'new_releases': '🆕',
+            'top_genre':    '🎵',
+            'hybrid':       '⚡',
+        }
+        icon = icons.get(obj.algorithm, '❓')
+        return format_html(
+            '<span title="{}">{} {}</span>',
+            obj.get_algorithm_display(), icon, obj.algorithm,
+        )
+
+    @admin.display(description='Streams')
+    def streams_display(self, obj):
+        if obj.total_streams >= 1000:
+            return format_html('<b>{:.1f}k</b>', obj.total_streams / 1000)
+        return obj.total_streams
+
+    @admin.display(description='Estado actualización')
+    def outdated_badge(self, obj):
+        if obj.update_frequency == 'never':
+            return format_html('<span style="color:#6b7280">— manual</span>')
+        if obj.is_outdated:
+            return format_html(
+                '<span style="color:#ef4444;font-weight:bold">⚠ Desactualizada</span>'
+            )
+        return format_html('<span style="color:#10b981">✓ Al día</span>')
+
+    # ----------------------------------------------------------
+    # Guardar: asignar created_by automáticamente
+    # ----------------------------------------------------------
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.created_by_id:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    # ----------------------------------------------------------
+    # URLs extra: trigger manual de update y clear songs
+    # ----------------------------------------------------------
+    def get_urls(self):
+        from django.urls import path as dj_path
+        urls  = super().get_urls()
+        extra = [
+            dj_path(
+                '<int:playlist_id>/update-now/',
+                self.admin_site.admin_view(self._update_now),
+                name='curatedplaylist_update_now',
+            ),
+            dj_path(
+                '<int:playlist_id>/clear-songs/',
+                self.admin_site.admin_view(self._clear_songs),
+                name='curatedplaylist_clear_songs',
+            ),
+        ]
+        return extra + urls
+
+    def _update_now(self, request, playlist_id):
+        from django.core.management import call_command
+        from django.http import HttpResponseRedirect
+
+        try:
+            playlist = CuratedPlaylist.objects.get(pk=playlist_id)
+            if playlist.algorithm == 'manual':
+                self.message_user(
+                    request,
+                    'Playlist manual — no tiene algoritmo que ejecutar.',
+                    messages.WARNING,
+                )
+            else:
+                call_command('update_playlists', slug=playlist.slug, force=True)
+                self.message_user(
+                    request, f'"{playlist.name}" actualizada correctamente.', messages.SUCCESS
+                )
+        except CuratedPlaylist.DoesNotExist:
+            self.message_user(request, 'Playlist no encontrada.', messages.ERROR)
+        except Exception as e:
+            self.message_user(request, f'Error: {e}', messages.ERROR)
+
+        return HttpResponseRedirect(
+            reverse('admin:api2_curatedplaylist_change', args=[playlist_id])
+        )
+
+    def _clear_songs(self, request, playlist_id):
+        from django.http import HttpResponseRedirect
+
+        try:
+            playlist = CuratedPlaylist.objects.get(pk=playlist_id)
+            count, _ = CuratedPlaylistSong.objects.filter(playlist=playlist).delete()
+            CuratedPlaylist.objects.filter(pk=playlist_id).update(song_count=0)
+            self.message_user(
+                request,
+                f'{count} canción(es) eliminadas de "{playlist.name}".',
+                messages.SUCCESS,
+            )
+        except CuratedPlaylist.DoesNotExist:
+            self.message_user(request, 'Playlist no encontrada.', messages.ERROR)
+        except Exception as e:
+            self.message_user(request, f'Error: {e}', messages.ERROR)
+
+        return HttpResponseRedirect(
+            reverse('admin:api2_curatedplaylist_change', args=[playlist_id])
+        )
+
+    # ----------------------------------------------------------
+    # Botones extra en el formulario de detalle
+    # ----------------------------------------------------------
+    def change_view(self, request, object_id, form_url='', extra_context=None):
+        extra_context = extra_context or {}
+        extra_context['update_now_url'] = reverse(
+            'admin:curatedplaylist_update_now', args=[object_id]
+        )
+        extra_context['clear_songs_url'] = reverse(
+            'admin:curatedplaylist_clear_songs', args=[object_id]
+        )
+        return super().change_view(request, object_id, form_url, extra_context)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('created_by')
+
+
+# ============================================================
+# ADMIN: CuratedPlaylistSong (edición directa)
+# ============================================================
+
+@admin.register(CuratedPlaylistSong)
+class CuratedPlaylistSongAdmin(admin.ModelAdmin):
+    list_display        = ('playlist', 'song_title', 'song_artist', 'position', 'score', 'added_at')
+    list_display_links  = ('song_title',)
+    list_filter         = ('playlist',)
+    search_fields       = ('song__title', 'song__artist', 'playlist__name')
+    ordering            = ('playlist', 'position')
+    autocomplete_fields = ['song', 'playlist']
+    list_per_page       = 50
+    list_select_related = ('playlist', 'song')
+
+    @admin.display(description='Título', ordering='song__title')
+    def song_title(self, obj):
+        return obj.song.title
+
+    @admin.display(description='Artista', ordering='song__artist')
+    def song_artist(self, obj):
+        return obj.song.artist
+
+    actions = ['move_to_top', 'move_to_bottom']
+
+    @admin.action(description='⬆️ Mover al inicio')
+    def move_to_top(self, request, queryset):
+        for i, item in enumerate(queryset.order_by('position')):
+            CuratedPlaylistSong.objects.filter(pk=item.pk).update(position=i)
+        self.message_user(
+            request, f'{queryset.count()} canción(es) movidas al inicio.', messages.SUCCESS
+        )
+
+    @admin.action(description='⬇️ Mover al final')
+    def move_to_bottom(self, request, queryset):
+        for item in queryset:
+            max_pos = CuratedPlaylistSong.objects.filter(
+                playlist=item.playlist
+            ).count()
+            CuratedPlaylistSong.objects.filter(pk=item.pk).update(position=max_pos + 100)
+        self.message_user(
+            request, f'{queryset.count()} canción(es) movidas al final.', messages.SUCCESS
+        )
+
+
+# ============================================================
+# ADMIN: CuratedPlaylistSave (solo lectura)
+# ============================================================
+
+@admin.register(CuratedPlaylistSave)
+class CuratedPlaylistSaveAdmin(admin.ModelAdmin):
+    list_display    = ('user', 'playlist', 'created_at')
+    list_filter     = ('playlist',)
+    search_fields   = ('user__username', 'playlist__name')
+    ordering        = ('-created_at',)
+    readonly_fields = ('user', 'playlist', 'created_at')
+    list_per_page   = 50
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+# ============================================================
+# ADMIN: CuratedPlaylistAnalytics (solo lectura)
+# ============================================================
+
+@admin.register(CuratedPlaylistAnalytics)
+class CuratedPlaylistAnalyticsAdmin(admin.ModelAdmin):
+    list_display    = (
+        'playlist', 'date', 'total_streams',
+        'unique_listeners', 'avg_completion_rate', 'saves_count',
+    )
+    list_filter     = ('playlist', 'date')
+    search_fields   = ('playlist__name',)
+    ordering        = ('-date',)
+    date_hierarchy  = 'date'
+    readonly_fields = (
+        'playlist', 'date', 'total_streams', 'unique_listeners',
+        'avg_completion_rate', 'shares_count', 'saves_count',
+    )
+    list_per_page   = 60
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # Solo superuser puede borrar registros de analytics
+        return request.user.is_superuser
 
 # ================================
 # 🚀 ¡LISTO PARA PRODUCCIÓN!

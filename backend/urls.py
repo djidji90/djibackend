@@ -10,5 +10,5 @@ urlpatterns = [
     path('notifications/', include('notifications.urls')),
     # 👉 raíz personalizada que lista todos los endpoints
     path('', api_home, name='api-home'),
-     path('artist/dashboard/', include('artist_dashboard.urls')),
+    path('artist/dashboard/', include('artist_dashboard.urls')),
 ]

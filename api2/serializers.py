@@ -9,6 +9,8 @@ import uuid
 from django.db import transaction
 from django.utils import timezone
 import logging
+from .models import CuratedPlaylist, CuratedPlaylistSong, CuratedPlaylistSave
+
 
 logger = logging.getLogger(__name__)
 
@@ -1550,3 +1552,126 @@ class BatchUploadSerializer(serializers.Serializer):
             raise ValidationError("No se permiten nombres de archivo duplicados en un batch")
         
         return data
+    
+# ============================================
+# 🎵 SERIALIZERS PARA PLAYLISTS CURADAS
+# ============================================
+
+
+class CuratedPlaylistListSerializer(serializers.ModelSerializer):
+    cover_url = serializers.SerializerMethodField()
+    is_saved_by_user = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CuratedPlaylist
+        fields = [
+            'id', 'name', 'slug', 'description', 'cover_url',
+            'playlist_type', 'song_count', 'total_streams',
+            'is_saved_by_user', 'priority', 'featured',
+        ]
+
+    def get_cover_url(self, obj):
+        """Obtener URL de la portada con manejo seguro de request"""
+        request = self.context.get('request')
+        return obj.get_cover_url(request)
+
+    def get_is_saved_by_user(self, obj):
+        """Verificar si el usuario guardó la playlist - VERSIÓN SEGURA"""
+        request = self.context.get('request')
+        
+        # ✅ Validación completa para evitar AttributeError
+        if not request:
+            return False
+        if not hasattr(request, 'user'):
+            return False
+        if not request.user or not request.user.is_authenticated:
+            return False
+            
+        return CuratedPlaylistSave.objects.filter(
+            playlist=obj, 
+            user=request.user
+        ).exists()
+
+
+class CuratedPlaylistDetailSerializer(serializers.ModelSerializer):
+    songs = serializers.SerializerMethodField()
+    cover_url = serializers.SerializerMethodField()
+    is_saved_by_user = serializers.SerializerMethodField()
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = CuratedPlaylist
+        fields = [
+            'id', 'name', 'slug', 'description', 'cover_url',
+            'playlist_type', 'update_frequency', 'algorithm',
+            'song_count', 'total_streams', 'unique_listeners', 'saves_count',
+            'is_saved_by_user', 'is_active', 'featured',
+            'created_by_name', 'created_at', 'updated_at', 'last_calculated_at',
+            'songs',
+        ]
+
+    def get_cover_url(self, obj):
+        """Obtener URL de la portada con manejo seguro"""
+        request = self.context.get('request')
+        return obj.get_cover_url(request)
+
+    def get_is_saved_by_user(self, obj):
+        """Verificar si el usuario guardó la playlist - VERSIÓN SEGURA"""
+        request = self.context.get('request')
+        
+        # ✅ Validación completa
+        if not request:
+            return False
+        if not hasattr(request, 'user'):
+            return False
+        if not request.user or not request.user.is_authenticated:
+            return False
+            
+        return CuratedPlaylistSave.objects.filter(
+            playlist=obj, 
+            user=request.user
+        ).exists()
+
+    def get_songs(self, obj):
+        """Obtener canciones de la playlist con optimización de queries"""
+        qs = obj.songs_relation.select_related('song').order_by('position')
+        return CuratedPlaylistSongSerializer(
+            qs, 
+            many=True, 
+            context=self.context
+        ).data
+
+
+class CuratedPlaylistSongSerializer(serializers.ModelSerializer):
+    """Serializer para canciones dentro de playlist curadas"""
+    song_id = serializers.IntegerField(source='song.id')
+    title = serializers.CharField(source='song.title')
+    artist = serializers.CharField(source='song.artist')
+    duration = serializers.CharField(source='song.duration')
+    genre = serializers.CharField(source='song.genre')
+    file_key = serializers.CharField(source='song.file_key')
+    image_key = serializers.CharField(source='song.image_key')
+    stream_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CuratedPlaylistSong
+        fields = [
+            'position', 'song_id', 'title', 'artist', 
+            'duration', 'genre', 'file_key', 'image_key', 'stream_url'
+        ]
+
+    def get_stream_url(self, obj):
+        """Generar URL firmada para streaming si está disponible"""
+        request = self.context.get('request')
+        song = obj.song
+        
+        if not song.file_key or song.file_key == 'songs/temp_file':
+            return None
+            
+        # Si necesitas URLs firmadas, descomenta esto:
+        # from api2.utils.r2_direct import generate_presigned_urls_batch
+        # urls = generate_presigned_urls_batch([song.file_key])
+        # return urls.get(song.file_key)
+        
+        # Por ahora, retorna None o la URL base
+        return None

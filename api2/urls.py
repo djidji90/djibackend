@@ -38,6 +38,8 @@ from .tasks.upload_tasks import (
     reprocess_failed_upload
 )
 
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -319,6 +321,15 @@ traditional_urlpatterns = [
     path('search/suggestions/', views.song_suggestions, name='search-suggestions'),
     path('artists/', views.ArtistListView.as_view(), name='artist-list'),
     path('debug/suggestions/', views.debug_suggestions, name='debug-suggestions'),
+    
+    
+    # 🎵 PLAYLISTS CURADAS
+    path('playlists/curated/', views.CuratedPlaylistListView.as_view(), name='curated-playlists-list'),
+    path('playlists/curated/my/saved/', views.UserSavedPlaylistsView.as_view(), name='user-saved-playlists'),
+    path('playlists/curated/<slug:slug>/', views.CuratedPlaylistDetailView.as_view(), name='curated-playlist-detail'),
+    path('playlists/curated/<slug:slug>/stream/', views.CuratedPlaylistStreamView.as_view(), name='curated-playlist-stream'),
+    path('playlists/curated/<int:playlist_id>/save/', views.SaveCuratedPlaylistView.as_view(), name='save-curated-playlist'),
+    path('playlists/curated/<int:playlist_id>/analytics/', views.CuratedPlaylistAnalyticsView.as_view(), name='playlist-analytics'),
     
     # 📅 EVENTOS MUSICALES
     path('events/', views.MusicEventListView.as_view(), name='event-list'),
