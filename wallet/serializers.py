@@ -1178,3 +1178,87 @@ class OfficeDashboardStatsSerializer(serializers.Serializer):
     top_artists = serializers.ListField()
     staff_activity = serializers.ListField()
     recent_withdrawals = serializers.ListField(required=False)
+    
+# wallet/serializers.py - AGREGAR AL FINAL DEL ARCHIVO
+
+# ============================================================================
+# SERIALIZER PARA PROCESAR RETIROS EN OFICINA
+# ============================================================================
+
+class ProcessWithdrawalSerializer(serializers.Serializer):
+    """
+    Serializer para procesar retiros en oficina.
+    POST /api/wallet/office/withdraw/
+    
+    ✅ Validaciones completas
+    ✅ Montos mínimo y máximo
+    ✅ Validación de método de pago
+    """
+    artist_id = serializers.IntegerField(
+        required=True,
+        help_text="ID del artista que retira"
+    )
+    amount = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal('1000'),
+        max_value=Decimal('500000'),
+        help_text="Monto a retirar (mínimo 1,000 XAF, máximo 500,000 XAF)"
+    )
+    withdrawal_method = serializers.ChoiceField(
+        choices=[('cash', 'Efectivo'), ('muni', 'Muni Dinero')],
+        default='cash',
+        help_text="Método de retiro"
+    )
+    id_number = serializers.CharField(
+        max_length=50,
+        required=True,
+        help_text="Número de identificación verificado (DNI, pasaporte, etc.)"
+    )
+    id_type = serializers.ChoiceField(
+        choices=[('dni', 'DNI/Cédula'), ('passport', 'Pasaporte')],
+        default='dni',
+        required=False,
+        help_text="Tipo de identificación"
+    )
+    muni_phone = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True,
+        help_text="Número de teléfono Muni (requerido si método es 'muni')"
+    )
+    notes = serializers.CharField(
+        max_length=500,
+        required=False,
+        allow_blank=True,
+        help_text="Notas adicionales"
+    )
+    
+    def validate_artist_id(self, value):
+        """Validar que el artista existe y tiene wallet"""
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        try:
+            artist = User.objects.get(id=value)
+            if not hasattr(artist, 'wallet'):
+                raise serializers.ValidationError("El artista no tiene wallet configurada")
+            return value
+        except User.DoesNotExist:
+            raise serializers.ValidationError(f"Artista con ID {value} no encontrado")
+    
+    def validate_amount(self, value):
+        """Validar monto mínimo y máximo"""
+        if value < Decimal('1000'):
+            raise serializers.ValidationError("El monto mínimo de retiro es 1,000 XAF")
+        if value > Decimal('500000'):
+            raise serializers.ValidationError("El monto máximo de retiro es 500,000 XAF")
+        return value
+    
+    def validate(self, data):
+        """Validación cruzada"""
+        if data.get('withdrawal_method') == 'muni' and not data.get('muni_phone'):
+            raise serializers.ValidationError({
+                'muni_phone': 'Para retiro por Muni Dinero debe proporcionar el número de teléfono'
+            })
+        return data

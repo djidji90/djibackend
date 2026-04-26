@@ -22,10 +22,10 @@ SONG_CATEGORIES = [
 ]
 
 SONG_PRICES = {
-    'standard': Decimal('500.00'),   # 500 XAF
-    'hit': Decimal('750.00'),        # 750 XAF
-    'premium': Decimal('1000.00'),   # 1000 XAF
-    'classic': Decimal('300.00'),    # 300 XAF
+    'standard': Decimal('100.00'),   # 500 XAF
+    'hit': Decimal('100.00'),        # 750 XAF
+    'premium': Decimal('250.00'),   # 1000 XAF
+    'classic': Decimal('250.00'),    # 300 XAF
 }
 
 # ============================================

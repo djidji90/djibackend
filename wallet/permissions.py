@@ -150,3 +150,44 @@ class IsAgentOrAdmin(permissions.BasePermission):
             return True
         except Agent.DoesNotExist:
             return False
+        
+# wallet/permissions.py - AGREGAR AL FINAL
+
+# ============================================================================
+# PERMISOS PARA OFICINA (RETIROS)
+# ============================================================================
+
+class IsOfficeStaff(permissions.BasePermission):
+    """
+    Permiso: Solo personal de oficina autenticado y activo.
+    """
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        
+        from .models import OfficeStaff
+        try:
+            staff = OfficeStaff.objects.get(user=request.user, is_active=True)
+            return True
+        except OfficeStaff.DoesNotExist:
+            logger.warning(f"Office staff access denied for user {request.user.id}")
+            return False
+
+
+class IsOfficeStaffOrAdmin(permissions.BasePermission):
+    """
+    Permiso: Personal de oficina (activo) o administrador.
+    """
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        
+        if request.user.is_staff:
+            return True
+        
+        from .models import OfficeStaff
+        try:
+            staff = OfficeStaff.objects.get(user=request.user, is_active=True)
+            return True
+        except OfficeStaff.DoesNotExist:
+            return False

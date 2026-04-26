@@ -27,10 +27,11 @@ from .models import (
     Wallet, Transaction, Hold, DepositCode, Agent, PhysicalLocation,
     Office, OfficeStaff, OfficeWithdrawal, ArtistMuniAccount
 )
-from .services import WalletService, OfficeWithdrawalService
+from .services import WalletService, OfficeWithdrawalService, InsufficientFundsError
 from .serializers import (
     WalletSerializer,
     WalletCreateSerializer,
+    ProcessWithdrawalSerializer,
     WalletBalanceSerializer,
     OfficeWithdrawalSerializer,
     OfficeWithdrawalHistorySerializer,
@@ -60,7 +61,7 @@ from .serializers import (
 )
 from .permissions import (
     IsWalletOwner, IsArtist, IsAgent, IsAdminOrReadOnly,
-    CanWithdrawFunds, IsAgentOrAdmin
+    CanWithdrawFunds, IsAgentOrAdmin, IsOfficeStaff, IsOfficeStaffOrAdmin 
 )
 from .pagination import WalletPagination, TransactionPagination
 from .filters import TransactionFilter, HoldFilter, DepositCodeFilter
@@ -71,7 +72,7 @@ from .throttles import (
     DepositThrottle,
     AnonymousWalletThrottle
 )
-from .exceptions import WalletBaseException
+from .exceptions import WalletBaseException, LimitExceededError
 from .utils import generate_qr_for_code, calculate_agent_commission
 
 logger = logging.getLogger(__name__)
@@ -1338,77 +1339,6 @@ class OfficeSearchArtistView(APIView):
         return Response(result)
 
 
-class OfficeProcessWithdrawalView(APIView):
-    """
-    POST /api/wallet/office/withdraw/
-    Procesar retiro en oficina
-    """
-    permission_classes = [IsAuthenticated]
-    throttle_classes = [SensitiveOperationThrottle]
-    
-    @transaction.atomic
-    def post(self, request):
-        try:
-            staff = OfficeStaff.objects.get(user=request.user, is_active=True)
-        except OfficeStaff.DoesNotExist:
-            return Response(
-                {'error': 'No autorizado. Solo personal de oficina.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        idempotency_key = request.headers.get('X-Idempotency-Key')
-        
-        serializer = OfficeWithdrawalSerializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                withdrawal = OfficeWithdrawalService.process_withdrawal(
-                    artist_id=serializer.validated_data['artist_id'],
-                    amount=serializer.validated_data['amount'],
-                    office_id=staff.office_id,
-                    staff_id=staff.id,
-                    withdrawal_method=serializer.validated_data['withdrawal_method'],
-                    id_number_verified=serializer.validated_data['id_number'],
-                    id_type=serializer.validated_data.get('id_type', 'dni'),
-                    muni_phone=serializer.validated_data.get('muni_phone'),
-                    notes=serializer.validated_data.get('notes'),
-                    ip_address=_get_client_ip(request),
-                    idempotency_key=idempotency_key
-                )
-                
-                response_data = {
-                    'success': True,
-                    'reference': withdrawal.reference,
-                    'amount': float(withdrawal.amount),
-                    'fee': float(withdrawal.fee),
-                    'net_amount': float(withdrawal.net_amount),
-                    'method': withdrawal.get_withdrawal_method_display(),
-                    'paid_at': withdrawal.paid_at.isoformat(),
-                    'idempotency_key': withdrawal.idempotency_key,
-                    'message': f'Retiro procesado exitosamente. El artista recibió {withdrawal.net_amount:,.0f} XAF'
-                }
-                
-                if idempotency_key and withdrawal.idempotency_key == idempotency_key:
-                    response_data['idempotent'] = True
-                
-                logger.info(f"Office withdrawal: staff={staff.id}, artist={serializer.validated_data['artist_id']}, amount={serializer.validated_data['amount']}")
-                
-                return Response(response_data, status=status.HTTP_201_CREATED)
-                
-            except WalletBaseException as e:
-                return Response(
-                    {'error': e.detail, 'code': e.code},
-                    status=e.status_code
-                )
-            except Exception as e:
-                logger.error(f"Office withdrawal error: {e}")
-                return Response(
-                    {'error': 'Error interno al procesar el retiro'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 class OfficeReverseWithdrawalView(APIView):
     """
     POST /api/wallet/admin/office/reverse/<withdrawal_id>/
@@ -1485,3 +1415,235 @@ class WalletHealthCheckView(APIView):
         status_code = status.HTTP_200_OK if health_status['status'] == 'healthy' else status.HTTP_503_SERVICE_UNAVAILABLE
         
         return Response(health_status, status=status_code)
+    
+# wallet/views.py - OfficeProcessWithdrawalView CORREGIDO
+
+class OfficeProcessWithdrawalView(APIView):
+    """
+    POST /api/wallet/office/withdraw/
+    Procesar retiro en oficina.
+    
+    ✅ Con validación de personal de oficina
+    ✅ Con idempotencia
+    ✅ Con lock pesimista
+    ✅ Con auditoría completa
+    ✅ Con límites de oficina y empleado
+    """
+    permission_classes = [IsAuthenticated, IsOfficeStaff]
+    throttle_classes = [SensitiveOperationThrottle]
+    
+    @transaction.atomic
+    def post(self, request):
+        # ============================================================
+        # 1. VERIFICAR PERSONAL DE OFICINA
+        # ============================================================
+        try:
+            staff = OfficeStaff.objects.select_related('office').get(
+                user=request.user, 
+                is_active=True
+            )
+        except OfficeStaff.DoesNotExist:
+            return Response(
+                {
+                    'error': 'unauthorized',
+                    'message': 'No autorizado. Solo personal de oficina puede procesar retiros.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # ============================================================
+        # 2. VALIDAR CONTENT-TYPE
+        # ============================================================
+        content_type_error = _validate_content_type(request)
+        if content_type_error:
+            return content_type_error
+        
+        # ============================================================
+        # 3. VALIDAR DATOS CON SERIALIZER DEDICADO
+        # ============================================================
+        serializer = ProcessWithdrawalSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # ============================================================
+        # 4. OBTENER IDEMPOTENCY KEY
+        # ============================================================
+        idempotency_key = request.headers.get('X-Idempotency-Key')
+        
+        # ============================================================
+        # 5. PROCESAR RETIRO
+        # ============================================================
+        try:
+            withdrawal = OfficeWithdrawalService.process_withdrawal(
+                artist_id=serializer.validated_data['artist_id'],
+                amount=serializer.validated_data['amount'],
+                office_id=staff.office_id,
+                staff_id=staff.id,
+                withdrawal_method=serializer.validated_data['withdrawal_method'],
+                id_number_verified=serializer.validated_data['id_number'],
+                id_type=serializer.validated_data.get('id_type', 'dni'),
+                muni_phone=serializer.validated_data.get('muni_phone'),
+                notes=serializer.validated_data.get('notes'),
+                ip_address=_get_client_ip(request),
+                idempotency_key=idempotency_key
+            )
+            
+            # ============================================================
+            # 6. CONSTRUIR RESPUESTA
+            # ============================================================
+            response_data = {
+                'success': True,
+                'reference': withdrawal.reference,
+                'amount': float(withdrawal.amount),
+                'fee': float(withdrawal.fee),
+                'net_amount': float(withdrawal.net_amount),
+                'method': withdrawal.get_withdrawal_method_display(),
+                'paid_at': withdrawal.paid_at.isoformat(),
+                'idempotency_key': withdrawal.idempotency_key[:16] + '...' if withdrawal.idempotency_key else None,
+                'message': f'Retiro procesado exitosamente. El artista recibió {withdrawal.net_amount:,.0f} XAF'
+            }
+            
+            # Si fue una respuesta de idempotencia, añadir flag
+            if idempotency_key and withdrawal.idempotency_key == idempotency_key:
+                response_data['idempotent'] = True
+            
+            logger.info(
+                f"Office withdrawal successful: "
+                f"staff={staff.id}, "
+                f"artist={serializer.validated_data['artist_id']}, "
+                f"amount={serializer.validated_data['amount']}, "
+                f"ref={withdrawal.reference}"
+            )
+            
+            return Response(response_data, status=status.HTTP_201_CREATED)
+            
+        except InsufficientFundsError as e:
+            return Response(
+                {
+                    'error': 'insufficient_funds',
+                    'code': e.code,
+                    'message': str(e.detail)
+                },
+                status=e.status_code
+            )
+        except LimitExceededError as e:
+            return Response(
+                {
+                    'error': 'limit_exceeded',
+                    'code': e.code,
+                    'message': str(e.detail)
+                },
+                status=e.status_code
+            )
+        except WalletBaseException as e:
+            return Response(
+                {
+                    'error': 'withdrawal_error',
+                    'code': e.code,
+                    'message': str(e.detail)
+                },
+                status=e.status_code
+            )
+        except Exception as e:
+            logger.error(f"Office withdrawal error: {e}", exc_info=True)
+            return Response(
+                {
+                    'error': 'internal_error',
+                    'message': 'Error interno al procesar el retiro. Contacte a soporte.'
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+            
+# wallet/views.py - AGREGAR AL FINAL
+
+# ============================================================================
+# OFFICE WITHDRAWAL HISTORY AND DETAIL VIEWS
+# ============================================================================
+
+class OfficeWithdrawalHistoryView(APIView):
+    """
+    GET /api/wallet/office/withdrawals/
+    Listar historial de retiros de oficina.
+    
+    Parámetros opcionales:
+    - artist_id: Filtrar por artista
+    - start_date: Fecha inicial (YYYY-MM-DD)
+    - end_date: Fecha final (YYYY-MM-DD)
+    - status: Filtrar por estado (completed, cancelled, reversed)
+    - page: Número de página
+    - page_size: Items por página
+    """
+    permission_classes = [IsAuthenticated, IsOfficeStaff]
+    throttle_classes = [WalletOperationThrottle]
+    
+    def get(self, request):
+        # Base queryset
+        queryset = OfficeWithdrawal.objects.select_related(
+            'artist', 'office', 'processed_by__user', 'wallet'
+        ).all()
+        
+        # Filtrar por artista
+        artist_id = request.query_params.get('artist_id')
+        if artist_id:
+            queryset = queryset.filter(artist_id=artist_id)
+        
+        # Filtrar por fechas
+        start_date = request.query_params.get('start_date')
+        if start_date:
+            queryset = queryset.filter(paid_at__date__gte=start_date)
+        
+        end_date = request.query_params.get('end_date')
+        if end_date:
+            queryset = queryset.filter(paid_at__date__lte=end_date)
+        
+        # Filtrar por estado
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        # Paginación
+        page = int(request.query_params.get('page', 1))
+        page_size = min(int(request.query_params.get('page_size', 20)), 100)
+        
+        total = queryset.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+        withdrawals = queryset.order_by('-paid_at')[start:end]
+        
+        # Serializar usando el serializer existente
+        serializer = OfficeWithdrawalHistorySerializer(withdrawals, many=True)
+        
+        return Response({
+            'results': serializer.data,
+            'pagination': {
+                'total': total,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total + page_size - 1) // page_size if total > 0 else 1
+            }
+        })
+
+
+class OfficeWithdrawalDetailView(APIView):
+    """
+    GET /api/wallet/office/withdrawals/<int:withdrawal_id>/
+    Obtener detalle de un retiro específico.
+    """
+    permission_classes = [IsAuthenticated, IsOfficeStaff]
+    throttle_classes = [WalletOperationThrottle]
+    
+    def get(self, request, withdrawal_id):
+        try:
+            withdrawal = OfficeWithdrawal.objects.select_related(
+                'artist', 'office', 'processed_by__user', 'wallet'
+            ).get(id=withdrawal_id)
+            
+            serializer = OfficeWithdrawalHistorySerializer(withdrawal)
+            return Response(serializer.data)
+            
+        except OfficeWithdrawal.DoesNotExist:
+            return Response(
+                {'error': 'not_found', 'message': 'Retiro no encontrado'},
+                status=status.HTTP_404_NOT_FOUND
+            )

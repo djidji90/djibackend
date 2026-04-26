@@ -74,8 +74,39 @@ admin_agent_urlpatterns = [
     path('admin/agents/create/', views.AgentCreateView.as_view(), name='admin-agent-create'),
 ]
 
+# wallet/urls.py - AGREGAR AL FINAL
+
+# wallet/urls.py - AGREGAR AL FINAL
+
+# ============================================================================
+# URLS PARA SISTEMA DE OFICINA (RETIROS)
+# ============================================================================
+
+office_urlpatterns = [
+    # Búsqueda de artistas
+    path('office/search/', views.OfficeSearchArtistView.as_view(), name='office-search'),
+    
+    # Procesar retiro
+    path('office/withdraw/', views.OfficeProcessWithdrawalView.as_view(), name='office-withdraw'),
+    
+    # Historial de retiros
+    path('office/withdrawals/', views.OfficeWithdrawalHistoryView.as_view(), name='office-withdrawals'),
+    
+    # Detalle de retiro específico
+    path('office/withdrawals/<int:withdrawal_id>/', views.OfficeWithdrawalDetailView.as_view(), name='office-withdrawal-detail'),
+    
+    # Reversar retiro (solo admin)
+    path('admin/office/reverse/<int:withdrawal_id>/', views.OfficeReverseWithdrawalView.as_view(), name='office-reverse-withdrawal'),
+]
+
+# ============================================================================
+# COMBINAR TODAS LAS URLS (actualizar)
+# ============================================================================
+
+urlpatterns += agent_urlpatterns + admin_agent_urlpatterns + office_urlpatterns
+# ============================================================================
+# COMBINAR TODAS LAS URLS (actualizar)
+# ============================================================================
 # ============================================================================
 # COMBINAR TODAS LAS URLS
 # ============================================================================
-
-urlpatterns += agent_urlpatterns + admin_agent_urlpatterns

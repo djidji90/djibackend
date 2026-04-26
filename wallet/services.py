@@ -15,6 +15,8 @@ from django.core.cache import cache
 from django.db.utils import OperationalError
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import hashlib
+import secrets
+from django.conf import settings
 import json
 import logging
 from typing import Optional, Tuple, Dict, Any
@@ -726,28 +728,39 @@ class WalletService:
         
 # wallet/services.py - REEMPLAZAR OfficeWithdrawalService COMPLETO
 
+# wallet/services.py - OfficeWithdrawalService CORREGIDO
+
+# ============================================================================
+# IMPORTS
+# ============================================================================
+
+
 class OfficeWithdrawalService:
     """Servicio para gestión de retiros en oficina - VERSIÓN PRODUCCIÓN"""
     
+    # Configuración
+    MAX_DAILY_ARTIST_WITHDRAWAL = Decimal(
+        getattr(settings, 'MAX_DAILY_ARTIST_WITHDRAWAL', '500000.00')
+    )
+    MIN_WITHDRAWAL_AMOUNT = Decimal(
+        getattr(settings, 'MIN_WITHDRAWAL_AMOUNT', '1000.00')
+    )
+    
     @staticmethod
     def _generate_idempotency_key(artist_id: int, amount: Decimal, office_id: int) -> str:
-        """Generar clave de idempotencia única"""
-        import hashlib
-        data = f"{artist_id}:{amount}:{office_id}:{timezone.now().timestamp()}"
+        """Generar clave de idempotencia única (MEJORADA)"""
+        random_part = secrets.token_hex(8)
+        data = f"{artist_id}:{amount}:{office_id}:{random_part}"
         return hashlib.sha256(data.encode()).hexdigest()[:32]
     
     @staticmethod
     def search_artist(search_term: str) -> dict:
-        """
-        Buscar artista por email o teléfono
-        SOLO para personal de oficina autenticado
-        """
+        """Buscar artista por email, teléfono o username"""
         from django.contrib.auth import get_user_model
         User = get_user_model()
         
         search_term = search_term.strip().lower()
         
-        # Buscar por email o teléfono
         artist = User.objects.filter(
             Q(email__iexact=search_term) |
             Q(phone__iexact=search_term) |
@@ -757,10 +770,9 @@ class OfficeWithdrawalService:
         if not artist:
             return {
                 'found': False,
-                'message': 'Artista no encontrado. Verifique el email o teléfono.'
+                'message': 'Artista no encontrado. Verifique el email, teléfono o usuario.'
             }
         
-        # Obtener wallet
         try:
             wallet = Wallet.objects.get(user=artist)
         except Wallet.DoesNotExist:
@@ -769,7 +781,6 @@ class OfficeWithdrawalService:
                 'message': 'El artista no tiene wallet configurado.'
             }
         
-        # Obtener cuenta Muni si existe
         muni_account = None
         try:
             muni = ArtistMuniAccount.objects.get(artist=artist)
@@ -813,13 +824,12 @@ class OfficeWithdrawalService:
     @staticmethod
     def get_withdrawal_fee(amount: Decimal, method: str) -> Decimal:
         """Calcular comisión según método de retiro"""
-        if method == 'cash':
-            fee_percentage = Decimal('0.005')  # 0.5%
-        elif method == 'muni':
-            fee_percentage = Decimal('0.003')  # 0.3%
-        else:
-            fee_percentage = Decimal('0.01')
-        
+        fee_percentages = {
+            'cash': Decimal('0.005'),   # 0.5%
+            'muni': Decimal('0.003'),   # 0.3%
+            'bank': Decimal('0.01'),    # 1.0% (para futuro)
+        }
+        fee_percentage = fee_percentages.get(method, Decimal('0.01'))
         fee = (amount * fee_percentage).quantize(Decimal('0.01'))
         return fee
     
@@ -838,16 +848,21 @@ class OfficeWithdrawalService:
         ip_address: str = None,
         idempotency_key: str = None
     ) -> OfficeWithdrawal:
-        """
-        Procesar retiro completo en oficina
-        ✅ Con lock pesimista select_for_update()
-        ✅ Con idempotencia
-        ✅ Validación DENTRO de la transacción
-        ✅ Cache de totales diarios
-        """
+        """Procesar retiro completo en oficina"""
         
         # ============================================================
-        # 1. IDEMPOTENCIA - Verificar si ya se procesó
+        # 1. VALIDACIÓN DE MONTO (fuera del lock por eficiencia)
+        # ============================================================
+        if amount <= 0:
+            raise InvalidAmountError('El monto debe ser mayor a cero')
+        
+        if amount < OfficeWithdrawalService.MIN_WITHDRAWAL_AMOUNT:
+            raise InvalidAmountError(
+                f'El monto mínimo de retiro es {OfficeWithdrawalService.MIN_WITHDRAWAL_AMOUNT:,.0f} XAF'
+            )
+        
+        # ============================================================
+        # 2. IDEMPOTENCIA - Verificar si ya se procesó
         # ============================================================
         if idempotency_key:
             existing = OfficeWithdrawal.objects.filter(
@@ -855,11 +870,31 @@ class OfficeWithdrawalService:
             ).select_related('artist', 'office').first()
             
             if existing:
-                logger.info(f"Idempotency hit: {idempotency_key} -> {existing.reference}")
+                logger.info(f"Idempotency hit: {idempotency_key[:16]}... -> {existing.reference}")
                 return existing
         
         # ============================================================
-        # 2. LOCK PESIMISTA EN WALLET - DENTRO de la transacción
+        # 3. OBTENER DATOS BÁSICOS (fuera del lock para reducir tiempo)
+        # ============================================================
+        try:
+            office = Office.objects.get(id=office_id, is_active=True)
+        except Office.DoesNotExist:
+            raise ValueError('Oficina no válida')
+        
+        try:
+            staff = OfficeStaff.objects.get(
+                id=staff_id,
+                office_id=office_id,
+                is_active=True
+            )
+        except OfficeStaff.DoesNotExist:
+            raise ValueError('Personal de oficina no autorizado')
+        
+        # Resetear cache diario de oficina
+        office.reset_daily_cache_if_needed()
+        
+        # ============================================================
+        # 4. LOCK PESIMISTA EN WALLET
         # ============================================================
         try:
             wallet = Wallet.objects.select_for_update(nowait=True).get(user_id=artist_id)
@@ -869,32 +904,15 @@ class OfficeWithdrawalService:
             raise ConcurrentModificationError('Sistema ocupado. Reintente en unos segundos.')
         
         # ============================================================
-        # 3. VALIDACIONES (TODAS dentro del lock)
+        # 5. VALIDACIONES DE SALDO Y LÍMITES (dentro del lock)
         # ============================================================
-        
-        # Validar monto
-        if amount <= 0:
-            raise InvalidAmountError('El monto debe ser mayor a cero')
-        
-        if amount < Decimal('1000'):
-            raise InvalidAmountError('El monto mínimo de retiro es 1,000 XAF')
-        
-        # Validar saldo
         if wallet.available_balance < amount:
             raise InsufficientFundsError(
-                f'Saldo insuficiente. Disponible: {wallet.available_balance:,.0f} XAF'
+                f'Saldo insuficiente. Disponible: {wallet.available_balance:,.0f} XAF, '
+                f'Solicitado: {amount:,.0f} XAF'
             )
         
-        # Validar oficina
-        try:
-            office = Office.objects.select_for_update().get(id=office_id, is_active=True)
-        except Office.DoesNotExist:
-            raise ValueError('Oficina no válida')
-        
-        # Resetear cache diario si es necesario
-        office.reset_daily_cache_if_needed()
-        
-        # Validar límite por retiro
+        # Validar límite por retiro de oficina
         if amount > office.max_withdrawal_per_artist:
             raise LimitExceededError(
                 f'Máximo por retiro: {office.max_withdrawal_per_artist:,.0f} XAF'
@@ -912,60 +930,42 @@ class OfficeWithdrawalService:
         artist_today_withdrawals = OfficeWithdrawal.objects.filter(
             artist_id=artist_id,
             paid_at__date=today,
-            status='completed'
+            status__in=['completed', 'processing']
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
         
-        max_daily_artist = Decimal('500000.00')
-        if artist_today_withdrawals + amount > max_daily_artist:
-            remaining = max_daily_artist - artist_today_withdrawals
+        if artist_today_withdrawals + amount > OfficeWithdrawalService.MAX_DAILY_ARTIST_WITHDRAWAL:
+            remaining = OfficeWithdrawalService.MAX_DAILY_ARTIST_WITHDRAWAL - artist_today_withdrawals
             raise LimitExceededError(
                 f'Límite diario del artista alcanzado. Puede retirar hasta {remaining:,.0f} XAF hoy'
             )
-        
-        # Validar personal de oficina
-        try:
-            staff = OfficeStaff.objects.select_for_update().get(
-                id=staff_id,
-                office_id=office_id,
-                is_active=True
-            )
-        except OfficeStaff.DoesNotExist:
-            raise ValueError('Personal de oficina no autorizado')
         
         # Validar límite diario del empleado
         if staff.today_operations_total + amount > staff.daily_operation_limit:
             raise LimitExceededError('Límite diario del empleado alcanzado')
         
         # Validar método de pago
-        if withdrawal_method == 'muni':
-            if not muni_phone:
-                raise ValueError('Para retiro por Muni Dinero debe proporcionar número de teléfono')
+        if withdrawal_method == 'muni' and not muni_phone:
+            raise ValueError('Para retiro por Muni Dinero debe proporcionar número de teléfono')
         
         # ============================================================
-        # 4. CALCULAR COMISIÓN
+        # 6. CALCULAR COMISIÓN Y REGISTRAR SALDOS
         # ============================================================
         fee = OfficeWithdrawalService.get_withdrawal_fee(amount, withdrawal_method)
         net_amount = amount - fee
-        
-        # ============================================================
-        # 5. REGISTRAR SALDOS ANTES (para auditoría)
-        # ============================================================
         balance_before = wallet.available_balance
         
         # ============================================================
-        # 6. ACTUALIZAR WALLET (usando F para atomicidad)
+        # 7. ACTUALIZAR WALLET
         # ============================================================
         Wallet.objects.filter(id=wallet.id).update(
             available_balance=F('available_balance') - amount,
             total_withdrawn=F('total_withdrawn') + amount,
             updated_at=timezone.now()
         )
-        
-        # Refrescar para auditoría correcta
         wallet.refresh_from_db()
         
         # ============================================================
-        # 7. ACTUALIZAR CACHE DE OFICINA
+        # 8. ACTUALIZAR CACHE DE OFICINA
         # ============================================================
         Office.objects.filter(id=office.id).update(
             today_withdrawn_cached=F('today_withdrawn_cached') + amount,
@@ -973,9 +973,8 @@ class OfficeWithdrawalService:
         )
         
         # ============================================================
-        # 8. CREAR REGISTRO DE RETIRO
+        # 9. CREAR REGISTRO DE RETIRO
         # ============================================================
-        # Generar idempotency key si no vino
         if not idempotency_key:
             idempotency_key = OfficeWithdrawalService._generate_idempotency_key(
                 artist_id, amount, office_id
@@ -991,7 +990,7 @@ class OfficeWithdrawalService:
             net_amount=net_amount,
             withdrawal_method=withdrawal_method,
             muni_phone=muni_phone or '',
-            status='completed',  # En oficina es inmediato
+            status='completed',
             id_number_verified=id_number_verified,
             id_type_verified=id_type,
             receipt_signed=True,
@@ -1001,12 +1000,12 @@ class OfficeWithdrawalService:
         )
         
         # ============================================================
-        # 9. ACTUALIZAR ÚLTIMA ACTIVIDAD DEL EMPLEADO
+        # 10. ACTUALIZAR ÚLTIMA ACTIVIDAD DEL EMPLEADO
         # ============================================================
         OfficeStaff.objects.filter(id=staff.id).update(last_activity_at=timezone.now())
         
         # ============================================================
-        # 10. AUDIT LOG (con valores correctos)
+        # 11. AUDIT LOG
         # ============================================================
         AuditLog.objects.create(
             user_id=artist_id,
@@ -1024,12 +1023,12 @@ class OfficeWithdrawalService:
                 'fee': float(fee),
                 'method': withdrawal_method,
                 'idempotency_key': idempotency_key[:16] + '...',
-                'id_verified': id_number_verified[-4:]
+                'id_verified': id_number_verified[-4:] if id_number_verified else None
             }
         )
         
         # ============================================================
-        # 11. ACTUALIZAR CUENTA MUNI SI CORRESPONDE
+        # 12. ACTUALIZAR CUENTA MUNI SI CORRESPONDE
         # ============================================================
         if withdrawal_method == 'muni' and muni_phone:
             ArtistMuniAccount.objects.update_or_create(
@@ -1041,7 +1040,7 @@ class OfficeWithdrawalService:
             )
         
         logger.info(
-            f"🏦 Retiro en oficina: {withdrawal.reference} - {amount} XAF - {office.name}",
+            f"🏦 Retiro en oficina: {withdrawal.reference} - {amount:,.0f} XAF - {office.name}",
             extra={
                 'withdrawal_id': withdrawal.id,
                 'artist_id': artist_id,
@@ -1055,14 +1054,12 @@ class OfficeWithdrawalService:
     
     @staticmethod
     def get_office_dashboard_stats(office_id: int, staff_id: int = None) -> dict:
-        """Estadísticas del dashboard de oficina - usando cache"""
+        """Estadísticas del dashboard de oficina"""
         today = timezone.now().date()
         
-        # Usar el método cacheado de la oficina
         office = Office.objects.get(id=office_id)
         office.reset_daily_cache_if_needed()
         
-        # Estadísticas del día (usando valores cacheados cuando sea posible)
         today_withdrawals = OfficeWithdrawal.objects.filter(
             office_id=office_id,
             paid_at__date=today,
@@ -1072,14 +1069,12 @@ class OfficeWithdrawalService:
         cash_withdrawals = today_withdrawals.filter(withdrawal_method='cash')
         muni_withdrawals = today_withdrawals.filter(withdrawal_method='muni')
         
-        # Top artistas del día
         top_artists = today_withdrawals.values(
             'artist__username', 'artist__email'
         ).annotate(
             total=Sum('amount')
         ).order_by('-total')[:10]
         
-        # Actividad por empleado
         staff_activity = OfficeWithdrawal.objects.filter(
             office_id=office_id,
             paid_at__date=today,
@@ -1128,59 +1123,66 @@ class OfficeWithdrawalService:
         }
     
     @staticmethod
+    @db_transaction.atomic
     def reverse_withdrawal(withdrawal_id: int, admin_id: int, reason: str) -> dict:
-        """
-        Reversar un retiro (en caso de error)
-        Devuelve los fondos al artista
-        """
-        with db_transaction.atomic():
-            try:
-                withdrawal = OfficeWithdrawal.objects.select_for_update().get(id=withdrawal_id)
-            except OfficeWithdrawal.DoesNotExist:
-                raise ValueError('Retiro no encontrado')
-            
-            if withdrawal.status != 'completed':
-                raise ValueError(f'Solo se pueden reversar retiros completados. Estado actual: {withdrawal.status}')
-            
-            # Obtener wallet con lock
-            wallet = Wallet.objects.select_for_update().get(id=withdrawal.wallet_id)
-            
-            # Devolver fondos
-            Wallet.objects.filter(id=wallet.id).update(
-                available_balance=F('available_balance') + withdrawal.amount,
-                total_withdrawn=F('total_withdrawn') - withdrawal.amount,
-                updated_at=timezone.now()
-            )
-            
-            # Actualizar estado
-            withdrawal.status = 'reversed'
-            withdrawal.notes = f"{withdrawal.notes}\nREVERSADO: {reason} por admin {admin_id}"
-            withdrawal.save()
-            
-            # Auditoría
-            AuditLog.objects.create(
-                user_id=admin_id,
-                action='WITHDRAWAL_REVERSED',
-                entity_type='office_withdrawal',
-                entity_id=withdrawal.id,
-                before={'status': 'completed'},
-                after={'status': 'reversed'},
-                metadata={'reason': reason, 'amount': float(withdrawal.amount)}
-            )
-            
-            # Actualizar cache de oficina (restar del total diario)
-            office = Office.objects.get(id=withdrawal.office_id)
-            office.reset_daily_cache_if_needed()
-            Office.objects.filter(id=office.id).update(
-                today_withdrawn_cached=F('today_withdrawn_cached') - withdrawal.amount
-            )
-            
-            logger.warning(f"🔄 Retiro reversado: {withdrawal.reference} - Razón: {reason}")
-            
-            return {
-                'success': True,
-                'withdrawal_id': withdrawal.id,
-                'reference': withdrawal.reference,
-                'amount_reversed': float(withdrawal.amount),
-                'reason': reason
+        """Reversar un retiro (en caso de error)"""
+        try:
+            withdrawal = OfficeWithdrawal.objects.select_for_update().get(id=withdrawal_id)
+        except OfficeWithdrawal.DoesNotExist:
+            raise ValueError('Retiro no encontrado')
+        
+        if withdrawal.status != 'completed':
+            raise ValueError(f'Solo se pueden reversar retiros completados. Estado actual: {withdrawal.status}')
+        
+        wallet = Wallet.objects.select_for_update().get(id=withdrawal.wallet_id)
+        balance_before = wallet.available_balance
+        
+        # Devolver fondos
+        Wallet.objects.filter(id=wallet.id).update(
+            available_balance=F('available_balance') + withdrawal.amount,
+            total_withdrawn=F('total_withdrawn') - withdrawal.amount,
+            updated_at=timezone.now()
+        )
+        wallet.refresh_from_db()
+        
+        # Actualizar estado
+        withdrawal.status = 'reversed'
+        withdrawal.notes = f"{withdrawal.notes}\nREVERSADO: {reason} por admin {admin_id}"
+        withdrawal.save(update_fields=['status', 'notes', 'updated_at'])
+        
+        # ✅ NUEVO: Actualizar cache de oficina (restar del total diario)
+        office = Office.objects.get(id=withdrawal.office_id)
+        office.reset_daily_cache_if_needed()
+        Office.objects.filter(id=office.id).update(
+            today_withdrawn_cached=F('today_withdrawn_cached') - withdrawal.amount,
+            updated_at=timezone.now()
+        )
+        
+        # ✅ NUEVO: Auditoría con valores correctos
+        AuditLog.objects.create(
+            user_id=admin_id,
+            action='WITHDRAWAL_REVERSED',
+            entity_type='office_withdrawal',
+            entity_id=withdrawal.id,
+            before={'status': 'completed', 'available_balance': float(balance_before)},
+            after={'status': 'reversed', 'available_balance': float(wallet.available_balance)},
+            metadata={
+                'reason': reason, 
+                'amount': float(withdrawal.amount),
+                'office': withdrawal.office.name
             }
+        )
+        
+        logger.warning(
+            f"🔄 Retiro reversado: {withdrawal.reference} - {withdrawal.amount:,.0f} XAF - Razón: {reason}"
+        )
+        
+        return {
+            'success': True,
+            'withdrawal_id': withdrawal.id,
+            'reference': withdrawal.reference,
+            'amount_reversed': float(withdrawal.amount),
+            'new_balance': float(wallet.available_balance),
+            'reason': reason,
+            'reversed_at': timezone.now().isoformat()
+        }

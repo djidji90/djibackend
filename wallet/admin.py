@@ -1,4 +1,4 @@
-# wallet/admin.py - VERSIÓN PRODUCCIÓN READY
+# wallet/admin.py
 """
 Panel de administración para el sistema wallet.
 VERSIÓN PRODUCCIÓN - Con todos los modelos registrados y optimizado.
@@ -17,7 +17,8 @@ from django.db import models
 
 from .models import (
     Wallet, Transaction, Hold, DepositCode, PhysicalLocation, Agent,
-    IdempotencyKey, AuditLog, SuspiciousActivity , Office ,OfficeStaff, OfficeWithdrawal, ArtistMuniAccount # ✅ NUEVOS MODELOS
+    IdempotencyKey, AuditLog, SuspiciousActivity, Office, OfficeStaff, 
+    OfficeWithdrawal, ArtistMuniAccount
 )
 from .services import WalletService
 
@@ -83,7 +84,7 @@ class IsOverdueFilter(SimpleListFilter):
         )
 
     def queryset(self, request, queryset):
-        from django.db import models  # ✅ O asegurar que models está importado arriba
+        from django.db import models
         if self.value() == 'yes':
             return queryset.filter(
                 is_released=False,
@@ -411,7 +412,6 @@ class HoldAdmin(admin.ModelAdmin):
     transaction_link.short_description = 'Transacción'
 
     def song_info_display(self, obj):
-        """Obtener info de canción desde metadata de la transacción - CORREGIDO"""
         if obj.transaction and obj.transaction.metadata:
             song_id = obj.transaction.metadata.get('song_id')
             song_title = obj.transaction.metadata.get('song_title')
@@ -462,7 +462,6 @@ class HoldAdmin(admin.ModelAdmin):
 
         for hold in queryset.select_related('artist'):
             song_info = self.song_info_display(hold)
-            # Limpiar HTML tags para CSV
             import re
             song_clean = re.sub(r'<[^>]+>', '', str(song_info)) if song_info else '-'
             
@@ -495,8 +494,6 @@ class DepositCodeAdmin(admin.ModelAdmin):
     ]
     list_filter = ['is_used', 'currency', 'created_at']
     search_fields = ['code', 'used_by__email']
-    
-    # ✅ LISTA (corchetes)
     readonly_fields = ['is_used', 'used_at', 'used_by', 'created_at']
     
     fieldsets = (
@@ -511,7 +508,6 @@ class DepositCodeAdmin(admin.ModelAdmin):
 
     def get_readonly_fields(self, request, obj=None):
         if obj:
-            # ✅ Convertir a lista y concatenar
             return list(self.readonly_fields) + ['code']
         return self.readonly_fields
 
@@ -589,8 +585,9 @@ class DepositCodeAdmin(admin.ModelAdmin):
             'currency_choices': [('XAF', 'XAF'), ('EUR', 'EUR'), ('USD', 'USD')]
         })
 
+
 # ============================================================================
-# IDEMPOTENCY KEY ADMIN (NUEVO)
+# IDEMPOTENCY KEY ADMIN
 # ============================================================================
 
 @admin.register(IdempotencyKey)
@@ -640,7 +637,7 @@ class IdempotencyKeyAdmin(admin.ModelAdmin):
 
 
 # ============================================================================
-# AUDIT LOG ADMIN (NUEVO)
+# AUDIT LOG ADMIN
 # ============================================================================
 
 @admin.register(AuditLog)
@@ -675,44 +672,28 @@ class AuditLogAdmin(admin.ModelAdmin):
                 return obj.user.email
         return '-'
     user_link.short_description = 'Usuario'
-    
-    def before_display(self, obj):
-        if obj.before:
-            return format_html('<pre style="max-height: 100px; overflow: auto;">{}</pre>', json.dumps(obj.before, indent=2))
-        return '-'
-    before_display.short_description = 'Estado anterior'
-    
-    def after_display(self, obj):
-        if obj.after:
-            return format_html('<pre style="max-height: 100px; overflow: auto;">{}</pre>', json.dumps(obj.after, indent=2))
-        return '-'
-    after_display.short_description = 'Estado posterior'
 
 
 # ============================================================================
-# SUSPICIOUS ACTIVITY ADMIN (NUEVO)
+# SUSPICIOUS ACTIVITY ADMIN
 # ============================================================================
 
 @admin.register(SuspiciousActivity)
 class SuspiciousActivityAdmin(admin.ModelAdmin):
-    """Administración de actividades sospechosas - SOLO LECTURA"""
+    """Administración de actividades sospechosas"""
     
     list_display = ['user_link', 'activity_type', 'is_reviewed', 'created_at']
     list_filter = ['activity_type', 'is_reviewed', 'created_at']
     search_fields = ['user__email', 'details']
     readonly_fields = ['user', 'wallet', 'activity_type', 'details', 'created_at', 'reviewed_by', 'reviewed_at']
     
-    # ✅ NO permitir crear nuevos registros manualmente
     def has_add_permission(self, request):
         return False
     
-    # ✅ NO permitir eliminar (opcional, para auditoría)
     def has_delete_permission(self, request, obj=None):
         return False
     
-    # ✅ NO permitir modificar (opcional)
     def has_change_permission(self, request, obj=None):
-        # Permitir cambiar solo is_reviewed
         return True
     
     def get_queryset(self, request):
@@ -730,7 +711,6 @@ class SuspiciousActivityAdmin(admin.ModelAdmin):
         return '-'
     user_link.short_description = 'Usuario'
     
-    # ✅ Acción para marcar como revisadas
     @admin.action(description='Marcar como revisadas')
     def mark_as_reviewed(self, request, queryset):
         updated = queryset.update(
@@ -753,23 +733,11 @@ class PhysicalLocationAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at']
 
     fieldsets = (
-        ('Información Básica', {
-            'fields': ('name', 'address', 'city', 'country')
-        }),
-        ('Contacto', {
-            'fields': ('phone', 'email')
-        }),
-        ('Horario y Ubicación', {
-            'fields': ('opening_hours', 'coordinates'),
-            'classes': ('collapse',)
-        }),
-        ('Estado', {
-            'fields': ('is_active',)
-        }),
-        ('Auditoría', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        ('Información Básica', {'fields': ('name', 'address', 'city', 'country')}),
+        ('Contacto', {'fields': ('phone', 'email')}),
+        ('Horario y Ubicación', {'fields': ('opening_hours', 'coordinates'), 'classes': ('collapse',)}),
+        ('Estado', {'fields': ('is_active',)}),
+        ('Auditoría', {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
 
 
@@ -779,15 +747,15 @@ class PhysicalLocationAdmin(admin.ModelAdmin):
 
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
-    """Administración de agentes - CON ESTADÍSTICAS COMPLETAS"""
+    """Administración de agentes"""
 
     list_display = [
         'id', 'user_link', 'location_link', 
         'total_deposits_made',
         'total_amount_deposited_display',
-        'total_codes_generated',      # 🆕 Códigos generados
-        'total_codes_used',           # 🆕 Códigos usados
-        'total_codes_value_display',  # 🆕 Valor total de códigos
+        'total_codes_generated',
+        'total_codes_used',
+        'total_codes_value_display',
         'is_active', 'verified', 'created_at'
     ]
     list_filter = ['is_active', 'verified', 'created_at']
@@ -799,27 +767,18 @@ class AgentAdmin(admin.ModelAdmin):
         'total_codes_used', 'total_codes_value_display'
     ]
     fieldsets = (
-        ('Información del Agente', {
-            'fields': ('user', 'location')
-        }),
-        ('Límites Operativos', {
-            'fields': ('daily_deposit_limit', 'max_deposit_per_transaction')
-        }),
+        ('Información del Agente', {'fields': ('user', 'location')}),
+        ('Límites Operativos', {'fields': ('daily_deposit_limit', 'max_deposit_per_transaction')}),
         ('Estadísticas de Depósitos Directos', {
             'fields': ('total_deposits_made', 'total_amount_deposited'),
             'classes': ('collapse',)
         }),
-        ('📊 Estadísticas de Códigos', {  # 🆕 Nueva sección
+        ('Estadísticas de Códigos', {
             'fields': ('total_codes_generated', 'total_codes_used', 'total_codes_value_display'),
             'classes': ('collapse',)
         }),
-        ('Estado', {
-            'fields': ('is_active', 'verified', 'verified_at', 'notes')
-        }),
-        ('Auditoría', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        ('Estado', {'fields': ('is_active', 'verified', 'verified_at', 'notes')}),
+        ('Auditoría', {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
     actions = ['verify_agents', 'activate_agents', 'deactivate_agents']
 
@@ -827,26 +786,18 @@ class AgentAdmin(admin.ModelAdmin):
         return super().get_queryset(request).select_related('user', 'location')
 
     def user_link(self, obj):
-        """Enlace al usuario - SOLO PARA LIST_DISPLAY"""
         if obj.user:
             try:
                 app_label = obj.user._meta.app_label
                 model_name = obj.user._meta.model_name
-                url = reverse(
-                    f'admin:{app_label}_{model_name}_change',
-                    args=[obj.user.id]
-                )
-                return format_html(
-                    '<a href="{}">{} ({})</a>',
-                    url, obj.user.email, obj.user.username
-                )
+                url = reverse(f'admin:{app_label}_{model_name}_change', args=[obj.user.id])
+                return format_html('<a href="{}">{} ({})</a>', url, obj.user.email, obj.user.username)
             except Exception:
                 return obj.user.email
         return "-"
     user_link.short_description = 'Usuario'
 
     def location_link(self, obj):
-        """Enlace a la ubicación - SOLO PARA LIST_DISPLAY"""
         if obj.location:
             try:
                 url = reverse('admin:wallet_physicallocation_change', args=[obj.location.id])
@@ -856,50 +807,32 @@ class AgentAdmin(admin.ModelAdmin):
         return "Sin ubicación"
     location_link.short_description = 'Ubicación'
 
-    def daily_deposit_limit_display(self, obj):
-        """Mostrar límite diario formateado"""
-        return f"{obj.daily_deposit_limit:,.2f} XAF"
-    daily_deposit_limit_display.short_description = 'Límite Diario'
-    daily_deposit_limit_display.admin_order_field = 'daily_deposit_limit'
-
     def total_amount_deposited_display(self, obj):
-        """Mostrar monto total depositado"""
         return f"{obj.total_amount_deposited:,.2f} XAF"
     total_amount_deposited_display.short_description = 'Total Depositado'
     total_amount_deposited_display.admin_order_field = 'total_amount_deposited'
 
-    # ============================================
-    # 🆕 NUEVOS MÉTODOS PARA ESTADÍSTICAS DE CÓDIGOS
-    # ============================================
-    
     def total_codes_generated(self, obj):
-        """Total de códigos generados por el agente"""
         from .models import DepositCode
-        count = DepositCode.objects.filter(created_by=obj.user).count()
-        return count
-    total_codes_generated.short_description = '📦 Códigos generados'
-    
+        return DepositCode.objects.filter(created_by=obj.user).count()
+    total_codes_generated.short_description = 'Códigos generados'
+
     def total_codes_used(self, obj):
-        """Total de códigos canjeados (usados por usuarios)"""
         from .models import DepositCode
-        count = DepositCode.objects.filter(created_by=obj.user, is_used=True).count()
-        return count
-    total_codes_used.short_description = '✅ Códigos usados'
-    
+        return DepositCode.objects.filter(created_by=obj.user, is_used=True).count()
+    total_codes_used.short_description = 'Códigos usados'
+
     def total_codes_value_display(self, obj):
-        """Valor total de todos los códigos generados"""
         from django.db.models import Sum
         from decimal import Decimal
         from .models import DepositCode
-        
         total = DepositCode.objects.filter(created_by=obj.user).aggregate(
             total=Sum('amount')
         )['total'] or Decimal('0')
         return f"{float(total):,.2f} XAF"
-    total_codes_value_display.short_description = '💰 Valor total códigos'
+    total_codes_value_display.short_description = 'Valor total códigos'
 
     def daily_stats_display(self, obj):
-        """Mostrar estadísticas del día"""
         stats = obj.get_daily_stats()
         return format_html(
             '<strong>Depósitos hoy:</strong> {}<br>'
@@ -915,7 +848,6 @@ class AgentAdmin(admin.ModelAdmin):
 
     @admin.action(description='Verificar agentes seleccionados')
     def verify_agents(self, request, queryset):
-        from django.utils import timezone
         count = 0
         for agent in queryset:
             if not agent.verified:
@@ -932,7 +864,7 @@ class AgentAdmin(admin.ModelAdmin):
     def deactivate_agents(self, request, queryset):
         updated = queryset.update(is_active=False)
         self.message_user(request, f'{updated} agentes desactivados')
-# wallet/admin.py - AÑADIR AL FINAL (después de AgentAdmin)
+
 
 # ============================================================================
 # OFFICE ADMIN
@@ -942,45 +874,19 @@ class AgentAdmin(admin.ModelAdmin):
 class OfficeAdmin(admin.ModelAdmin):
     """Administración de oficinas"""
     
-    list_display = ['name', 'city', 'phone', 'is_active', 'daily_cash_limit', 'today_withdrawn_cached', 'created_at']
+    list_display = ['name', 'city', 'phone', 'is_active', 'daily_cash_limit', 'created_at']
     list_filter = ['is_active', 'city', 'created_at']
     search_fields = ['name', 'city', 'address', 'phone', 'manager_name']
-    readonly_fields = ['created_at', 'updated_at', 'today_withdrawals_total', 'remaining_daily_limit']
+    readonly_fields = ['created_at', 'updated_at']
     
     fieldsets = (
-        ('Información Básica', {
-            'fields': ('name', 'address', 'city', 'phone', 'email')
-        }),
-        ('Responsable', {
-            'fields': ('manager_name',)
-        }),
-        ('Límites Operativos', {
-            'fields': ('daily_cash_limit', 'max_withdrawal_per_artist')
-        }),
-        ('Estado', {
-            'fields': ('is_active',)
-        }),
-        ('Estadísticas del Día', {
-            'fields': ('today_withdrawals_total', 'remaining_daily_limit'),
-            'classes': ('collapse',)
-        }),
-        ('Auditoría', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        ('Información Básica', {'fields': ('name', 'address', 'city', 'phone', 'email')}),
+        ('Responsable', {'fields': ('manager_name',)}),
+        ('Límites Operativos', {'fields': ('daily_cash_limit', 'max_withdrawal_per_artist')}),
+        ('Estado', {'fields': ('is_active',)}),
+        ('Auditoría', {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
-    actions = ['activate_offices', 'deactivate_offices', 'reset_daily_cache']
-    
-    def get_queryset(self, request):
-        return super().get_queryset(request)
-    
-    def today_withdrawals_total(self, obj):
-        return f"{obj.today_withdrawals_total:,.2f} XAF"
-    today_withdrawals_total.short_description = 'Total retirado hoy'
-    
-    def remaining_daily_limit(self, obj):
-        return f"{obj.remaining_daily_limit:,.2f} XAF"
-    remaining_daily_limit.short_description = 'Límite restante'
+    actions = ['activate_offices', 'deactivate_offices']
     
     @admin.action(description='Activar oficinas seleccionadas')
     def activate_offices(self, request, queryset):
@@ -991,41 +897,26 @@ class OfficeAdmin(admin.ModelAdmin):
     def deactivate_offices(self, request, queryset):
         updated = queryset.update(is_active=False)
         self.message_user(request, f'{updated} oficinas desactivadas')
-    
-    @admin.action(description='Resetear cache diario')
-    def reset_daily_cache(self, request, queryset):
-        for office in queryset:
-            office.reset_daily_cache_if_needed()
-        self.message_user(request, f'Cache reseteado para {queryset.count()} oficinas')
 
+
+# ============================================================================
+# OFFICE STAFF ADMIN
+# ============================================================================
 
 @admin.register(OfficeStaff)
 class OfficeStaffAdmin(admin.ModelAdmin):
     """Administración de personal de oficina"""
     
-    list_display = ['user_link', 'office_link', 'employee_id', 'position', 'is_active', 'today_operations_total_display']
+    list_display = ['user_link', 'office_link', 'employee_id', 'position', 'is_active', 'created_at']
     list_filter = ['is_active', 'office', 'position']
     search_fields = ['user__email', 'user__username', 'employee_id']
-    readonly_fields = ['created_at', 'last_activity_at', 'today_operations_total_display']
+    readonly_fields = ['created_at', 'last_activity_at']
     
     fieldsets = (
-        ('Información del Empleado', {
-            'fields': ('user', 'office', 'employee_id', 'position')
-        }),
-        ('Límites', {
-            'fields': ('daily_operation_limit',)
-        }),
-        ('Estado', {
-            'fields': ('is_active',)
-        }),
-        ('Estadísticas', {
-            'fields': ('today_operations_total_display', 'last_activity_at'),
-            'classes': ('collapse',)
-        }),
-        ('Auditoría', {
-            'fields': ('created_at',),
-            'classes': ('collapse',)
-        }),
+        ('Información del Empleado', {'fields': ('user', 'office', 'employee_id', 'position')}),
+        ('Límites', {'fields': ('daily_operation_limit',)}),
+        ('Estado', {'fields': ('is_active',)}),
+        ('Auditoría', {'fields': ('created_at', 'last_activity_at'), 'classes': ('collapse',)}),
     )
     actions = ['activate_staff', 'deactivate_staff']
     
@@ -1052,10 +943,6 @@ class OfficeStaffAdmin(admin.ModelAdmin):
         return '-'
     office_link.short_description = 'Oficina'
     
-    def today_operations_total_display(self, obj):
-        return f"{obj.today_operations_total:,.2f} XAF"
-    today_operations_total_display.short_description = 'Total operado hoy'
-    
     @admin.action(description='Activar personal seleccionado')
     def activate_staff(self, request, queryset):
         updated = queryset.update(is_active=True)
@@ -1067,40 +954,46 @@ class OfficeStaffAdmin(admin.ModelAdmin):
         self.message_user(request, f'{updated} empleados desactivados')
 
 
+# ============================================================================
+# OFFICE WITHDRAWAL ADMIN (CORREGIDO)
+# ============================================================================
+
 @admin.register(OfficeWithdrawal)
 class OfficeWithdrawalAdmin(admin.ModelAdmin):
-    """Administración de retiros en oficina"""
+    """Administración de retiros en oficina - CORREGIDA CON raw_id_fields"""
     
     list_display = ['reference', 'artist_link', 'amount_display', 'withdrawal_method', 'status', 'paid_at']
     list_filter = ['status', 'withdrawal_method', 'paid_at', 'office']
     search_fields = ['reference', 'artist__email', 'artist__username', 'id_number_verified']
-    readonly_fields = ['reference', 'requested_at', 'paid_at', 'artist', 'wallet', 'office', 'processed_by']
+    readonly_fields = ['reference', 'requested_at', 'paid_at', 'wallet']
+    
+    # ✅ CRÍTICO: Usar raw_id_fields para evitar null constraint
+    raw_id_fields = ('artist', 'office', 'processed_by')
+    
+    # ✅ autocomplete_fields para mejor experiencia
+    autocomplete_fields = ('artist',)
     
     fieldsets = (
-        ('Identificación', {
-            'fields': ('reference', 'idempotency_key')
-        }),
-        ('Artista y Oficina', {
-            'fields': ('artist', 'office', 'processed_by')
-        }),
-        ('Montos', {
-            'fields': ('amount', 'fee', 'net_amount')
-        }),
-        ('Método y Estado', {
-            'fields': ('withdrawal_method', 'muni_phone', 'status')
-        }),
-        ('Verificación', {
-            'fields': ('id_number_verified', 'id_type_verified', 'receipt_signed')
-        }),
-        ('Registro', {
-            'fields': ('requested_at', 'paid_at', 'notes'),
-            'classes': ('collapse',)
-        }),
+        ('Identificación', {'fields': ('reference', 'idempotency_key')}),
+        ('Artista y Oficina', {'fields': ('artist', 'office', 'processed_by')}),
+        ('Montos', {'fields': ('amount', 'fee', 'net_amount')}),
+        ('Método y Estado', {'fields': ('withdrawal_method', 'muni_phone', 'status')}),
+        ('Verificación', {'fields': ('id_number_verified', 'id_type_verified', 'receipt_signed')}),
+        ('Registro', {'fields': ('requested_at', 'paid_at', 'notes'), 'classes': ('collapse',)}),
     )
     actions = ['mark_as_completed', 'mark_as_cancelled', 'export_withdrawals_csv']
     
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('artist', 'office', 'processed_by__user', 'wallet')
+    
+    def save_model(self, request, obj, form, change):
+        """Asegurar que el wallet se asigna automáticamente basado en el artista"""
+        if obj.artist and not obj.wallet_id:
+            try:
+                obj.wallet = obj.artist.wallet
+            except:
+                pass
+        super().save_model(request, obj, form, change)
     
     def artist_link(self, obj):
         if obj.artist:
@@ -1144,13 +1037,17 @@ class OfficeWithdrawalAdmin(admin.ModelAdmin):
                 float(w.net_amount),
                 w.get_withdrawal_method_display(),
                 w.get_status_display(),
-                w.office.name,
+                w.office.name if w.office else '',
                 w.paid_at.strftime('%Y-%m-%d %H:%M') if w.paid_at else ''
             ])
         
         self.message_user(request, f'{queryset.count()} retiros exportados')
         return response
 
+
+# ============================================================================
+# ARTIST MUNI ACCOUNT ADMIN
+# ============================================================================
 
 @admin.register(ArtistMuniAccount)
 class ArtistMuniAccountAdmin(admin.ModelAdmin):
@@ -1162,16 +1059,9 @@ class ArtistMuniAccountAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at']
     
     fieldsets = (
-        ('Artista', {
-            'fields': ('artist',)
-        }),
-        ('Cuenta Muni', {
-            'fields': ('phone_number', 'is_default', 'is_verified', 'verified_at')
-        }),
-        ('Auditoría', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+        ('Artista', {'fields': ('artist',)}),
+        ('Cuenta Muni', {'fields': ('phone_number', 'is_default', 'is_verified', 'verified_at')}),
+        ('Auditoría', {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
     actions = ['mark_as_verified', 'unverify_account']
     

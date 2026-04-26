@@ -38,10 +38,10 @@ HOLD_REASONS = [
 
 # --- CATEGORÍAS DE CANCIONES Y PRECIOS (GESTIONADOS POR PLATAFORMA) ---
 SONG_CATEGORIES = [
-    ('standard', 'Estándar', Decimal('500.00')),
-    ('hit', 'Éxito/Sencillo popular', Decimal('750.00')),
-    ('premium', 'Premium', Decimal('1000.00')),
-    ('classic', 'Clásico', Decimal('300.00')),
+    ('standard', 'Estándar', Decimal('100.00')),
+    ('hit', 'Éxito/Sencillo popular', Decimal('100.00')),
+    ('premium', 'Premium', Decimal('250.00')),
+    ('classic', 'Clásico', Decimal('250.00')),
 ]
 
 # Diccionario para acceso rápido
@@ -109,8 +109,8 @@ LIMITS = {
 
 # --- COMISIONES ---
 COMMISSIONS = {
-    'PLATFORM': Decimal('0.20'),
-    'ARTIST': Decimal('0.80'),
+    'PLATFORM': Decimal('0.50'),
+    'ARTIST': Decimal('0.50'),
 }
 
 # --- CÓDIGOS DE ERROR ---

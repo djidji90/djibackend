@@ -177,7 +177,7 @@ class SongAdmin(admin.ModelAdmin):
         ('Monetización (Precios definidos por plataforma)', {
             'fields': ('category', 'is_purchasable', 'price_display', 'artist_share_display',
                        'sales_count', 'total_revenue', 'last_purchased_at'),
-            'description': '💰 Los precios son fijos según categoría: Estándar=500 XAF, Éxito=750 XAF, Premium=1000 XAF, Clásico=300 XAF'
+            'description': '💰 Los precios son fijos según categoría: Estándar=100 XAF, Éxito=100 XAF, Premium=250 XAF, Clásico=250 XAF'
         }),
         ('Archivos - SUBIR AQUÍ', {
             'fields': ('audio_file', 'image_file'),
