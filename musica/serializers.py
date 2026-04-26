@@ -6,6 +6,7 @@ from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils import timezone
+from django.db.models import Sum
 
 # ✅ IMPORTACIONES CORREGIDAS
 from .models import CustomUser, UserVisit
@@ -326,7 +327,7 @@ class PublicArtistSerializer(serializers.ModelSerializer):
 class ArtistProfileSerializer(serializers.ModelSerializer):
     """
     Serializer COMPLETO para perfil de artista.
-    NO incluye bio/location/website (están en UserProfile).
+    ✅ CORREGIDO: total_downloads ahora suma downloads_count de las canciones
     """
     full_name = serializers.SerializerMethodField()
     profile_url = serializers.SerializerMethodField()
@@ -393,20 +394,32 @@ class ArtistProfileSerializer(serializers.ModelSerializer):
             return []
     
     def get_stats(self, obj):
+        """
+        ✅ CORRECCIÓN: Calcula total_downloads sumando el campo downloads_count de las canciones.
+        Esto garantiza consistencia con el contador individual de cada canción.
+        """
         try:
-            from api2.models import Song, Like, PlayHistory, Download
+            from api2.models import Song
             
             songs = Song.objects.filter(uploaded_by=obj)
-            song_ids = list(songs.values_list('id', flat=True))
+            
+            # ✅ Calcular usando Sum de Django (más eficiente que contar registros de Download)
+            total_downloads = songs.aggregate(total=Sum('downloads_count'))['total'] or 0
             
             return {
-                'total_songs': len(song_ids),
-                'total_plays': PlayHistory.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
-                'total_likes': Like.objects.filter(song_id__in=song_ids).count() if song_ids else 0,
-                'total_downloads': Download.objects.filter(song_id__in=song_ids, is_confirmed=True).count() if song_ids else 0,
+                'total_songs': songs.count(),
+                'total_plays': songs.aggregate(total=Sum('plays_count'))['total'] or 0,
+                'total_likes': songs.aggregate(total=Sum('likes_count'))['total'] or 0,
+                'total_downloads': total_downloads,  # 🔥 AHORA SÍ: suma de downloads_count de canciones
             }
-        except Exception:
+        except Exception as e:
+            # Log del error para debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error calculando stats para artista {obj.id}: {str(e)}")
             return {'total_songs': 0, 'total_plays': 0, 'total_likes': 0, 'total_downloads': 0}
+
+
 class UserLoginSerializer(serializers.Serializer):
     """
     Serializer para login de usuarios.
@@ -535,7 +548,3 @@ class ChangePasswordSerializer(serializers.Serializer):
         user.set_password(self.validated_data['new_password'])
         user.save()
         return user
-    
-    
-# musica/serializers.py - AÑADIR AL FINAL DEL ARCHIVO
-
